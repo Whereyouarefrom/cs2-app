@@ -9,7 +9,7 @@ BOT_TOKEN = "8931804644:AAFEtXabrvy7PNZqabD7ETDo93uqFGBo14k"
 ADMIN_ID = 7871348781
 
 # ID рекламного блока Adsgram.ai
-ADSGRAM_BLOCK_ID = "твой_id_рекламы"
+ADSGRAM_BLOCK_ID = "40775"
 
 # ============================================
 # Прочие настройки (можно менять по желанию)
