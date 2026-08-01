@@ -16,7 +16,7 @@ ADSGRAM_BLOCK_ID = "твой_id_рекламы"
 # ============================================
 
 # URL мини-приложения (замени на свой хостинг после деплоя фронтенда)
-WEBAPP_URL = "https://your-domain.com/"
+WEBAPP_URL = "https://cs2-app-six.vercel.app"
 
 # Стартовый виртуальный баланс нового игрока
 START_BALANCE = 500
