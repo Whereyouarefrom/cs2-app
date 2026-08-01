@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>CS2 Case Simulator</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ==================== HEADER ==================== -->
+  <header class="topbar">
+    <div class="balance-pill">
+      <span class="balance-icon">💰</span>
+      <span id="balance-value">0</span>
+    </div>
+    <div class="vip-pill" id="vip-pill" style="display:none;">⭐ VIP</div>
+  </header>
+
+  <!-- ==================== SCREENS ==================== -->
+  <main class="screens">
+
+    <!-- CASES SCREEN -->
+    <section class="screen active" id="screen-cases">
+      <h1 class="screen-title">Кейсы</h1>
+      <div class="cases-grid" id="cases-grid"><!-- cards injected by JS --></div>
+    </section>
+
+    <!-- INVENTORY SCREEN -->
+    <section class="screen" id="screen-inventory">
+      <h1 class="screen-title">Инвентарь</h1>
+      <div class="inventory-grid" id="inventory-grid"><!-- items injected by JS --></div>
+      <div class="empty-state" id="inventory-empty" style="display:none;">
+        Пока пусто. Открой первый кейс!
+      </div>
+    </section>
+
+    <!-- PROFILE SCREEN -->
+    <section class="screen" id="screen-profile">
+      <h1 class="screen-title">Профиль</h1>
+
+      <div class="profile-card">
+        <div class="profile-avatar" id="profile-avatar">🎮</div>
+        <div class="profile-name" id="profile-name">Игрок</div>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-box">
+          <div class="stat-label">Открыто кейсов</div>
+          <div class="stat-value" id="stat-cases">0</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Стоимость инвентаря</div>
+          <div class="stat-value" id="stat-inventory-value">$0</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Любимый кейс</div>
+          <div class="stat-value small" id="stat-favorite">—</div>
+        </div>
+        <div class="stat-box highlight">
+          <div class="stat-label">Топ дроп</div>
+          <div class="stat-value small" id="stat-top-drop">—</div>
+        </div>
+      </div>
+
+      <div class="ref-block">
+        <div class="ref-title">👥 Реферальная ссылка</div>
+        <div class="ref-row">
+          <input type="text" id="ref-link-input" readonly>
+          <button id="copy-ref-btn" class="btn-secondary">Копировать</button>
+        </div>
+        <div class="ref-hint">+$2500 тебе и +$1000 другу за каждого приглашённого</div>
+      </div>
+
+      <div class="promo-block">
+        <div class="ref-title">🎁 Промокод</div>
+        <div class="ref-row">
+          <input type="text" id="promo-input" placeholder="Введите промокод">
+          <button id="apply-promo-btn" class="btn-secondary">Активировать</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- MINIGAMES SCREEN -->
+    <section class="screen" id="screen-minigames">
+      <h1 class="screen-title">Мини-игры</h1>
+
+      <!-- ===== UPGRADE ===== -->
+      <div class="minigame-panel">
+        <div class="minigame-panel-title">🔺 Upgrade</div>
+        <div class="minigame-panel-desc">Выбери предмет из инвентаря и множитель — при успехе цена вырастет, при неудаче предмет сгорает.</div>
+
+        <select id="upgrade-item-select" class="mg-select"></select>
+
+        <div class="mg-row">
+          <label class="mg-label">Множитель: <span id="upgrade-multiplier-value">2.0x</span></label>
+          <input type="range" id="upgrade-multiplier-slider" min="1.1" max="10" step="0.1" value="2.0">
+        </div>
+
+        <div class="mg-chance-preview">
+          Примерный шанс успеха: <span id="upgrade-chance-preview">42%</span>
+        </div>
+
+        <button class="btn-primary full" id="upgrade-play-btn">Улучшить</button>
+      </div>
+
+      <!-- ===== CRASH ===== -->
+      <div class="minigame-panel">
+        <div class="minigame-panel-title">🎲 Crash / Dice</div>
+        <div class="minigame-panel-desc">Ставь баланс и укажи, на каком множителе хочешь забрать выигрыш.</div>
+
+        <div class="mg-row">
+          <label class="mg-label">Ставка ($)</label>
+          <input type="number" id="crash-bet-input" class="mg-input" min="10" step="10" value="100">
+        </div>
+
+        <div class="mg-row">
+          <label class="mg-label">Забрать на: <span id="crash-target-value">2.0x</span></label>
+          <input type="range" id="crash-target-slider" min="1.1" max="20" step="0.1" value="2.0">
+        </div>
+
+        <button class="btn-primary full" id="crash-play-btn">Играть</button>
+
+        <div class="crash-result" id="crash-result" style="display:none;"></div>
+      </div>
+    </section>
+
+    <!-- EARN SCREEN -->
+    <section class="screen" id="screen-earn">
+      <h1 class="screen-title">Заработать</h1>
+
+      <div class="earn-card">
+        <div class="earn-icon">📺</div>
+        <div class="earn-info">
+          <div class="earn-title">Посмотреть видео</div>
+          <div class="earn-desc">Получи +$2,000 виртуального баланса</div>
+        </div>
+        <button class="btn-primary small" id="watch-ad-btn">Смотреть</button>
+      </div>
+
+      <div class="earn-card">
+        <div class="earn-icon">🎉</div>
+        <div class="earn-info">
+          <div class="earn-title">Розыгрыши</div>
+          <div class="earn-desc">Участвуй и выигрывай редкие скины</div>
+        </div>
+        <button class="btn-secondary small" id="open-giveaways">Смотреть</button>
+      </div>
+
+      <div class="earn-card">
+        <div class="earn-icon">⭐</div>
+        <div class="earn-info">
+          <div class="earn-title">VIP-статус</div>
+          <div class="earn-desc">Без рекламы + косметические бонусы</div>
+        </div>
+        <button class="btn-secondary small" id="buy-vip-btn">Купить</button>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ==================== BOTTOM TABBAR ==================== -->
+  <nav class="tabbar">
+    <button class="tab-btn active" data-screen="cases">
+      <span class="tab-icon">📦</span><span class="tab-label">Кейсы</span>
+    </button>
+    <button class="tab-btn" data-screen="inventory">
+      <span class="tab-icon">🎒</span><span class="tab-label">Инвентарь</span>
+    </button>
+    <button class="tab-btn" data-screen="profile">
+      <span class="tab-icon">👤</span><span class="tab-label">Профиль</span>
+    </button>
+    <button class="tab-btn" data-screen="minigames">
+      <span class="tab-icon">🎮</span><span class="tab-label">Мини-игры</span>
+    </button>
+    <button class="tab-btn" data-screen="earn">
+      <span class="tab-icon">💵</span><span class="tab-label">Заработать</span>
+    </button>
+  </nav>
+
+  <!-- ==================== ADSGRAM BANNER ==================== -->
+  <div class="ad-banner" id="ad-banner">
+    <span>📢 Реклама Adsgram</span>
+    <button id="ad-banner-close">✕</button>
+  </div>
+
+  <!-- ==================== CASE OPEN MODAL ==================== -->
+  <div class="modal-overlay" id="case-modal">
+    <div class="modal-sheet">
+      <button class="modal-close" id="case-modal-close">✕</button>
+      <img class="modal-case-image" id="modal-case-image" src="" alt="">
+      <div class="modal-case-name" id="modal-case-name">—</div>
+      <div class="modal-case-price" id="modal-case-price">$0</div>
+
+      <div class="modal-items-preview" id="modal-items-preview"><!-- items --></div>
+
+      <!-- roulette strip -->
+      <div class="roulette-wrapper" id="roulette-wrapper" style="display:none;">
+        <div class="roulette-pointer"></div>
+        <div class="roulette-track" id="roulette-track"></div>
+      </div>
+
+      <button class="btn-primary full" id="open-case-btn">Открыть кейс</button>
+    </div>
+  </div>
+
+  <!-- ==================== WIN MODAL ==================== -->
+  <div class="modal-overlay" id="win-modal">
+    <div class="modal-sheet win-sheet">
+      <div class="win-title">🎉 Выпало!</div>
+      <div class="win-item-card" id="win-item-card">
+        <img id="win-item-image" src="" alt="">
+        <div class="win-item-name" id="win-item-name">—</div>
+        <div class="win-item-price" id="win-item-price">$0</div>
+      </div>
+      <div class="win-actions">
+        <button class="btn-secondary" id="win-keep-btn">Оставить</button>
+        <button class="btn-primary" id="win-sell-btn">Продать</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== INTERSTITIAL AD OVERLAY ==================== -->
+  <div class="interstitial-overlay" id="interstitial-overlay">
+    <div class="interstitial-box">
+      <div class="interstitial-label">Реклама Adsgram</div>
+      <div class="interstitial-timer" id="interstitial-timer">5</div>
+    </div>
+  </div>
+
+  <!-- ==================== SOUNDS (замени src на свои файлы при желании) ==================== -->
+  <audio id="sound-spin" src="" preload="none"></audio>
+  <audio id="sound-win" src="" preload="none"></audio>
+  <audio id="sound-lose" src="" preload="none"></audio>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
