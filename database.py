@@ -2,13 +2,14 @@
 # CS2 Case Simulator — Database Models
 # ============================================
 
+import os
+import secrets
 import datetime
 from sqlalchemy import (
     Column, Integer, String, Float, Boolean, ForeignKey, DateTime, BigInteger
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from config import DATABASE_URL
 
 Base = declarative_base()
 
@@ -23,11 +24,11 @@ class User(Base):
     telegram_id = Column(BigInteger, unique=True, nullable=False, index=True)
     username = Column(String, nullable=True)
 
-    balance = Column(Float, default=500.0)          # виртуальный баланс
+    balance = Column(Float, default=500.0)           # виртуальный баланс
     is_vip = Column(Boolean, default=False)          # снятие рекламы / премиум
     vip_expires_at = Column(DateTime, nullable=True) # None = навсегда, если is_vip=True и это не задано
 
-    ref_code = Column(String, unique=True, nullable=False)   # собственный реф. код
+    ref_code = Column(String, unique=True, nullable=False, default=lambda: secrets.token_hex(4))   # собственный реф. код
     referred_by = Column(BigInteger, nullable=True)          # telegram_id пригласившего
 
     total_cases_opened = Column(Integer, default=0)
@@ -99,8 +100,18 @@ class Giveaway(Base):
 
 
 # ---------------------------------------------------
-# Движок и сессия (async, для FastAPI и aiogram)
+# Движок и сессия (PostgreSQL / SQLite)
 # ---------------------------------------------------
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if DATABASE_URL:
+    if DATABASE_URL.startswith("postgresql://"):
+        DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+    elif DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
+else:
+    DATABASE_URL = "sqlite+aiosqlite:///./database.db"
+
 engine = create_async_engine(DATABASE_URL, echo=False)
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
