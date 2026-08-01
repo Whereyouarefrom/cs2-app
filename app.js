@@ -5,8 +5,8 @@
 const tg = window.Telegram?.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
 
-const API_BASE = "https://cs2-app.onrender.com/api"; // замени на реальный адрес FastAPI
-const ADSGRAM_BLOCK_ID = "your_adsgram_block_id"; // подставь свой Block ID из adsgram.ai
+const API_BASE = "https://cs2-app.onrender.com"; // замени на реальный адрес FastAPI
+const ADSGRAM_BLOCK_ID = "40775"; // подставь свой Block ID из adsgram.ai
 
 const state = {
   telegramId: tg?.initDataUnsafe?.user?.id || 123456789, // фолбэк для теста вне Telegram
