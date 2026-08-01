@@ -3,4 +3,5 @@ uvicorn
 aiogram
 pydantic
 sqlalchemy
-aiosqlite
+asyncpg
+psycopg2-binary
