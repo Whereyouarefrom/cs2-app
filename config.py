@@ -3,10 +3,10 @@
 # ============================================
 
 # Токен бота, полученный от @BotFather
-BOT_TOKEN = "твой_токен_от_BotFather"
+BOT_TOKEN = "8931804644:AAFEtXabrvy7PNZqabD7ETDo93uqFGBo14k"
 
 # Telegram ID администратора (для доступа к админ-командам)
-ADMIN_ID = 12345678
+ADMIN_ID = 7871348781
 
 # ID рекламного блока Adsgram.ai
 ADSGRAM_BLOCK_ID = "твой_id_рекламы"
@@ -26,8 +26,8 @@ REF_BONUS_INVITER = 2500
 REF_BONUS_INVITED = 1000
 
 # Цены на премиум-статус (в Telegram Stars)
-VIP_PRICE_STARS_MONTH = 150   # Например: снятие рекламы на 30 дней
-VIP_PRICE_STARS_FOREVER = 999  # Навсегда
+VIP_PRICE_STARS_MONTH = 50   # Например: снятие рекламы на 30 дней
+VIP_PRICE_STARS_FOREVER = 199  # Навсегда
 
 # Путь к базе данных SQLite
 DATABASE_URL = "sqlite+aiosqlite:///./cs2_simulator.db"
