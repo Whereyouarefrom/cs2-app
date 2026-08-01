@@ -3,6 +3,7 @@
 # ============================================
 
 import random
+import secrets
 import datetime
 from typing import Optional
 
@@ -11,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import select, func
 
-from database import async_session, User, Inventory, PromoCode
+from database import async_session, init_db, User, Inventory, PromoCode
 
 app = FastAPI(title="CS2 Case Simulator API")
 
@@ -22,27 +23,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.on_event("startup")
+async def startup_event():
+    await init_db()
+
 # ============================================
 # 1. БАЗА КЕЙСОВ И ПРЕДМЕТОВ
 # ============================================
-# Иконки грузятся напрямую с Steam CDN (community.cloudflare.steamstatic.com).
-# Цены — условные стартовые значения ("виртуальные баллы"), в реальном проекте
-# их нужно периодически обновлять фоновой задачей через Steam Market API.
 
 STEAM_CDN = "https://community.cloudflare.steamstatic.com/economy/image/"
 
 RARITY_WEIGHTS_BASE = {
-    # Базовые (Valve-подобные) веса — от частого к редкому
     "Consumer": 79.92,
     "Industrial": 15.98,
     "Mil-Spec": 3.2,
     "Restricted": 0.64,
     "Classified": 0.28,
     "Covert": 0.26,
-    "Knife": 0.26,   # у Valve ножи и Covert объединены в одну категорию "Rare Special"
+    "Knife": 0.26,
 }
 
-# Наши "фан-шансы" — слегка повышенные для Covert и ножей/перчаток
 RARITY_WEIGHTS_FUN = {
     "Consumer": 78.5,
     "Industrial": 15.5,
@@ -50,7 +51,7 @@ RARITY_WEIGHTS_FUN = {
     "Restricted": 0.9,
     "Classified": 0.4,
     "Covert": 0.6,
-    "Knife": 1.0,   # ~1% на нож/перчатки, как просили
+    "Knife": 1.0,
 }
 
 CASES = {
@@ -113,10 +114,6 @@ CASES = {
 
 
 def calculate_case_price(case_key: str) -> float:
-    """
-    Динамическая стоимость кейса = средневзвешенная стоимость содержимого
-    по фан-шансам, скорректированная на целевой RTP (~70%).
-    """
     items = CASES[case_key]["items"]
     weights = RARITY_WEIGHTS_FUN
 
@@ -125,13 +122,12 @@ def calculate_case_price(case_key: str) -> float:
         (weights[i["rarity"]] / total_weight) * i["price"] for i in items
     )
 
-    target_rtp = 0.70  # ожидаемый возврат ~70% от цены кейса
+    target_rtp = 0.70
     price = expected_value / target_rtp
     return round(price, 2)
 
 
 def roll_item(case_key: str) -> dict:
-    """Определяет выпавший предмет на основе фан-шансов редкости."""
     items = CASES[case_key]["items"]
     weights = RARITY_WEIGHTS_FUN
 
@@ -149,7 +145,7 @@ def roll_item(case_key: str) -> dict:
         chosen = pool[-1][0]
 
     float_val = round(random.uniform(0.00, 1.00), 4)
-    stattrak = random.random() < 0.10  # 10% шанс StatTrak(tm)
+    stattrak = random.random() < 0.10
 
     return {
         "name": chosen["name"],
@@ -161,7 +157,7 @@ def roll_item(case_key: str) -> dict:
 
 
 # ============================================
-# Pydantic-схемы запросов
+# Pydantic-схемы
 # ============================================
 class OpenCaseRequest(BaseModel):
     telegram_id: int
@@ -185,13 +181,13 @@ class AdRewardRequest(BaseModel):
 class UpgradeRequest(BaseModel):
     telegram_id: int
     inventory_id: int
-    target_multiplier: float  # желаемый множитель цены (например, 2.0 = удвоить)
+    target_multiplier: float
 
 
 class CrashBetRequest(BaseModel):
     telegram_id: int
     bet_amount: float
-    cashout_at: float  # желаемый множитель для кэшаута
+    cashout_at: float
 
 
 # ============================================
@@ -237,14 +233,10 @@ async def open_case(req: OpenCaseRequest):
         if user.balance < case_price:
             raise HTTPException(400, "Недостаточно баланса")
 
-        # Списание стоимости кейса
         user.balance -= case_price
         user.total_cases_opened += 1
-
-        # Обновление любимого кейса (по количеству открытий — упрощённо)
         user.favorite_case = CASES[req.case_key]["name"]
 
-        # Ролл предмета
         drop = roll_item(req.case_key)
 
         item_record = Inventory(
@@ -254,7 +246,7 @@ async def open_case(req: OpenCaseRequest):
             rarity=drop["rarity"],
             stattrak=drop["stattrak"],
             float_val=drop["float_val"],
-            image_url=None,  # можно подставить прямую CDN-ссылку по названию скина
+            image_url=None,
             obtained_from_case=CASES[req.case_key]["name"],
         )
         session.add(item_record)
@@ -336,7 +328,6 @@ async def activate_promo(req: PromoRequest):
         if promo.used_count >= promo.max_activations:
             raise HTTPException(400, "Лимит активаций исчерпан")
 
-        # Применение награды
         message = ""
         if promo.reward_type == "balance":
             amount = float(promo.reward_value)
@@ -361,7 +352,6 @@ async def activate_promo(req: PromoRequest):
             message = f"Открыт бесплатный кейс: {CASES[case_key]['name']}"
 
         elif promo.reward_type == "skin":
-            # Ожидается reward_value в формате "Название|Редкость|Цена"
             parts = promo.reward_value.split("|")
             name, rarity, price = parts[0], parts[1], float(parts[2])
             item_record = Inventory(
@@ -383,23 +373,34 @@ async def activate_promo(req: PromoRequest):
 
 
 # ============================================
-# 6. GET /api/user/profile
+# 6. GET /api/user/profile (ИСПРАВЛЕННЫЙ)
 # ============================================
 @app.get("/api/user/profile")
-async def get_profile(telegram_id: int):
+async def get_profile(telegram_id: int, username: Optional[str] = "Игрок"):
     async with async_session() as session:
         result = await session.execute(select(User).where(User.telegram_id == telegram_id))
         user = result.scalar_one_or_none()
+        
+        # Если пользователя еще нет в базе — автоматически регистрируем
         if not user:
-            raise HTTPException(404, "Пользователь не найден")
+            user = User(
+                telegram_id=telegram_id,
+                username=username,
+                balance=500.0,
+                ref_code=secrets.token_hex(4),
+                total_cases_opened=0
+            )
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
 
         result_inv = await session.execute(
             select(Inventory).where(Inventory.user_id == user.id)
         )
         inventory = result_inv.scalars().all()
 
-        total_value = sum(i.skin_price for i in inventory)
-        most_expensive = max(inventory, key=lambda i: i.skin_price, default=None)
+        total_value = sum(i.skin_price for i in inventory) if inventory else 0
+        most_expensive = max(inventory, key=lambda i: i.skin_price, default=None) if inventory else None
 
         return {
             "telegram_id": user.telegram_id,
@@ -407,7 +408,7 @@ async def get_profile(telegram_id: int):
             "balance": user.balance,
             "is_vip": user.is_vip,
             "total_cases_opened": user.total_cases_opened,
-            "favorite_case": user.favorite_case,
+            "favorite_case": user.favorite_case or "Отсутствует",
             "inventory_total_value": round(total_value, 2),
             "most_expensive_item": {
                 "name": most_expensive.skin_name,
@@ -419,12 +420,10 @@ async def get_profile(telegram_id: int):
 
 
 # ============================================
-# 7. POST /api/ad-reward — награда за rewarded-видео
+# 7. POST /api/ad-reward
 # ============================================
 AD_REWARD_AMOUNT = 2000.0
-AD_REWARD_COOLDOWN_SECONDS = 60  # защита от спама запросов без реального показа ролика
-
-# In-memory кэш последнего показа (для MVP; в проде — колонка в User или Redis)
+AD_REWARD_COOLDOWN_SECONDS = 60
 _last_ad_reward: dict[int, datetime.datetime] = {}
 
 
@@ -456,7 +455,7 @@ async def ad_reward(req: AdRewardRequest):
 
 
 # ============================================
-# 8. МИНИ-ИГРА: UPGRADE
+# 8. UPGRADE
 # ============================================
 @app.post("/api/minigames/upgrade")
 async def upgrade_skin(req: UpgradeRequest):
@@ -479,12 +478,9 @@ async def upgrade_skin(req: UpgradeRequest):
         if not item:
             raise HTTPException(404, "Предмет не найден в инвентаре")
 
-        # Шанс успеха обратно пропорционален множителю: чем выше х, тем ниже шанс.
-        # EV ниже 100%, т.е. в среднем игрок теряет предмет чаще, чем выигрывает —
-        # это фан-мини-игра с виртуальной валютой.
-        target_house_edge = 0.85  # ожидаемый возврат ~85% от текущей стоимости предмета
+        target_house_edge = 0.85
         success_chance = target_house_edge / req.target_multiplier
-        success_chance = max(0.01, min(0.80, success_chance))  # ограничение 1%-80%
+        success_chance = max(0.01, min(0.80, success_chance))
 
         roll = random.random()
         success = roll < success_chance
@@ -506,7 +502,7 @@ async def upgrade_skin(req: UpgradeRequest):
                 "item_id": item.id,
             }
         else:
-            await session.delete(item)  # предмет сгорает при неудаче
+            await session.delete(item)
             await session.commit()
 
             return {
@@ -520,13 +516,9 @@ async def upgrade_skin(req: UpgradeRequest):
 
 
 # ============================================
-# 9. МИНИ-ИГРА: CRASH / DICE
+# 9. CRASH
 # ============================================
 def generate_crash_point() -> float:
-    """
-    Генерация точки краша по экспоненциальному распределению — классическая
-    механика crash-игр. House edge заложен через параметр 0.97.
-    """
     house_edge = 0.97
     r = random.random()
     if r == 0:
@@ -555,7 +547,6 @@ async def play_crash(req: CrashBetRequest):
         crash_point = generate_crash_point()
 
         if req.cashout_at <= crash_point:
-            # Успешный кэшаут до краша
             winnings = round(req.bet_amount * req.cashout_at, 2)
             user.balance += winnings
             result_status = "win"
@@ -609,9 +600,6 @@ async def get_inventory(telegram_id: int):
         }
 
 
-# ============================================
-# Точка входа (для локального запуска)
-# ============================================
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
