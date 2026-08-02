@@ -23,10 +23,14 @@ class User(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     telegram_id = Column(BigInteger, unique=True, nullable=False, index=True)
     username = Column(String, nullable=True)
+    photo_url = Column(String, nullable=True)         # аватар из Telegram WebApp
 
-    balance = Column(Float, default=500.0)           # виртуальный баланс
+    balance = Column(Float, default=500.0)           # виртуальный баланс (Кристаллики 💎)
     is_vip = Column(Boolean, default=False)          # снятие рекламы / премиум
     vip_expires_at = Column(DateTime, nullable=True) # None = навсегда, если is_vip=True и это не задано
+
+    lang = Column(String, default="ru")               # ru / en / uk
+    sound_enabled = Column(Boolean, default=True)      # звук вкл/выкл
 
     ref_code = Column(String, unique=True, nullable=False, default=lambda: secrets.token_hex(4))   # собственный реф. код
     referred_by = Column(BigInteger, nullable=True)          # telegram_id пригласившего
@@ -51,6 +55,7 @@ class Inventory(Base):
     skin_name = Column(String, nullable=False)
     skin_price = Column(Float, nullable=False)     # виртуальная цена на момент выпадения
     rarity = Column(String, nullable=False)        # Consumer / Industrial / ... / Covert / Knife
+    quality = Column(String, nullable=True)         # FN / MW / FT / WW / BS
     stattrak = Column(Boolean, default=False)
     float_val = Column(Float, nullable=True)        # Float value (0.00 - 1.00)
     image_url = Column(String, nullable=True)       # прямая ссылка на Steam CDN
