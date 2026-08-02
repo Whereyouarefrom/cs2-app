@@ -6,12 +6,14 @@ import asyncio
 import logging
 import uuid
 import datetime
+import traceback
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     Message, InlineKeyboardMarkup, InlineKeyboardButton,
-    WebAppInfo, LabeledPrice, PreCheckoutQuery
+    WebAppInfo, LabeledPrice, PreCheckoutQuery,
+    BotCommand, MenuButtonWebApp, ErrorEvent,
 )
 from sqlalchemy import select, func
 
@@ -91,32 +93,69 @@ def is_admin(user_id: int) -> bool:
 # ---------------------------------------------------
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    args = message.text.split(maxsplit=1)
-    referred_by = None
+    logging.info(f"/start от {message.from_user.id} (@{message.from_user.username}), payload: {message.text!r}")
 
-    if len(args) > 1 and args[1].startswith("ref_"):
+    try:
+        # deep-link payload — то, что идёт после "/start " (например: /start ref_12345)
+        args = message.text.split(maxsplit=1)
+        referred_by = None
+
+        if len(args) > 1 and args[1].startswith("ref_"):
+            try:
+                referred_by = int(args[1].replace("ref_", ""))
+                if referred_by == message.from_user.id:
+                    referred_by = None  # нельзя быть рефералом самого себя
+            except ValueError:
+                referred_by = None
+
+        user = await get_or_create_user(
+            telegram_id=message.from_user.id,
+            username=message.from_user.username,
+            referred_by=referred_by,
+        )
+
+        bonus_note = ""
+        if referred_by and user.referred_by == referred_by:
+            # Показываем юзеру, что реферальный бонус реально начислен
+            bonus_note = f"\n🎁 Ты пришёл по реферальной ссылке — начислен бонус <b>+{REF_BONUS_INVITED} 💎</b>!\n"
+
+        text = (
+            f"👋 Привет, {message.from_user.first_name}!\n\n"
+            f"Добро пожаловать в <b>CS2 Case Simulator</b> — фановый симулятор открытия кейсов "
+            f"без реального вывода денег и скинов.\n"
+            f"{bonus_note}\n"
+            f"💰 Твой баланс: <b>{user.balance:.0f} 💎</b>\n\n"
+            f"Жми кнопку ниже, чтобы начать открывать кейсы 👇"
+        )
+
+        await message.answer(text, reply_markup=main_menu_keyboard(), parse_mode="HTML")
+
+    except Exception:
+        # Раньше любая ошибка внутри хэндлера (например, недоступная БД) приводила
+        # к тому, что бот молча ничего не отвечал пользователю — теперь она
+        # логируется целиком и юзер получает вменяемое сообщение вместо тишины.
+        logging.error("Ошибка в обработчике /start:\n" + traceback.format_exc())
         try:
-            referred_by = int(args[1].replace("ref_", ""))
-            if referred_by == message.from_user.id:
-                referred_by = None  # нельзя быть рефералом самого себя
-        except ValueError:
-            referred_by = None
+            await message.answer(
+                "⚠️ Что-то пошло не так при запуске. Попробуй ещё раз через пару секунд "
+                "или напиши в поддержку, если проблема повторится."
+            )
+        except Exception:
+            pass
 
-    user = await get_or_create_user(
-        telegram_id=message.from_user.id,
-        username=message.from_user.username,
-        referred_by=referred_by,
+
+# ---------------------------------------------------
+# Глобальный перехватчик необработанных ошибок.
+# Без него исключение в ЛЮБОМ хэндлере (не только /start) просто уходит
+# в логи aiogram и снаружи выглядит как "бот молчит" — теперь всё видно.
+# ---------------------------------------------------
+@dp.errors()
+async def global_error_handler(event: ErrorEvent):
+    logging.error(
+        f"Необработанное исключение при обработке апдейта {event.update.update_id}:\n"
+        + "".join(traceback.format_exception(type(event.exception), event.exception, event.exception.__traceback__))
     )
-
-    text = (
-        f"👋 Привет, {message.from_user.first_name}!\n\n"
-        f"Добро пожаловать в CS2 Case Simulator — фановый симулятор открытия кейсов "
-        f"без реального вывода денег и скинов.\n\n"
-        f"💰 Твой стартовый баланс: <b>{user.balance:.0f} 💎</b>\n\n"
-        f"Жми кнопку ниже, чтобы начать открывать кейсы 👇"
-    )
-
-    await message.answer(text, reply_markup=main_menu_keyboard(), parse_mode="HTML")
+    return True
 
 
 # ---------------------------------------------------
@@ -426,10 +465,42 @@ async def cmd_user_info(message: Message):
 
 
 # ---------------------------------------------------
+# Настройка бота при старте: синяя кнопка "Играть" слева от поля ввода
+# и список команд (подсказки в интерфейсе Telegram)
+# ---------------------------------------------------
+async def setup_bot():
+    # 1) САМАЯ ЧАСТАЯ причина "бот вообще молчит на /start" — на боте остался
+    #    активный webhook (например, после теста на Render/Railway или другого
+    #    хостинга). Пока webhook установлен, getUpdates() для long polling
+    #    просто не получает апдейты (Telegram отдаёт 409 Conflict в логах,
+    #    а внешне выглядит так, будто бот не отвечает вообще ни на что).
+    #    drop_pending_updates=True также сбрасывает очередь старых /start,
+    #    накопившихся, пока бот был выключен.
+    await bot.delete_webhook(drop_pending_updates=True)
+
+    # 2) Синяя кнопка "Играть" слева от поля ввода текста — открывает
+    #    Mini App в один тап, без необходимости искать команду/кнопку в чате.
+    await bot.set_chat_menu_button(
+        menu_button=MenuButtonWebApp(
+            text="🎮 Играть",
+            web_app=WebAppInfo(url=WEBAPP_URL),
+        )
+    )
+
+    # 3) Список команд — подсказки при вводе "/" в чате с ботом
+    await bot.set_my_commands([
+        BotCommand(command="start", description="🎮 Запустить бота / открыть игру"),
+    ])
+
+    logging.info("Бот настроен: webhook сброшен, menu button и команды установлены.")
+
+
+# ---------------------------------------------------
 # Точка входа
 # ---------------------------------------------------
 async def main():
     await init_db()
+    await setup_bot()
     await dp.start_polling(bot)
 
 

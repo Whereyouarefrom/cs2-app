@@ -6,7 +6,8 @@ import os
 import secrets
 import datetime
 from sqlalchemy import (
-    Column, Integer, String, Float, Boolean, ForeignKey, DateTime, BigInteger
+    Column, Integer, String, Float, Boolean, ForeignKey, DateTime, BigInteger,
+    inspect, text,
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -126,9 +127,100 @@ async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False
 
 
 async def init_db():
-    """Создаёт все таблицы при первом запуске."""
+    """Создаёт отсутствующие таблицы и, ВАЖНО, добавляет отсутствующие
+    КОЛОНКИ в уже существующие таблицы.
+
+    Base.metadata.create_all() сам по себе умеет создавать только целиком
+    новые таблицы — если таблица `users` уже есть в базе (а на проде она
+    почти всегда есть), но в неё добавили новое поле в модели (как
+    photo_url / daily_streak / last_daily_claim_at), create_all() эту
+    колонку НЕ добавит и приложение будет падать на каждом SELECT/INSERT
+    с ошибкой вида "column users.xxx does not exist".
+
+    Поэтому сначала прогоняем лёгкую авто-миграцию (_auto_migrate_columns),
+    а уже потом create_all() — он подчистит то, что миграция не тронула
+    (т.е. целиком новые таблицы).
+
+    Это НЕ замена нормальному инструменту миграций (Alembic) — сюда не
+    входят переименование/смена типа колонки, DROP и сложные constraints.
+    Но для "добавили колонку в модели — она должна появиться в проде без
+    ручных ALTER TABLE" этого достаточно и он безопасен для повторного
+    запуска (идемпотентен: уже существующие колонки просто пропускаются).
+    """
     async with engine.begin() as conn:
+        await _auto_migrate_columns(conn)
         await conn.run_sync(Base.metadata.create_all)
+
+
+def _inspect_existing(sync_conn) -> dict[str, set[str]]:
+    """Синхронная функция (вызывается через conn.run_sync) — возвращает
+    {имя_таблицы: {имена существующих колонок}} для таблиц, которые уже
+    реально есть в базе."""
+    inspector = inspect(sync_conn)
+    existing = {}
+    for table_name in inspector.get_table_names():
+        existing[table_name] = {col["name"] for col in inspector.get_columns(table_name)}
+    return existing
+
+
+async def _auto_migrate_columns(conn):
+    """Сравнивает модели SQLAlchemy (Base.metadata) с реальной структурой
+    БД и добавляет через ALTER TABLE ... ADD COLUMN всё, чего не хватает
+    в уже существующих таблицах. Новые таблицы целиком не трогает — их
+    создаст последующий create_all()."""
+    existing = await conn.run_sync(_inspect_existing)
+
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing:
+            continue  # таблицы вообще ещё нет — её создаст create_all() ниже
+
+        existing_cols = existing[table.name]
+        for column in table.columns:
+            if column.name in existing_cols:
+                continue
+
+            col_type = column.type.compile(dialect=engine.dialect)
+            await conn.execute(text(
+                f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {col_type}'
+            ))
+            print(f"[db-migrate] {table.name}.{column.name} ({col_type}) — колонка добавлена")
+
+            await _backfill_new_column(conn, table, column)
+
+
+async def _backfill_new_column(conn, table, column):
+    """Заполняет только что добавленную колонку значением по умолчанию из
+    модели. Без этого у ВСЕХ существующих строк колонка останется NULL —
+    и, например, `user.daily_streak += 1` упадёт с TypeError на None + int.
+    Поддерживает и обычные константы (default=0), и вызываемые дефолты
+    (default=lambda: secrets.token_hex(4)) — второе нужно, например, для
+    уникального ref_code, где каждой строке требуется своё значение."""
+    if column.default is None:
+        return
+
+    if column.default.is_scalar:
+        value = column.default.arg
+        await conn.execute(
+            text(f'UPDATE "{table.name}" SET "{column.name}" = :val WHERE "{column.name}" IS NULL'),
+            {"val": value},
+        )
+        return
+
+    if callable(getattr(column.default, "arg", None)):
+        pk_col = list(table.primary_key.columns)[0]
+        rows = (await conn.execute(
+            text(f'SELECT "{pk_col.name}" FROM "{table.name}" WHERE "{column.name}" IS NULL')
+        )).fetchall()
+        default_fn = column.default.arg
+        for row in rows:
+            try:
+                value = default_fn()
+            except TypeError:
+                value = default_fn(None)   # некоторые дефолты ожидают execution context
+            await conn.execute(
+                text(f'UPDATE "{table.name}" SET "{column.name}" = :val WHERE "{pk_col.name}" = :pk'),
+                {"val": value, "pk": row[0]},
+            )
 
 
 async def get_session() -> AsyncSession:
