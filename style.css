@@ -232,7 +232,10 @@ html, body {
   flex-shrink: 0;
 }
 
-.profile-name { font-weight: 700; font-size: 16px; }
+.profile-card-info { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.profile-name { font-weight: 700; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-username { font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-card .vip-pill { flex-shrink: 0; }
 
 /* ==================== SETTINGS ==================== */
 .settings-block {
@@ -1195,3 +1198,118 @@ html, body {
 .wheel-wrapper { transition: filter 0.3s ease; }
 .wheel-wrapper.glow-win { filter: drop-shadow(0 0 22px rgba(52,199,89,0.55)); }
 .wheel-wrapper.glow-lose { filter: drop-shadow(0 0 18px rgba(255,59,48,0.45)); }
+
+/* ==================== DROP RATE MODAL (Шансы выпадения) — ШАГ 3 ==================== */
+.contents-item {
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+.contents-item:active { transform: scale(0.97); background: var(--bg-secondary); }
+
+.droprate-sheet { text-align: center; padding-top: 34px; }
+
+.droprate-item-card {
+  background: var(--bg-card);
+  border-radius: 16px;
+  padding: 20px;
+  margin-bottom: 16px;
+  border: 2px solid var(--rarity-consumer);
+}
+.droprate-item-card img { width: 100px; height: 100px; object-fit: contain; margin-bottom: 8px; }
+.droprate-item-name { font-weight: 700; font-size: 15px; margin-bottom: 4px; }
+.droprate-item-rarity { font-size: 12px; color: var(--text-secondary); font-weight: 600; }
+
+.droprate-chance-box {
+  background: linear-gradient(135deg, rgba(248,156,28,0.15), rgba(248,156,28,0.03));
+  border: 1px solid var(--accent-orange);
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+.droprate-chance-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+.droprate-chance-value { font-size: 28px; font-weight: 800; color: var(--accent-orange); }
+
+.droprate-price-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--text-secondary);
+  padding: 0 4px;
+}
+.droprate-price-row span:last-child { color: var(--text-primary); font-weight: 700; }
+
+/* ==================== DAILY STREAK (Ежедневный бонус) — ШАГ 3 ==================== */
+.daily-earn-card { border: 1px solid var(--accent-orange); }
+
+.daily-sheet { text-align: center; padding-top: 34px; }
+.daily-title { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+.daily-streak-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+}
+.daily-streak-label b { color: var(--accent-orange); }
+
+.daily-days-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.daily-day-card {
+  position: relative;
+  background: var(--bg-card);
+  border: 2px solid var(--border-color);
+  border-radius: 12px;
+  padding: 10px 4px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.daily-day-card .day-num { font-size: 10px; font-weight: 700; color: var(--text-secondary); }
+.daily-day-card .day-icon { font-size: 22px; }
+.daily-day-card .day-reward { font-size: 10px; font-weight: 700; color: var(--text-primary); text-align: center; line-height: 1.2; }
+
+.daily-day-card.claimed {
+  border-color: var(--accent-green, #34c759);
+  opacity: 0.55;
+}
+.daily-day-card.claimed::after {
+  content: "✓";
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  color: #34c759;
+  font-weight: 800;
+  font-size: 12px;
+}
+.daily-day-card.current {
+  border-color: var(--accent-orange);
+  box-shadow: 0 0 0 2px rgba(248,156,28,0.25);
+  animation: dailyPulse 1.6s ease-in-out infinite;
+}
+.daily-day-card.jackpot { border-color: var(--rarity-knife); }
+.daily-day-card.jackpot .day-icon { filter: drop-shadow(0 0 4px rgba(255,215,0,0.6)); }
+
+@keyframes dailyPulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(248,156,28,0.25); }
+  50% { box-shadow: 0 0 0 5px rgba(248,156,28,0.12); }
+}
+
+.daily-hint { font-size: 11px; color: var(--text-secondary); margin-top: 10px; }
+
+#daily-claim-btn:disabled { opacity: 0.45; pointer-events: none; }
+
+.daily-result-icon { font-size: 44px; margin-bottom: 6px; }
+.daily-result-promo {
+  margin-top: 10px;
+  background: var(--bg-secondary);
+  border: 1px dashed var(--accent-orange);
+  border-radius: 10px;
+  padding: 8px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  font-size: 14px;
+}

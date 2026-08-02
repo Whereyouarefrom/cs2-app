@@ -15,7 +15,10 @@ from aiogram.types import (
 )
 from sqlalchemy import select, func
 
-from config import BOT_TOKEN, ADMIN_ID, WEBAPP_URL, START_BALANCE, VIP_PRICE_STARS_MONTH, VIP_PRICE_STARS_FOREVER
+from config import (
+    BOT_TOKEN, ADMIN_IDS, WEBAPP_URL, START_BALANCE,
+    VIP_PRICE_STARS, REF_BONUS_INVITER, REF_BONUS_INVITED,
+)
 from database import init_db, async_session, User, Inventory, PromoCode
 
 logging.basicConfig(level=logging.INFO)
@@ -33,10 +36,13 @@ async def get_or_create_user(telegram_id: int, username: str | None, referred_by
         user = result.scalar_one_or_none()
 
         if user is None:
+            # Новый юзер, зашедший по реф-ссылке, получает старт + бонус приглашённого
+            starting_balance = START_BALANCE + (REF_BONUS_INVITED if referred_by else 0)
+
             user = User(
                 telegram_id=telegram_id,
                 username=username,
-                balance=START_BALANCE,
+                balance=starting_balance,
                 ref_code=str(uuid.uuid4())[:8],
                 referred_by=referred_by,
             )
@@ -44,15 +50,25 @@ async def get_or_create_user(telegram_id: int, username: str | None, referred_by
             await session.commit()
             await session.refresh(user)
 
-            # Бонус пригласившему
+            # Бонус пригласившему — начисляется автоматически, ровно один раз,
+            # в момент первой регистрации приглашённого (а не при каждом /start)
             if referred_by:
                 result_inviter = await session.execute(
                     select(User).where(User.telegram_id == referred_by)
                 )
                 inviter = result_inviter.scalar_one_or_none()
                 if inviter:
-                    inviter.balance += 2500
+                    inviter.balance += REF_BONUS_INVITER
                     await session.commit()
+                    try:
+                        await bot.send_message(
+                            referred_by,
+                            f"👥 По твоей реферальной ссылке зарегистрировался новый игрок!\n"
+                            f"Тебе начислено <b>+{REF_BONUS_INVITER} 💎</b>",
+                            parse_mode="HTML",
+                        )
+                    except Exception:
+                        pass  # юзер мог заблокировать бота — не критично
 
         return user
 
@@ -66,7 +82,8 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
 
 
 def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
+    """Строгая проверка прав администратора — только по списку config.ADMIN_IDS."""
+    return user_id in ADMIN_IDS
 
 
 # ---------------------------------------------------
@@ -95,7 +112,7 @@ async def cmd_start(message: Message):
         f"👋 Привет, {message.from_user.first_name}!\n\n"
         f"Добро пожаловать в CS2 Case Simulator — фановый симулятор открытия кейсов "
         f"без реального вывода денег и скинов.\n\n"
-        f"💰 Твой стартовый баланс: <b>${user.balance:.0f}</b>\n\n"
+        f"💰 Твой стартовый баланс: <b>{user.balance:.0f} 💎</b>\n\n"
         f"Жми кнопку ниже, чтобы начать открывать кейсы 👇"
     )
 
@@ -112,7 +129,8 @@ async def send_ref_link(callback):
 
     await callback.message.answer(
         f"👥 Твоя реферальная ссылка:\n<code>{link}</code>\n\n"
-        f"За каждого друга получаешь <b>+$2500</b>, а друг — <b>+$1000</b> на старт!",
+        f"За каждого друга, который зайдёт по ссылке, ты автоматически получишь "
+        f"<b>+{REF_BONUS_INVITER} 💎</b>, а друг стартует с бонусом <b>+{REF_BONUS_INVITED} 💎</b>!",
         parse_mode="HTML"
     )
     await callback.answer()
@@ -124,15 +142,15 @@ async def send_ref_link(callback):
 @dp.callback_query(F.data == "buy_vip")
 async def buy_vip_menu(callback):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"📅 VIP на 30 дней — {VIP_PRICE_STARS_MONTH} ⭐", callback_data="vip_month")],
-        [InlineKeyboardButton(text=f"♾️ VIP навсегда — {VIP_PRICE_STARS_FOREVER} ⭐", callback_data="vip_forever")],
+        [InlineKeyboardButton(text=f"♾️ Купить VIP навсегда — {VIP_PRICE_STARS} ⭐", callback_data="vip_forever")],
     ])
     await callback.message.answer(
-        "⭐ <b>VIP-статус</b>\n\n"
+        "⭐ <b>VIP-статус — навсегда</b>\n\n"
         "Что даёт VIP:\n"
         "— Полное отключение рекламы\n"
         "— Эксклюзивная тема интерфейса\n"
         "— Ускоренная анимация открытия кейсов\n\n"
+        f"Цена: <b>{VIP_PRICE_STARS} ⭐ Telegram Stars</b>, один раз, без подписки.\n"
         "<i>VIP не влияет на шансы выпадения предметов — только на удобство.</i>",
         reply_markup=kb,
         parse_mode="HTML"
@@ -140,19 +158,15 @@ async def buy_vip_menu(callback):
     await callback.answer()
 
 
-@dp.callback_query(F.data.in_(["vip_month", "vip_forever"]))
+@dp.callback_query(F.data == "vip_forever")
 async def send_vip_invoice(callback):
-    is_forever = callback.data == "vip_forever"
-    price = VIP_PRICE_STARS_FOREVER if is_forever else VIP_PRICE_STARS_MONTH
-    title = "VIP навсегда" if is_forever else "VIP на 30 дней"
-
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title=title,
+        title="VIP навсегда",
         description="Отключение рекламы + косметические бонусы. Не влияет на игровые шансы.",
-        payload=f"vip_{'forever' if is_forever else 'month'}",
+        payload="vip_forever",
         currency="XTR",  # Telegram Stars
-        prices=[LabeledPrice(label=title, amount=price)],
+        prices=[LabeledPrice(label="VIP навсегда", amount=VIP_PRICE_STARS)],
         provider_token="",  # для Stars provider_token не нужен
     )
     await callback.answer()
@@ -166,37 +180,42 @@ async def pre_checkout(pre_checkout_query: PreCheckoutQuery):
 @dp.message(F.successful_payment)
 async def successful_payment(message: Message):
     payload = message.successful_payment.invoice_payload
-    is_forever = payload == "vip_forever"
+    if payload != "vip_forever":
+        return  # неизвестный payload — игнорируем, ничего не начисляем
 
     async with async_session() as session:
         result = await session.execute(select(User).where(User.telegram_id == message.from_user.id))
         user = result.scalar_one_or_none()
         if user:
             user.is_vip = True
-            if not is_forever:
-                user.vip_expires_at = datetime.datetime.utcnow() + datetime.timedelta(days=30)
-            else:
-                user.vip_expires_at = None
+            user.vip_expires_at = None  # навсегда
             await session.commit()
 
-    await message.answer("✅ Оплата прошла успешно! VIP-статус активирован.")
+    await message.answer("✅ Оплата прошла успешно! VIP-статус навсегда активирован. 🎉")
 
 
 # ============================================
 # АДМИН-КОМАНДЫ
 # ============================================
+# Права проверяются СТРОГО по config.ADMIN_IDS (is_admin()) — никаких других
+# способов получить доступ к админ-командам нет. Если message.from_user.id
+# не входит в этот список, команда молча ничего не делает.
+
+ADMIN_MENU_TEXT = (
+    "🔧 <b>Админ-панель</b>\n\n"
+    "/stats — общая статистика по всем юзерам в базе\n"
+    "/give_crystals &lt;user_id&gt; &lt;amount&gt; — выдать 💎 Кристаллы по TG ID\n"
+    "/give_vip &lt;user_id&gt; — выдать VIP-статус навсегда по TG ID\n"
+    "/addpromo &lt;code&gt; &lt;type:value&gt; &lt;max_activations&gt; — создать промокод\n"
+    "/user_info &lt;user_id&gt; — подробная информация о пользователе"
+)
+
+
 @dp.message(Command("admin"))
 async def admin_panel(message: Message):
     if not is_admin(message.from_user.id):
         return
-    await message.answer(
-        "🔧 <b>Админ-панель</b>\n\n"
-        "/stats — статистика проекта\n"
-        "/give_balance &lt;telegram_id&gt; &lt;amount&gt; — выдать баланс\n"
-        "/addpromo &lt;code&gt; &lt;type:value&gt; &lt;max_activations&gt; — создать промокод\n"
-        "/user_info &lt;telegram_id&gt; — информация о пользователе",
-        parse_mode="HTML"
-    )
+    await message.answer(ADMIN_MENU_TEXT, parse_mode="HTML")
 
 
 @dp.message(Command("stats"))
@@ -210,50 +229,109 @@ async def cmd_stats(message: Message):
         total_balance = await session.scalar(select(func.sum(User.balance))) or 0
         total_items = await session.scalar(select(func.count(Inventory.id)))
         vip_users = await session.scalar(select(func.count(User.id)).where(User.is_vip == True))
+        referred_users = await session.scalar(
+            select(func.count(User.id)).where(User.referred_by.is_not(None))
+        )
 
         text = (
             f"📊 <b>Статистика проекта</b>\n\n"
-            f"👥 Пользователей: <b>{total_users}</b>\n"
+            f"👥 Пользователей всего: <b>{total_users}</b>\n"
             f"⭐ VIP-пользователей: <b>{vip_users}</b>\n"
+            f"👥 Пришло по рефералке: <b>{referred_users}</b>\n"
             f"📦 Всего открыто кейсов: <b>{total_cases}</b>\n"
             f"🎒 Предметов в инвентарях: <b>{total_items}</b>\n"
-            f"💰 Суммарный виртуальный баланс всех юзеров: <b>${total_balance:,.0f}</b>\n"
+            f"💰 Суммарный баланс всех юзеров: <b>{total_balance:,.0f} 💎</b>\n"
         )
         await message.answer(text, parse_mode="HTML")
 
 
-@dp.message(Command("give_balance"))
-async def cmd_give_balance(message: Message):
+@dp.message(Command("give_crystals"))
+async def cmd_give_crystals(message: Message):
     if not is_admin(message.from_user.id):
         return
 
     args = message.text.split()
     if len(args) != 3:
-        await message.answer("Использование: /give_balance <telegram_id> <amount>")
+        await message.answer("Использование: /give_crystals <user_id> <amount>\n\nПример: /give_crystals 123456789 5000")
         return
 
     try:
         target_id = int(args[1])
         amount = float(args[2])
     except ValueError:
-        await message.answer("❌ Некорректные параметры")
+        await message.answer("❌ Некорректные параметры — user_id и amount должны быть числами")
+        return
+
+    if amount == 0:
+        await message.answer("❌ amount не может быть равен 0")
         return
 
     async with async_session() as session:
         result = await session.execute(select(User).where(User.telegram_id == target_id))
         user = result.scalar_one_or_none()
         if not user:
-            await message.answer(f"❌ Пользователь {target_id} не найден")
+            await message.answer(f"❌ Пользователь <code>{target_id}</code> не найден", parse_mode="HTML")
             return
 
         user.balance += amount
         await session.commit()
 
         await message.answer(
-            f"✅ Пользователю <code>{target_id}</code> начислено <b>${amount:,.0f}</b>\n"
-            f"Новый баланс: <b>${user.balance:,.0f}</b>",
+            f"✅ Пользователю <code>{target_id}</code> начислено <b>{amount:+,.0f} 💎</b>\n"
+            f"Новый баланс: <b>{user.balance:,.0f} 💎</b>",
             parse_mode="HTML"
         )
+
+    try:
+        await bot.send_message(
+            target_id,
+            f"🎁 Администратор начислил тебе <b>{amount:+,.0f} 💎</b>!",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass  # юзер мог заблокировать бота — не критично для самой выдачи
+
+
+@dp.message(Command("give_vip"))
+async def cmd_give_vip(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Использование: /give_vip <user_id>\n\nПример: /give_vip 123456789")
+        return
+
+    try:
+        target_id = int(args[1])
+    except ValueError:
+        await message.answer("❌ Некорректный user_id")
+        return
+
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id == target_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            await message.answer(f"❌ Пользователь <code>{target_id}</code> не найден", parse_mode="HTML")
+            return
+
+        if user.is_vip:
+            await message.answer(f"ℹ️ У пользователя <code>{target_id}</code> уже есть VIP", parse_mode="HTML")
+            return
+
+        user.is_vip = True
+        user.vip_expires_at = None  # выдаётся навсегда, как и платный VIP
+        await session.commit()
+
+        await message.answer(
+            f"✅ Пользователю <code>{target_id}</code> выдан VIP-статус навсегда ⭐",
+            parse_mode="HTML"
+        )
+
+    try:
+        await bot.send_message(target_id, "⭐ Тебе выдан VIP-статус навсегда! Реклама отключена.")
+    except Exception:
+        pass
 
 
 @dp.message(Command("addpromo"))
@@ -337,8 +415,8 @@ async def cmd_user_info(message: Message):
         await message.answer(
             f"👤 <b>Пользователь {target_id}</b>\n\n"
             f"Username: @{user.username or '—'}\n"
-            f"Баланс: ${user.balance:,.0f}\n"
-            f"VIP: {'✅' if user.is_vip else '❌'}\n"
+            f"Баланс: {user.balance:,.0f} 💎\n"
+            f"VIP: {'✅ навсегда' if (user.is_vip and not user.vip_expires_at) else ('✅ до ' + user.vip_expires_at.strftime('%d.%m.%Y') if user.is_vip else '❌')}\n"
             f"Кейсов открыто: {user.total_cases_opened}\n"
             f"Предметов в инвентаре: {inv_count}\n"
             f"Реф. код: {user.ref_code}\n"

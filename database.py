@@ -38,6 +38,10 @@ class User(Base):
     total_cases_opened = Column(Integer, default=0)
     favorite_case = Column(String, nullable=True)
 
+    # ---- Ежедневные награды за вход (Daily Streak, 1-7 день) ----
+    daily_streak = Column(Integer, default=0)               # текущая серия дней подряд
+    last_daily_claim_at = Column(DateTime, nullable=True)    # когда забрали последнюю ежедневную награду
+
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     inventory = relationship("Inventory", back_populates="owner", cascade="all, delete-orphan")

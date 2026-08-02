@@ -67,7 +67,11 @@
       <div class="profile-card">
         <img class="profile-avatar-img" id="profile-avatar-img" src="" alt="" style="display:none;">
         <div class="profile-avatar" id="profile-avatar">🎮</div>
-        <div class="profile-name" id="profile-name">Игрок</div>
+        <div class="profile-card-info">
+          <div class="profile-name" id="profile-name">Игрок</div>
+          <div class="profile-username" id="profile-username"></div>
+        </div>
+        <div class="vip-pill" id="profile-vip-pill" style="display:none;">⭐ VIP</div>
       </div>
 
       <div class="stats-grid">
@@ -164,6 +168,15 @@
     <section class="screen" id="screen-earn">
       <h1 class="screen-title" data-i18n="earn_title">Заработать</h1>
 
+      <div class="earn-card daily-earn-card" id="open-daily-modal-btn">
+        <div class="earn-icon">🎁</div>
+        <div class="earn-info">
+          <div class="earn-title" data-i18n="daily_earn_title">Ежедневный бонус</div>
+          <div class="earn-desc" id="daily-earn-desc" data-i18n="daily_earn_desc">Заходи каждый день — награды растут до 7 дня!</div>
+        </div>
+        <button class="btn-primary small" id="daily-earn-btn" data-i18n="watch_btn">Смотреть</button>
+      </div>
+
       <div class="earn-card">
         <div class="earn-icon">💎</div>
         <div class="earn-info">
@@ -196,6 +209,7 @@
         <div class="earn-info">
           <div class="earn-title" data-i18n="earn_vip_title">VIP-статус</div>
           <div class="earn-desc" data-i18n="earn_vip_desc">Без рекламы + косметические бонусы</div>
+          <div class="earn-desc" id="vip-price-label">150 ⭐ Telegram Stars, навсегда</div>
         </div>
         <button class="btn-secondary small" id="buy-vip-btn" data-i18n="buy_btn">Купить</button>
       </div>
@@ -318,6 +332,54 @@
         <button class="btn-secondary" id="win-keep-btn" data-i18n="keep_btn">Оставить</button>
         <button class="btn-primary" id="win-sell-btn" data-i18n="sell_btn">Продать</button>
       </div>
+    </div>
+  </div>
+
+  <!-- ==================== DROP RATE MODAL (Шансы выпадения) ==================== -->
+  <div class="modal-overlay" id="drop-rate-modal">
+    <div class="modal-sheet droprate-sheet">
+      <button class="modal-close" id="drop-rate-close-btn">✕</button>
+      <div class="droprate-item-card" id="droprate-item-card">
+        <img id="droprate-item-image" src="" alt="">
+        <div class="droprate-item-name" id="droprate-item-name">—</div>
+        <div class="droprate-item-rarity" id="droprate-item-rarity">—</div>
+      </div>
+      <div class="droprate-chance-box">
+        <div class="droprate-chance-label" data-i18n="droprate_chance_label">Точный шанс выпадения</div>
+        <div class="droprate-chance-value" id="droprate-chance-value">0%</div>
+      </div>
+      <div class="droprate-price-row">
+        <span data-i18n="droprate_price_label">Примерная стоимость</span>
+        <span id="droprate-item-price">0 💎</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== DAILY STREAK MODAL (Ежедневный бонус) ==================== -->
+  <div class="modal-overlay" id="daily-modal">
+    <div class="modal-sheet daily-sheet">
+      <button class="modal-close" id="daily-close-btn">✕</button>
+      <div class="daily-title" data-i18n="daily_title">🎁 Ежедневный бонус</div>
+      <div class="daily-streak-label" id="daily-streak-label"><!-- "Серия: 3 дня подряд" --></div>
+
+      <div class="daily-days-grid" id="daily-days-grid"><!-- 7 карточек дней, JS --></div>
+
+      <button class="btn-primary full" id="daily-claim-btn" data-i18n="daily_claim_btn">Забрать награду</button>
+      <div class="daily-hint" id="daily-hint" data-i18n="daily_hint">Заходи каждый день, чтобы не потерять серию!</div>
+    </div>
+  </div>
+
+  <!-- ==================== DAILY REWARD RESULT MODAL ==================== -->
+  <div class="modal-overlay" id="daily-result-modal">
+    <div class="modal-sheet win-sheet">
+      <div class="win-title" data-i18n="daily_result_title">🎉 Награда получена!</div>
+      <div class="win-item-card" id="daily-result-card">
+        <div class="daily-result-icon" id="daily-result-icon">💎</div>
+        <div class="win-item-name" id="daily-result-name">—</div>
+        <div class="win-item-price" id="daily-result-value">0 💎</div>
+        <div class="daily-result-promo" id="daily-result-promo" style="display:none;"></div>
+      </div>
+      <button class="btn-primary full" id="daily-result-ok-btn" data-i18n="ok_btn">Отлично!</button>
     </div>
   </div>
 

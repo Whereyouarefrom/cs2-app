@@ -7,6 +7,7 @@ import secrets
 import datetime
 from typing import Optional, List
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -14,6 +15,7 @@ from sqlalchemy import select
 
 from database import async_session, init_db, User, Inventory, PromoCode
 from cases_data import CASES
+from auth import parse_and_verify_init_data, InitDataError
 import config
 
 app = FastAPI(title="CS2 Case Simulator API")
@@ -133,9 +135,36 @@ def build_dynamic_weights(items: list[dict]) -> dict[str, float]:
     return weights
 
 
+# Веса по редкостям генерируются с рандомизацией (random.uniform внутри
+# build_dynamic_weights), поэтому кэшируем результат ОДИН РАЗ на кейс сразу
+# после старта сервера — иначе цена кейса и проценты в модалке "Шансы
+# выпадения" будут отличаться от реальных шансов при каждом новом запросе.
+_CASE_WEIGHTS_CACHE: dict[str, dict[str, float]] = {}
+
+
+def get_case_weights(case_key: str) -> dict[str, float]:
+    if case_key not in _CASE_WEIGHTS_CACHE:
+        _CASE_WEIGHTS_CACHE[case_key] = build_dynamic_weights(CASES[case_key]["items"])
+    return _CASE_WEIGHTS_CACHE[case_key]
+
+
+def get_item_drop_chances(case_key: str) -> dict[str, float]:
+    """Точный % шанса выпадения для каждого предмета конкретного кейса
+    (используется модалкой "Шансы выпадения" на фронте)."""
+    items = CASES[case_key]["items"]
+    weights = get_case_weights(case_key)
+    counts: dict[str, int] = {}
+    for it in items:
+        counts[it["rarity"]] = counts.get(it["rarity"], 0) + 1
+    return {
+        it["name"]: round(weights.get(it["rarity"], 0.0) / counts[it["rarity"]], 4)
+        for it in items
+    }
+
+
 def calculate_case_price(case_key: str) -> float:
     items = CASES[case_key]["items"]
-    weights = build_dynamic_weights(items)
+    weights = get_case_weights(case_key)
 
     by_rarity: dict[str, list[dict]] = {}
     for it in items:
@@ -155,7 +184,7 @@ def calculate_case_price(case_key: str) -> float:
 
 def roll_item(case_key: str) -> dict:
     items = CASES[case_key]["items"]
-    weights = build_dynamic_weights(items)
+    weights = get_case_weights(case_key)
 
     by_rarity: dict[str, list[dict]] = {}
     for it in items:
@@ -201,6 +230,18 @@ def roll_item(case_key: str) -> dict:
 # ============================================
 # Pydantic-схемы
 # ============================================
+class TelegramAuthRequest(BaseModel):
+    init_data: str  # сырая строка Telegram.WebApp.initData (НЕ initDataUnsafe)
+
+
+class DevAuthRequest(BaseModel):
+    """Только для config.DEV_MODE=True — вход без проверки подписи,
+    чтобы можно было тестировать фронтенд вне Telegram."""
+    telegram_id: int
+    username: Optional[str] = "Игрок"
+    photo_url: Optional[str] = None
+
+
 class OpenCaseRequest(BaseModel):
     telegram_id: int
     case_key: str
@@ -292,6 +333,7 @@ async def app_config():
         "adsgram_block_id": config.ADSGRAM_BLOCK_ID,
         "ref_bonus_inviter": config.REF_BONUS_INVITER,
         "ref_bonus_invited": config.REF_BONUS_INVITED,
+        "vip_price_stars": config.VIP_PRICE_STARS,
         "bonus_reward_amount": BONUS_REWARD_AMOUNT,
         "bonus_cooldown_seconds": BONUS_COOLDOWN_SECONDS,
     }
@@ -304,6 +346,7 @@ async def app_config():
 async def get_cases():
     result = []
     for key, case in CASES.items():
+        chances = get_item_drop_chances(key)
         result.append({
             "key": key,
             "name": case["name"],
@@ -315,6 +358,7 @@ async def get_cases():
                     "rarity": i["rarity"],
                     "image": i["image"],
                     "base_price": BASE_PRICE_BY_RARITY[i["rarity"]],
+                    "drop_chance": chances.get(i["name"], 0.0),
                 }
                 for i in sorted(
                     case["items"],
@@ -552,60 +596,148 @@ async def activate_promo(req: PromoRequest):
 
 
 # ============================================
-# 7. GET /api/user/profile
+# 7. Авторизация + Профиль
 # ============================================
+
+async def _build_profile_payload(session, user: User) -> dict:
+    """Единая сборка полного профиля: баланс, VIP, статистика, инвентарь."""
+    result_inv = await session.execute(
+        select(Inventory).where(Inventory.user_id == user.id).order_by(Inventory.obtained_at.desc())
+    )
+    inventory = result_inv.scalars().all()
+
+    total_value = sum(i.skin_price for i in inventory) if inventory else 0
+    most_expensive = max(inventory, key=lambda i: i.skin_price, default=None) if inventory else None
+
+    return {
+        "telegram_id": user.telegram_id,
+        "username": user.username,
+        "photo_url": user.photo_url,
+        "balance": user.balance,
+        "is_vip": user.is_vip,
+        "vip_expires_at": user.vip_expires_at.isoformat() if user.vip_expires_at else None,
+        "lang": user.lang or "ru",
+        "sound_enabled": user.sound_enabled,
+        "total_cases_opened": user.total_cases_opened,
+        "favorite_case": user.favorite_case or "—",
+        "inventory_total_value": round(total_value, 0),
+        "inventory_count": len(inventory),
+        "most_expensive_item": {
+            "name": most_expensive.skin_name,
+            "price": most_expensive.skin_price,
+            "rarity": most_expensive.rarity,
+        } if most_expensive else None,
+        # Полный массив инвентаря — фронту не нужно делать второй запрос,
+        # чтобы отрисовать вкладку "Профиль" сразу после логина.
+        "inventory": [
+            {
+                "id": i.id,
+                "name": i.skin_name,
+                "price": i.skin_price,
+                "rarity": i.rarity,
+                "quality": i.quality,
+                "quality_name": QUALITY_FULL_NAME.get(i.quality, ""),
+                "stattrak": i.stattrak,
+                "float_val": i.float_val,
+                "image": i.image_url,
+                "obtained_from_case": i.obtained_from_case,
+            }
+            for i in inventory
+        ],
+    }
+
+
+async def _get_or_create_user(session, telegram_id: int, username: str, photo_url: Optional[str]) -> User:
+    result = await session.execute(select(User).where(User.telegram_id == telegram_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        # Новый юзер — создаём с дефолтным балансом из config.START_BALANCE
+        user = User(
+            telegram_id=telegram_id,
+            username=username or "Игрок",
+            photo_url=photo_url,
+            balance=config.START_BALANCE,
+            ref_code=secrets.token_hex(4),
+            total_cases_opened=0,
+        )
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+    else:
+        # Существующий юзер — просто освежаем имя/аватар, если Telegram
+        # прислал новые значения (пользователь мог сменить их в настройках).
+        changed = False
+        if username and user.username != username:
+            user.username = username
+            changed = True
+        if photo_url and user.photo_url != photo_url:
+            user.photo_url = photo_url
+            changed = True
+        if changed:
+            await session.commit()
+            await session.refresh(user)
+
+    return user
+
+
+@app.post("/api/auth/telegram")
+async def auth_telegram(req: TelegramAuthRequest):
+    """Основная точка входа в приложение.
+
+    Принимает СЫРУЮ строку Telegram.WebApp.initData (не initDataUnsafe!),
+    проверяет её HMAC-подпись секретом на основе BOT_TOKEN и только после
+    успешной проверки достаёт telegram_id/имя/аватар из подписанных данных.
+    Если юзера с таким telegram_id ещё нет в БД — создаёт его с дефолтным
+    балансом (config.START_BALANCE), если есть — отдаёт его текущие данные.
+    """
+    try:
+        data = parse_and_verify_init_data(req.init_data, config.BOT_TOKEN)
+    except InitDataError as e:
+        raise HTTPException(401, f"Ошибка авторизации Telegram: {e}")
+
+    tg_user = data.get("user")
+    if not tg_user or "id" not in tg_user:
+        raise HTTPException(401, "В initData отсутствуют данные пользователя")
+
+    telegram_id = int(tg_user["id"])
+    display_name = " ".join(
+        p for p in [tg_user.get("first_name"), tg_user.get("last_name")] if p
+    ) or tg_user.get("username") or "Игрок"
+    photo_url = tg_user.get("photo_url")
+
+    async with async_session() as session:
+        user = await _get_or_create_user(session, telegram_id, display_name, photo_url)
+        payload = await _build_profile_payload(session, user)
+        payload["telegram_username"] = tg_user.get("username")  # @handle, если задан в Telegram
+        return payload
+
+
+@app.post("/api/auth/telegram/dev")
+async def auth_telegram_dev(req: DevAuthRequest):
+    """Вход БЕЗ проверки подписи — только для локальной разработки вне
+    Telegram (когда window.Telegram.WebApp.initData пустой, т.е. страница
+    открыта просто в браузере). Работает, только если config.DEV_MODE=True.
+    """
+    if not config.DEV_MODE:
+        raise HTTPException(403, "Dev-вход отключён (config.DEV_MODE=False)")
+
+    async with async_session() as session:
+        user = await _get_or_create_user(session, req.telegram_id, req.username or "Игрок", req.photo_url)
+        return await _build_profile_payload(session, user)
+
+
 @app.get("/api/user/profile")
-async def get_profile(
-    telegram_id: int,
-    username: Optional[str] = "Игрок",
-    photo_url: Optional[str] = None,
-):
+async def get_profile(telegram_id: int):
+    """Лёгкое обновление уже существующего профиля (без авто-создания —
+    юзер должен сперва пройти /api/auth/telegram или /api/auth/telegram/dev).
+    Используется при переключении вкладок, чтобы не гонять initData повторно."""
     async with async_session() as session:
         result = await session.execute(select(User).where(User.telegram_id == telegram_id))
         user = result.scalar_one_or_none()
-
         if not user:
-            user = User(
-                telegram_id=telegram_id,
-                username=username,
-                photo_url=photo_url,
-                balance=config.START_BALANCE,
-                ref_code=secrets.token_hex(4),
-                total_cases_opened=0,
-            )
-            session.add(user)
-            await session.commit()
-            await session.refresh(user)
-        elif photo_url and user.photo_url != photo_url:
-            user.photo_url = photo_url
-            await session.commit()
-
-        result_inv = await session.execute(
-            select(Inventory).where(Inventory.user_id == user.id)
-        )
-        inventory = result_inv.scalars().all()
-
-        total_value = sum(i.skin_price for i in inventory) if inventory else 0
-        most_expensive = max(inventory, key=lambda i: i.skin_price, default=None) if inventory else None
-
-        return {
-            "telegram_id": user.telegram_id,
-            "username": user.username,
-            "photo_url": user.photo_url,
-            "balance": user.balance,
-            "is_vip": user.is_vip,
-            "lang": user.lang or "ru",
-            "sound_enabled": user.sound_enabled,
-            "total_cases_opened": user.total_cases_opened,
-            "favorite_case": user.favorite_case or "—",
-            "inventory_total_value": round(total_value, 0),
-            "most_expensive_item": {
-                "name": most_expensive.skin_name,
-                "price": most_expensive.skin_price,
-                "rarity": most_expensive.rarity,
-            } if most_expensive else None,
-            "inventory_count": len(inventory),
-        }
+            raise HTTPException(404, "Пользователь не найден — сначала выполни вход")
+        return await _build_profile_payload(session, user)
 
 
 # ============================================
@@ -626,6 +758,46 @@ async def update_settings(req: UpdateSettingsRequest):
 
         await session.commit()
         return {"success": True, "lang": user.lang, "sound_enabled": user.sound_enabled}
+
+
+# ============================================
+# 8b. POST /api/vip/create-invoice-link — покупка VIP из Mini App
+# ============================================
+# Telegram Stars нельзя списать напрямую из фронтенда — нужна invoice-ссылка,
+# созданная через Bot API (createInvoiceLink), которую фронт открывает через
+# tg.openInvoiceLink(). Само зачисление VIP происходит НЕ здесь, а в bot.py
+# в обработчике F.successful_payment — Telegram присылает подтверждение
+# оплаты именно боту, а не Mini App.
+class VipInvoiceRequest(BaseModel):
+    telegram_id: int
+
+
+@app.post("/api/vip/create-invoice-link")
+async def create_vip_invoice_link(req: VipInvoiceRequest):
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id == req.telegram_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(404, "Пользователь не найден — сначала выполни вход")
+        if user.is_vip:
+            raise HTTPException(400, "У тебя уже есть VIP-статус")
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{config.BOT_TOKEN}/createInvoiceLink",
+            json={
+                "title": "VIP навсегда",
+                "description": "Отключение рекламы + косметические бонусы. Не влияет на игровые шансы.",
+                "payload": "vip_forever",  # тот же payload, что и в bot.py — обрабатывается там же
+                "currency": "XTR",  # Telegram Stars
+                "prices": [{"label": "VIP навсегда", "amount": config.VIP_PRICE_STARS}],
+            },
+        )
+    payload = resp.json()
+    if not payload.get("ok"):
+        raise HTTPException(502, f"Telegram API вернул ошибку: {payload.get('description', 'unknown')}")
+
+    return {"invoice_link": payload["result"], "price_stars": config.VIP_PRICE_STARS}
 
 
 # ============================================
@@ -756,6 +928,184 @@ async def bonus_claim(req: BonusClaimRequest):
             "reward": BONUS_REWARD_AMOUNT,
             "new_balance": user.balance,
             "cooldown_seconds": BONUS_COOLDOWN_SECONDS,
+        }
+
+
+# ============================================
+# 9c. Ежедневные награды за вход (Daily Streak, 1-7 день)
+# ============================================
+# Правила:
+# - Заходишь и забираешь награду не чаще раза в календарные UTC-сутки.
+# - Если предыдущая награда забрана ВЧЕРА — серия растёт (+1 день, до 7,
+#   дальше цикл начинается заново, серия при этом продолжает расти для статистики).
+# - Если пропустил хотя бы один день — серия сбрасывается на День 1.
+# - Награды: от 10 до 550 💎 Кристалликов, редкий скин (день 5) или
+#   эксклюзивный промокод (день 6); день 7 — джекпот (550 💎 + редкий предмет).
+DAILY_STREAK_REWARDS = [
+    {"day": 1, "type": "balance", "amount": 10},
+    {"day": 2, "type": "balance", "amount": 35},
+    {"day": 3, "type": "balance", "amount": 80},
+    {"day": 4, "type": "balance", "amount": 150},
+    {"day": 5, "type": "skin", "rarity_pool": ["Classified", "Covert"]},
+    {"day": 6, "type": "promo", "amount": 300},
+    {"day": 7, "type": "jackpot", "amount": 550, "rarity_pool": ["Covert", "Knife", "Gloves"]},
+]
+
+# Плоский пул предметов по редкости, собранный из ВСЕХ кейсов — источник
+# "редких скинов" для наград дня 5 и дня 7 (не привязан к конкретному кейсу).
+_ALL_ITEMS_BY_RARITY: dict[str, list[dict]] = {}
+for _case in CASES.values():
+    for _it in _case["items"]:
+        _ALL_ITEMS_BY_RARITY.setdefault(_it["rarity"], []).append(_it)
+
+
+def _roll_bonus_skin(rarity_pool: list[str]) -> dict:
+    available = [r for r in rarity_pool if _ALL_ITEMS_BY_RARITY.get(r)]
+    rarity = random.choice(available) if available else "Classified"
+    item = random.choice(_ALL_ITEMS_BY_RARITY[rarity])
+    quality = random.choices(QUALITIES, weights=[QUALITY_WEIGHTS[q] for q in QUALITIES])[0]
+    price = round(BASE_PRICE_BY_RARITY[rarity] * QUALITY_PRICE_MULTIPLIER[quality])
+    return {
+        "name": item["name"],
+        "rarity": rarity,
+        "image": item["image"],
+        "quality": quality,
+        "quality_name": QUALITY_FULL_NAME[quality],
+        "price": price,
+        "float_val": round(random.uniform(0.00, 1.00), 4),
+        "stattrak": False,
+    }
+
+
+def _daily_day_index(streak: int) -> int:
+    """Переводит номер серии (может расти бесконечно) в день цикла 1-7."""
+    return ((streak - 1) % 7) + 1 if streak > 0 else 1
+
+
+def _grant_daily_reward(session, user: User, day_index: int) -> dict:
+    """Начисляет награду за day_index (1-7) прямо в открытой сессии/транзакции
+    и возвращает данные для отображения на фронте."""
+    reward_def = DAILY_STREAK_REWARDS[day_index - 1]
+    result: dict = {"day": day_index, "type": reward_def["type"]}
+
+    if reward_def["type"] == "balance":
+        amount = reward_def["amount"]
+        user.balance += amount
+        result["amount"] = amount
+
+    elif reward_def["type"] == "skin":
+        skin = _roll_bonus_skin(reward_def["rarity_pool"])
+        session.add(Inventory(
+            user_id=user.id,
+            skin_name=skin["name"], skin_price=skin["price"], rarity=skin["rarity"],
+            quality=skin["quality"], stattrak=skin["stattrak"], float_val=skin["float_val"],
+            image_url=skin["image"], obtained_from_case="Ежедневный бонус 🎁",
+        ))
+        result["skin"] = skin
+
+    elif reward_def["type"] == "promo":
+        amount = reward_def["amount"]
+        code = "DAILY-" + secrets.token_hex(3).upper()
+        session.add(PromoCode(
+            code=code,
+            reward_type="balance",
+            reward_value=str(amount),
+            max_activations=1,
+            expires_at=datetime.datetime.utcnow() + datetime.timedelta(days=14),
+        ))
+        result["amount"] = amount
+        result["promo_code"] = code
+
+    elif reward_def["type"] == "jackpot":
+        amount = reward_def.get("amount", 0)
+        user.balance += amount
+        skin = _roll_bonus_skin(reward_def["rarity_pool"])
+        session.add(Inventory(
+            user_id=user.id,
+            skin_name=skin["name"], skin_price=skin["price"], rarity=skin["rarity"],
+            quality=skin["quality"], stattrak=skin["stattrak"], float_val=skin["float_val"],
+            image_url=skin["image"], obtained_from_case="Ежедневный бонус 🎁 (7 день)",
+        ))
+        result["amount"] = amount
+        result["skin"] = skin
+
+    return result
+
+
+class DailyClaimRequest(BaseModel):
+    telegram_id: int
+
+
+@app.get("/api/daily-status")
+async def daily_status(telegram_id: int):
+    """Статус серии ежедневных наград + превью всех 7 дней (для интерфейса)."""
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id == telegram_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(404, "Пользователь не найден")
+
+        today = datetime.datetime.utcnow().date()
+        last = user.last_daily_claim_at.date() if user.last_daily_claim_at else None
+        claimed_today = last == today
+
+        if claimed_today:
+            upcoming_day = _daily_day_index(user.daily_streak)          # уже выдан сегодня
+        elif last == today - datetime.timedelta(days=1):
+            upcoming_day = _daily_day_index(user.daily_streak + 1)      # завтрашний день серии
+        else:
+            upcoming_day = 1                                            # серия сброшена / первый визит
+
+        rewards_preview = []
+        for reward_def in DAILY_STREAK_REWARDS:
+            preview = {"day": reward_def["day"], "type": reward_def["type"]}
+            if "amount" in reward_def:
+                preview["amount"] = reward_def["amount"]
+            if "rarity_pool" in reward_def:
+                preview["rarity_pool"] = reward_def["rarity_pool"]
+            rewards_preview.append(preview)
+
+        return {
+            "streak": user.daily_streak,
+            "claimed_today": claimed_today,
+            "current_day": upcoming_day,
+            "rewards": rewards_preview,
+        }
+
+
+@app.post("/api/daily-claim")
+async def daily_claim(req: DailyClaimRequest):
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id == req.telegram_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(404, "Пользователь не найден")
+
+        now = datetime.datetime.utcnow()
+        today = now.date()
+        last = user.last_daily_claim_at.date() if user.last_daily_claim_at else None
+
+        if last == today:
+            raise HTTPException(400, "Ежедневный бонус уже получен сегодня. Возвращайся завтра!")
+
+        if last == today - datetime.timedelta(days=1):
+            user.daily_streak += 1     # зашёл вчера и сегодня — серия продолжается
+        else:
+            user.daily_streak = 1      # первый визит или пропуск дня — серия с начала
+
+        day_index = _daily_day_index(user.daily_streak)
+        reward = _grant_daily_reward(session, user, day_index)
+        user.last_daily_claim_at = now
+
+        await session.commit()
+        await session.refresh(user)
+
+        return {
+            "success": True,
+            "day": day_index,
+            "streak": user.daily_streak,
+            "new_balance": user.balance,
+            "reward": reward,
         }
 
 

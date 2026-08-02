@@ -7,14 +7,20 @@ if (tg) { tg.ready(); tg.expand(); }
 
 const API_BASE = "https://cs2-app.onrender.com/api"; // замени на реальный адрес FastAPI
 
-const tgUser = tg?.initDataUnsafe?.user;
+// initDataUnsafe используется ТОЛЬКО для мгновенного отображения плейсхолдера
+// (имя/аватар) ещё до ответа сервера — доверять этим данным для авторизации
+// нельзя, их легко подделать. Настоящий telegram_id приходит только из
+// ответа /api/auth/telegram, где initData проверяется по подписи на бэкенде.
+const tgUserUnsafe = tg?.initDataUnsafe?.user;
 
 const state = {
-  telegramId: tgUser?.id || 123456789, // фолбэк для теста вне Telegram
-  username: tgUser?.first_name || "Игрок",
-  photoUrl: tgUser?.photo_url || null,
+  telegramId: tgUserUnsafe?.id || 123456789, // фолбэк для теста вне Telegram, перезапишется после логина
+  username: tgUserUnsafe?.first_name || "Игрок",
+  photoUrl: tgUserUnsafe?.photo_url || null,
+  authenticated: false,
   balance: 0,
   isVip: false,
+  vipExpiresAt: null,
   lang: "ru",
   soundEnabled: true,
   cases: [],
@@ -25,12 +31,14 @@ const state = {
   pendingDrop: null,
   botUsername: "your_bot_username",
   adsgramBlockId: null,
-  refBonusInviter: 2500,
+  refBonusInviter: 1000,
   refBonusInvited: 1000,
+  vipPriceStars: 150,
   openCount: 1,
   openSpeed: "slow",
   lastMultiDrops: [],
   selectedInventoryIds: new Set(),
+  dailyStatus: null,
 };
 
 // ============================================
@@ -85,6 +93,18 @@ const I18N = {
     miner_desc: "Открывай безопасные клетки на поле 5×5, обходя мины — можно забрать выигрыш в любой момент.",
     tower_desc: "Поднимайся по башне, выбирая безопасную плитку на каждом уровне — чем выше, тем больше множитель.",
     ladder_desc: "Делай шаги по лесенке, выбирая одну из двух плиток — риск выше, но и множитель растёт быстрее.",
+    droprate_chance_label: "Точный шанс выпадения", droprate_price_label: "Примерная стоимость",
+    ok_btn: "Отлично!",
+    daily_title: "🎁 Ежедневный бонус", daily_earn_title: "Ежедневный бонус",
+    daily_earn_desc: "Заходи каждый день — награды растут до 7 дня!",
+    daily_claim_btn: "Забрать награду", daily_claimed_btn: "Уже забрано сегодня",
+    daily_hint: "Заходи каждый день, чтобы не потерять серию! Пропустишь день — серия сбросится.",
+    daily_streak_label: "Серия: {n} дн. подряд", daily_day_label: "День {n}",
+    daily_result_title: "🎉 Награда получена!",
+    daily_reward_skin: "Редкий скин!", daily_reward_promo: "Промокод",
+    daily_reward_jackpot: "Джекпот 7-го дня!",
+    daily_promo_hint: "Активируй его на вкладке «Заработать → Промокод»:",
+    daily_already_claimed_toast: "Ежедневный бонус уже получен сегодня. Возвращайся завтра!",
   },
   en: {
     cases_title: "Cases", inventory_title: "Inventory",
@@ -134,6 +154,18 @@ const I18N = {
     miner_desc: "Reveal safe tiles on a 5×5 field while avoiding mines — cash out anytime.",
     tower_desc: "Climb the tower by picking a safe tile on each level — the higher you go, the bigger the multiplier.",
     ladder_desc: "Step up the ladder by picking one of two tiles — riskier, but the multiplier grows faster.",
+    droprate_chance_label: "Exact drop chance", droprate_price_label: "Approx. value",
+    ok_btn: "Awesome!",
+    daily_title: "🎁 Daily bonus", daily_earn_title: "Daily bonus",
+    daily_earn_desc: "Log in every day — rewards grow up to day 7!",
+    daily_claim_btn: "Claim reward", daily_claimed_btn: "Already claimed today",
+    daily_hint: "Come back every day to keep your streak! Miss a day and it resets.",
+    daily_streak_label: "Streak: {n} days in a row", daily_day_label: "Day {n}",
+    daily_result_title: "🎉 Reward claimed!",
+    daily_reward_skin: "Rare skin!", daily_reward_promo: "Promo code",
+    daily_reward_jackpot: "Day 7 jackpot!",
+    daily_promo_hint: "Activate it on the Earn → Promo code tab:",
+    daily_already_claimed_toast: "Daily bonus already claimed today. Come back tomorrow!",
   },
   uk: {
     cases_title: "Кейси", inventory_title: "Інвентар",
@@ -183,6 +215,18 @@ const I18N = {
     miner_desc: "Відкривай безпечні клітинки на полі 5×5, оминаючи міни — забрати виграш можна будь-коли.",
     tower_desc: "Піднімайся вежею, обираючи безпечну плитку на кожному рівні — що вище, то більший множник.",
     ladder_desc: "Роби кроки драбинкою, обираючи одну з двох плиток — ризик вищий, але й множник росте швидше.",
+    droprate_chance_label: "Точний шанс випадіння", droprate_price_label: "Приблизна вартість",
+    ok_btn: "Чудово!",
+    daily_title: "🎁 Щоденний бонус", daily_earn_title: "Щоденний бонус",
+    daily_earn_desc: "Заходь щодня — нагороди зростають до 7 дня!",
+    daily_claim_btn: "Забрати нагороду", daily_claimed_btn: "Вже забрано сьогодні",
+    daily_hint: "Заходь щодня, щоб не втратити серію! Пропустиш день — серія скинеться.",
+    daily_streak_label: "Серія: {n} дн. поспіль", daily_day_label: "День {n}",
+    daily_result_title: "🎉 Нагороду отримано!",
+    daily_reward_skin: "Рідкісний скін!", daily_reward_promo: "Промокод",
+    daily_reward_jackpot: "Джекпот 7-го дня!",
+    daily_promo_hint: "Активуй його на вкладці «Заробити → Промокод»:",
+    daily_already_claimed_toast: "Щоденний бонус уже отримано сьогодні. Повертайся завтра!",
   },
 };
 
@@ -427,6 +471,7 @@ function openCaseScreen(caseData) {
       </div>
       <div class="contents-item-price">~${fmt(item.base_price)}</div>
     `;
+    el.addEventListener("click", () => showDropRateModal(item));
     list.appendChild(el);
   });
 
@@ -685,6 +730,53 @@ document.getElementById("win-sell-btn").addEventListener("click", async () => {
 });
 
 // ============================================
+// Модалка "Шансы выпадения" — клик по предмету внутри кейса
+// ============================================
+const RARITY_VAR_MAP = {
+  "Consumer": "--rarity-consumer",
+  "Industrial": "--rarity-industrial",
+  "Mil-Spec": "--rarity-milspec",
+  "Restricted": "--rarity-restricted",
+  "Classified": "--rarity-classified",
+  "Covert": "--rarity-covert",
+  "Knife": "--rarity-knife",
+  "Gloves": "--rarity-gloves",
+};
+
+function rarityCssVar(rarity) {
+  const varName = RARITY_VAR_MAP[rarity] || "--rarity-consumer";
+  return getComputedStyle(document.documentElement).getPropertyValue(varName) || "#b0c3d9";
+}
+
+function formatDropChance(chance) {
+  const num = Number(chance) || 0;
+  // редкие предметы могут иметь доли процента (например 0.15%) — показываем с нужной точностью
+  if (num > 0 && num < 0.01) return num.toFixed(4) + "%";
+  if (num > 0 && num < 1) return num.toFixed(2) + "%";
+  return num.toFixed(2) + "%";
+}
+
+function showDropRateModal(item) {
+  document.getElementById("droprate-item-image").src = item.image;
+  document.getElementById("droprate-item-name").textContent = item.name;
+  document.getElementById("droprate-item-rarity").textContent = rarityLabel(item.rarity);
+  document.getElementById("droprate-chance-value").textContent = formatDropChance(item.drop_chance);
+  document.getElementById("droprate-item-price").textContent = fmt(item.base_price);
+
+  const card = document.getElementById("droprate-item-card");
+  card.style.borderColor = rarityCssVar(item.rarity);
+
+  document.getElementById("drop-rate-modal").classList.add("active");
+}
+
+document.getElementById("drop-rate-close-btn").addEventListener("click", () => {
+  document.getElementById("drop-rate-modal").classList.remove("active");
+});
+document.getElementById("drop-rate-modal").addEventListener("click", (e) => {
+  if (e.target.id === "drop-rate-modal") e.currentTarget.classList.remove("active");
+});
+
+// ============================================
 // Инвентарь
 // ============================================
 async function loadInventory() {
@@ -829,51 +921,111 @@ document.getElementById("disintegrate-btn").addEventListener("click", async () =
 // ============================================
 // Профиль
 // ============================================
-async function loadProfile() {
+// ============================================
+// Авторизация через Telegram + отрисовка профиля
+// ============================================
+
+// Применяет ответ бэкенда (auth или profile) к состоянию и обновляет весь UI.
+function applyProfileData(profile) {
+  state.telegramId = profile.telegram_id;
+  state.username = profile.username;
+  state.photoUrl = profile.photo_url || null;
+  state.balance = profile.balance;
+  state.isVip = profile.is_vip;
+  state.vipExpiresAt = profile.vip_expires_at || null;
+  if (Array.isArray(profile.inventory)) state.inventory = profile.inventory;
+
+  if (profile.lang) { state.lang = profile.lang; applyTranslations(); }
+  if (typeof profile.sound_enabled === "boolean") {
+    state.soundEnabled = profile.sound_enabled;
+    updateSoundToggleUI();
+  }
+  updateBalanceDisplay();
+  renderProfileScreen(profile);
+}
+
+// Только отрисовка DOM вкладки "Профиль" — вызывается после каждого
+// обновления данных профиля.
+function renderProfileScreen(profile) {
+  document.getElementById("profile-name").textContent = state.username || "Игрок";
+
+  const usernameEl = document.getElementById("profile-username");
+  if (usernameEl) {
+    usernameEl.textContent = profile.telegram_username ? `@${profile.telegram_username}` : `ID ${state.telegramId}`;
+  }
+
+  const avatarImg = document.getElementById("profile-avatar-img");
+  const avatarFallback = document.getElementById("profile-avatar");
+  if (state.photoUrl) {
+    avatarImg.src = state.photoUrl;
+    avatarImg.style.display = "block";
+    avatarFallback.style.display = "none";
+  } else {
+    avatarImg.style.display = "none";
+    avatarFallback.style.display = "flex";
+  }
+
+  const vipBadge = document.getElementById("profile-vip-pill");
+  if (vipBadge) vipBadge.style.display = state.isVip ? "inline-flex" : "none";
+
+  document.getElementById("stat-cases").textContent = profile.total_cases_opened ?? 0;
+  document.getElementById("stat-inventory-value").textContent = fmt(profile.inventory_total_value ?? 0);
+  document.getElementById("stat-favorite").textContent = profile.favorite_case || "—";
+  document.getElementById("stat-top-drop").textContent =
+    profile.most_expensive_item ? profile.most_expensive_item.name : "—";
+
+  document.getElementById("ref-link-input").value =
+    `https://t.me/${state.botUsername}?start=ref_${state.telegramId}`;
+  document.getElementById("ref-hint").textContent =
+    `+${state.refBonusInviter} 💎 ${state.lang === "en" ? "for you and" : "тебе и"} +${state.refBonusInvited} 💎 ${state.lang === "en" ? "for a friend for every invite" : "другу за каждого приглашённого"}`;
+}
+
+// Реальный логин: один раз при старте приложения. Проверяет initData на
+// бэкенде и создаёт/подтягивает юзера. Если приложение открыто вне Telegram
+// (initData пустой — например, тестирование в обычном браузере), используем
+// dev-эндпоинт, который работает только при config.DEV_MODE=True на сервере.
+async function authenticate() {
   try {
-    const params = new URLSearchParams({
+    if (tg?.initData) {
+      const profile = await apiPost("/auth/telegram", { init_data: tg.initData });
+      state.authenticated = true;
+      applyProfileData(profile);
+      return;
+    }
+    console.warn("Telegram.WebApp.initData пуст — вход через dev-режим (не для продакшна).");
+    const profile = await apiPost("/auth/telegram/dev", {
       telegram_id: state.telegramId,
       username: state.username,
+      photo_url: state.photoUrl,
     });
-    if (state.photoUrl) params.set("photo_url", state.photoUrl);
-
-    const profile = await apiGet(`/user/profile?${params.toString()}`);
-
-    state.balance = profile.balance;
-    state.isVip = profile.is_vip;
-    if (profile.lang) { state.lang = profile.lang; applyTranslations(); }
-    if (typeof profile.sound_enabled === "boolean") {
-      state.soundEnabled = profile.sound_enabled;
-      updateSoundToggleUI();
-    }
-    updateBalanceDisplay();
-
-    document.getElementById("profile-name").textContent = state.username;
-
-    const avatarImg = document.getElementById("profile-avatar-img");
-    const avatarFallback = document.getElementById("profile-avatar");
-    if (state.photoUrl) {
-      avatarImg.src = state.photoUrl;
-      avatarImg.style.display = "block";
-      avatarFallback.style.display = "none";
-    } else {
-      avatarImg.style.display = "none";
-      avatarFallback.style.display = "flex";
-    }
-
-    document.getElementById("stat-cases").textContent = profile.total_cases_opened;
-    document.getElementById("stat-inventory-value").textContent = fmt(profile.inventory_total_value);
-    document.getElementById("stat-favorite").textContent = profile.favorite_case || "—";
-    document.getElementById("stat-top-drop").textContent =
-      profile.most_expensive_item ? profile.most_expensive_item.name : "—";
-
-    document.getElementById("ref-link-input").value =
-      `https://t.me/${state.botUsername}?start=ref_${state.telegramId}`;
-    document.getElementById("ref-hint").textContent =
-      `+${state.refBonusInviter} 💎 ${state.lang === "en" ? "for you and" : "тебе и"} +${state.refBonusInvited} 💎 ${state.lang === "en" ? "for a friend for every invite" : "другу за каждого приглашённого"}`;
+    state.authenticated = true;
+    applyProfileData(profile);
   } catch (e) {
-    console.error("Ошибка загрузки профиля:", e);
+    console.error("Ошибка авторизации:", e);
+    tg?.showAlert?.(
+      state.lang === "en"
+        ? "Login failed. Please reopen the app from Telegram."
+        : "Не удалось войти. Перезапусти приложение через Telegram."
+    );
   }
+}
+
+// Лёгкое обновление уже залогиненного профиля (переключение на вкладку,
+// после покупок/продаж и т.д.) — без повторной проверки initData.
+async function refreshProfile() {
+  if (!state.authenticated) return authenticate();
+  try {
+    const profile = await apiGet(`/user/profile?telegram_id=${state.telegramId}`);
+    applyProfileData(profile);
+  } catch (e) {
+    console.error("Ошибка обновления профиля:", e);
+  }
+}
+
+// Старое имя оставлено как алиас, чтобы не трогать остальные ~30 мест
+// в коде, которые уже вызывают loadProfile() после покупок/продаж/промо.
+async function loadProfile() {
+  await refreshProfile();
 }
 
 document.getElementById("copy-ref-btn").addEventListener("click", () => {
@@ -1047,6 +1199,118 @@ document.getElementById("claim-bonus-btn").addEventListener("click", async () =>
     startBonusCountdown(result.cooldown_seconds);
   } catch (e) {
     tg?.showAlert?.(e?.message || t("ads_unavailable"));
+  }
+});
+
+// ============================================
+// Ежедневный бонус (Daily Streak, 1-7 день)
+// ============================================
+const DAILY_DAY_ICONS = { balance: "💎", skin: "🔫", promo: "🎟️", jackpot: "🏆" };
+
+function dailyRewardLabel(rewardDef) {
+  if (rewardDef.type === "balance") return `${rewardDef.amount} 💎`;
+  if (rewardDef.type === "skin") return t("daily_reward_skin");
+  if (rewardDef.type === "promo") return `${rewardDef.amount} 💎`;
+  if (rewardDef.type === "jackpot") return `${rewardDef.amount} 💎 + 🏆`;
+  return "";
+}
+
+function renderDailyDays(data) {
+  const grid = document.getElementById("daily-days-grid");
+  grid.innerHTML = "";
+  data.rewards.forEach(r => {
+    const isClaimedDay = r.day < data.current_day || (r.day === data.current_day && data.claimed_today);
+    const isCurrent = r.day === data.current_day && !data.claimed_today;
+    const el = document.createElement("div");
+    el.className = `daily-day-card ${isClaimedDay ? "claimed" : ""} ${isCurrent ? "current" : ""} ${r.type === "jackpot" ? "jackpot" : ""}`.trim();
+    el.innerHTML = `
+      <div class="day-num">${t("daily_day_label").replace("{n}", r.day)}</div>
+      <div class="day-icon">${DAILY_DAY_ICONS[r.type] || "💎"}</div>
+      <div class="day-reward">${dailyRewardLabel(r)}</div>
+    `;
+    grid.appendChild(el);
+  });
+
+  document.getElementById("daily-streak-label").innerHTML =
+    t("daily_streak_label").replace("{n}", `<b>${data.streak}</b>`);
+
+  const btn = document.getElementById("daily-claim-btn");
+  btn.textContent = data.claimed_today ? t("daily_claimed_btn") : t("daily_claim_btn");
+  btn.disabled = !!data.claimed_today;
+}
+
+async function loadDailyStatus() {
+  try {
+    const data = await apiGet(`/daily-status?telegram_id=${state.telegramId}`);
+    state.dailyStatus = data;
+    renderDailyDays(data);
+  } catch (e) {
+    console.error("Ошибка загрузки ежедневного статуса:", e);
+  }
+}
+
+function openDailyModal() {
+  document.getElementById("daily-modal").classList.add("active");
+  loadDailyStatus();
+}
+
+document.getElementById("open-daily-modal-btn").addEventListener("click", openDailyModal);
+
+document.getElementById("daily-close-btn").addEventListener("click", () => {
+  document.getElementById("daily-modal").classList.remove("active");
+});
+document.getElementById("daily-modal").addEventListener("click", (e) => {
+  if (e.target.id === "daily-modal") e.currentTarget.classList.remove("active");
+});
+
+function showDailyResult(result) {
+  document.getElementById("daily-modal").classList.remove("active");
+  const reward = result.reward;
+
+  const icon = document.getElementById("daily-result-icon");
+  const nameEl = document.getElementById("daily-result-name");
+  const valueEl = document.getElementById("daily-result-value");
+  const promoEl = document.getElementById("daily-result-promo");
+  promoEl.style.display = "none";
+
+  if (reward.type === "balance") {
+    icon.textContent = "💎";
+    nameEl.textContent = t("daily_day_label").replace("{n}", reward.day);
+    valueEl.textContent = fmt(reward.amount);
+  } else if (reward.type === "skin") {
+    icon.textContent = "🔫";
+    nameEl.textContent = `${t("daily_reward_skin")} ${reward.skin.name}`;
+    valueEl.textContent = fmt(reward.skin.price);
+  } else if (reward.type === "promo") {
+    icon.textContent = "🎟️";
+    nameEl.textContent = t("daily_reward_promo");
+    valueEl.textContent = fmt(reward.amount);
+    promoEl.style.display = "block";
+    promoEl.textContent = `${t("daily_promo_hint")} ${reward.promo_code}`;
+  } else if (reward.type === "jackpot") {
+    icon.textContent = "🏆";
+    nameEl.textContent = `${t("daily_reward_jackpot")} ${reward.skin.name}`;
+    valueEl.textContent = fmt(reward.amount + reward.skin.price);
+  }
+
+  playSound(reward.type === "skin" || reward.type === "jackpot" ? "fanfare" : "win");
+  haptic("success");
+  document.getElementById("daily-result-modal").classList.add("active");
+}
+
+document.getElementById("daily-result-ok-btn").addEventListener("click", () => {
+  document.getElementById("daily-result-modal").classList.remove("active");
+});
+
+document.getElementById("daily-claim-btn").addEventListener("click", async () => {
+  try {
+    const result = await apiPost("/daily-claim", { telegram_id: state.telegramId });
+    state.balance = result.new_balance;
+    updateBalanceDisplay();
+    showDailyResult(result);
+    loadDailyStatus();
+  } catch (e) {
+    tg?.showAlert?.(e?.message || t("daily_already_claimed_toast"));
   }
 });
 
@@ -1900,9 +2164,35 @@ const GAME_TEMPLATES = {
 // ============================================
 // VIP покупка / Розыгрыши — переход в бота
 // ============================================
-document.getElementById("buy-vip-btn").addEventListener("click", () => {
-  tg?.sendData?.(JSON.stringify({ action: "open_vip_purchase" }));
-  tg?.showAlert?.(t("vip_hint"));
+// ============================================
+// Покупка VIP через Telegram Stars — прямо из Mini App
+// ============================================
+document.getElementById("buy-vip-btn").addEventListener("click", async () => {
+  if (state.isVip) {
+    tg?.showAlert?.(state.lang === "en" ? "You already have VIP!" : "У тебя уже есть VIP!");
+    return;
+  }
+  if (!tg?.openInvoiceLink) {
+    // Мы не внутри Telegram (например, тестирование в браузере) — оплата Stars недоступна
+    tg?.showAlert?.(t("vip_hint"));
+    return;
+  }
+
+  try {
+    const { invoice_link } = await apiPost("/vip/create-invoice-link", { telegram_id: state.telegramId });
+    tg.openInvoiceLink(invoice_link, (status) => {
+      // Само зачисление VIP делает бот (см. bot.py: F.successful_payment) —
+      // здесь только обновляем экран после того, как Telegram сообщил об оплате.
+      if (status === "paid") {
+        tg?.showAlert?.(state.lang === "en" ? "Payment successful! VIP activated." : "Оплата прошла успешно! VIP активирован.");
+        refreshProfile();
+      } else if (status === "failed") {
+        tg?.showAlert?.(state.lang === "en" ? "Payment failed." : "Оплата не прошла.");
+      }
+    });
+  } catch (e) {
+    tg?.showAlert?.(e.message || (state.lang === "en" ? "Could not start VIP purchase." : "Не удалось начать покупку VIP."));
+  }
 });
 
 document.getElementById("open-giveaways").addEventListener("click", () => {
@@ -1927,12 +2217,16 @@ document.getElementById("open-giveaways").addEventListener("click", () => {
     state.adsgramBlockId = cfg.adsgram_block_id;
     state.refBonusInviter = cfg.ref_bonus_inviter;
     state.refBonusInvited = cfg.ref_bonus_invited;
+    state.vipPriceStars = cfg.vip_price_stars || state.vipPriceStars;
   } catch (e) {
     console.error("Ошибка загрузки конфигурации:", e);
   }
 
+  // Сначала логинимся (проверка initData на сервере, auto-create юзера) —
+  // остальные запросы используют уже подтверждённый telegram_id.
+  await authenticate();
   await loadCases();
-  await loadProfile(); // подтянет язык/звук с сервера (профиль — источник истины)
   await loadInventory();
   await loadBonusStatus();
+  await loadDailyStatus();
 })();
