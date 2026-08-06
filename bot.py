@@ -9,6 +9,8 @@ import datetime
 import traceback
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
 from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     Message, InlineKeyboardMarkup, InlineKeyboardButton,
@@ -21,12 +23,19 @@ from config import (
     BOT_TOKEN, ADMIN_IDS, WEBAPP_URL, START_BALANCE,
     VIP_PRICE_STARS, REF_BONUS_INVITER, REF_BONUS_INVITED,
 )
-from database import init_db, async_session, User, Inventory, PromoCode
+from database import init_db, close_db, async_session, User, Inventory, PromoCode
 from format_utils import format_balance, format_balance_with_icon
 
 logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=BOT_TOKEN)
+# Явный таймаут на HTTP-сессию бота к Telegram Bot API. Без него зависший
+# сетевой запрос (обрыв соединения, "тихий" таймаут прокси/файрвола) может
+# держать корутину бесконечно — снаружи это выглядит как "бот перестал
+# отвечать", хотя процесс жив. 30с с запасом покрывает long-polling запрос
+# getUpdates (у него у самого timeout=20 в start_polling ниже) и обычные
+# вызовы методов API (send_message и т.п.).
+bot_session = AiohttpSession(timeout=30)
+bot = Bot(token=BOT_TOKEN, session=bot_session)
 dp = Dispatcher()
 
 
@@ -567,10 +576,57 @@ async def setup_bot():
 # ---------------------------------------------------
 # Точка входа
 # ---------------------------------------------------
+# Максимальная задержка между попытками переподключения после сбоя сети —
+# растёт экспоненциально от 2 до 60 секунд, чтобы не долбить Telegram API
+# запросами при длительном обрыве связи, но и не ждать вечно.
+RECONNECT_DELAY_MIN = 2
+RECONNECT_DELAY_MAX = 60
+
+
+async def run_polling_with_reconnect():
+    """Обёртка над dp.start_polling с автоматическим переподключением.
+
+    aiogram 3 сам по себе уже перезапускает getUpdates при большинстве
+    сетевых сбоев внутри start_polling — но если соединение обрывается
+    настолько грубо, что вылетает необработанное исключение (обрыв DNS,
+    долгий сбой сети провайдера и т.п.), раньше это просто убивало
+    процесс/корутину и бот переставал отвечать до ручного рестарта.
+    Теперь любая TelegramNetworkError и прочие сетевые исключения
+    перехватываются, и polling запускается заново с задержкой."""
+    delay = RECONNECT_DELAY_MIN
+    while True:
+        try:
+            await dp.start_polling(
+                bot,
+                # Таймаут одного long-polling запроса getUpdates к Telegram —
+                # без него зависший запрос может держать цикл бесконечно.
+                polling_timeout=20,
+                handle_signals=False,
+            )
+            break  # start_polling завершился штатно (например, dp.stop_polling())
+        except (TelegramNetworkError, TelegramRetryAfter, ConnectionError, TimeoutError) as e:
+            logging.error(f"Сбой сети при polling, переподключение через {delay}с: {e}")
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, RECONNECT_DELAY_MAX)
+        except Exception:
+            # Неожиданная ошибка — логируем целиком, но всё равно пробуем
+            # переподключиться, а не молча "умирать".
+            logging.error("Неожиданная ошибка в polling-цикле:\n" + traceback.format_exc())
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, RECONNECT_DELAY_MAX)
+
+
 async def main():
     await init_db()
     await setup_bot()
-    await dp.start_polling(bot)
+    try:
+        await run_polling_with_reconnect()
+    finally:
+        # Гарантированно закрываем HTTP-сессию бота и пул соединений БД
+        # при остановке процесса — без этого соединения "подвисают" до
+        # истечения собственных таймаутов на стороне Telegram/БД.
+        await bot.session.close()
+        await close_db()
 
 
 if __name__ == "__main__":

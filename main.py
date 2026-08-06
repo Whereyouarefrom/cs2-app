@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from database import async_session, init_db, User, Inventory, PromoCode
+from database import async_session, init_db, close_db, User, Inventory, PromoCode
 from cases_data import CASES
 from auth import parse_and_verify_init_data, InitDataError
 from format_utils import format_balance_with_icon
@@ -32,6 +32,14 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     await init_db()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    # Закрываем пул соединений с БД при штатной остановке процесса
+    # (рестарт деплоя, graceful shutdown uvicorn) — иначе соединения
+    # остаются висеть до истечения серверного idle-таймаута.
+    await close_db()
 
 
 # ============================================
