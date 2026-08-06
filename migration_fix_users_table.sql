@@ -15,6 +15,7 @@ BEGIN;
 
 -- Базовые поля профиля
 ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name VARCHAR;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS photo_url VARCHAR;
 
 -- Баланс / VIP
@@ -50,6 +51,15 @@ END $$;
 -- Статистика
 ALTER TABLE users ADD COLUMN IF NOT EXISTS total_cases_opened INTEGER DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS favorite_case VARCHAR;
+
+-- Пользовательское соглашение
+ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_accepted BOOLEAN DEFAULT FALSE;
+
+-- Топ дроп (самый дорогой предмет за всё время, не привязан к инвентарю)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS top_drop_name VARCHAR;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS top_drop_price DOUBLE PRECISION;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS top_drop_rarity VARCHAR;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS top_drop_image VARCHAR;
 
 -- Ежедневные награды (Daily Streak, ШАГ 3) — новые колонки
 ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_streak INTEGER DEFAULT 0;

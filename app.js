@@ -33,12 +33,19 @@ const state = {
   adsgramBlockId: null,
   refBonusInviter: 1000,
   refBonusInvited: 1000,
-  vipPriceStars: 150,
+  vipPriceStars: 25,
   openCount: 1,
   openSpeed: "slow",
   lastMultiDrops: [],
   selectedInventoryIds: new Set(),
   dailyStatus: null,
+  // ---- Крафт / Trade-Up ----
+  craftFeeByRarity: {},
+  craftItemsRequired: 5,
+  craftCatalog: null,        // {rarity: [{name, rarity, image, base_price}]} — грузится один раз
+  craftSourceRarity: null,   // редкость, которую сейчас собирает игрок (null пока ничего не выбрано)
+  craftSelectedIds: new Set(),
+  craftTargetName: null,
 };
 
 // ============================================
@@ -48,9 +55,21 @@ const I18N = {
   ru: {
     cases_title: "Кейсы", inventory_title: "Инвентарь",
     inventory_empty: "Пока пусто. Открой первый кейс!",
+    terms_title: "📜 Пользовательское соглашение",
+    terms_accept_btn: "Принять и продолжить",
     profile_title: "Профиль", stat_cases: "Открыто кейсов",
     stat_inv_value: "Стоимость инвентаря", stat_favorite: "Любимый кейс",
-    stat_top_drop: "Топ дроп", settings_title: "⚙️ Настройки",
+    stat_top_drop: "🏆 Топ дроп", top_drop_empty: "Пока нет ни одного дропа — открой первый кейс!", settings_title: "⚙️ Настройки",
+    craft_open_btn: "Крафт", craft_title: "🔧 Крафт", craft_progress_sub: "выбрано",
+    craft_rarity_hint: "Выбери 5 предметов ОДНОЙ редкости из инвентаря",
+    craft_source_title: "1. Исходные предметы (инвентарь)",
+    craft_target_title: "2. Целевой предмет (каталог)",
+    craft_fee_label: "Плата за рецепт:", craft_submit_btn: "Скрафтить",
+    craft_result_title: "✨ Скрафчено!",
+    craft_pick_target_hint: "Выбери, что хочешь получить",
+    craft_max_rarity: "Эта редкость уже максимальная — крафтить дальше некуда",
+    craft_success: "Готово! Новый предмет уже в инвентаре",
+    craft_not_enough_balance: "Не хватает 💎 на оплату рецепта",
     settings_lang: "🌐 Язык", settings_sound: "🔊 Звук",
     sound_on: "Вкл", sound_off: "Выкл",
     ref_title: "👥 Реферальная ссылка", copy_btn: "Копировать",
@@ -67,7 +86,7 @@ const I18N = {
     buy_btn: "Купить", tab_cases: "Кейсы", tab_inventory: "Инвентарь",
     tab_profile: "Профиль", tab_minigames: "Мини-игры", tab_earn: "Заработать",
     open_case_btn: "Открыть кейс", contents_title: "📋 Содержимое кейса",
-    win_title: "🎉 Выпало!", keep_btn: "Оставить", sell_btn: "Продать",
+    win_title: "🎉 Выпало!", keep_btn: "В коллекцию", sell_btn: "Продать", open_again_btn: "Открыть ещё",
     insufficient_balance: "Недостаточно Кристалликов 💎. Посмотри рекламу на вкладке «Заработать»!",
     link_copied: "Ссылка скопирована!", sell_label: "Продать",
     upgrade_success: "🎉 Успех! Новая цена:", upgrade_fail: "💥 Неудача. Предмет сгорел.",
@@ -77,8 +96,8 @@ const I18N = {
     giveaways_soon: "Раздел розыгрышей скоро появится здесь!",
     back_btn: "Назад", open_count_label: "Количество открытий", open_speed_label: "Режим скорости",
     speed_slow: "Медленно", speed_fast: "Быстро", sell_all_btn: "Продать всё",
-    select_all_label: "Выделить все", disintegrate_btn: "Распылить выбранное в Кристаллы",
-    disintegrate_success: "Предметы распылены в Кристаллы!", nothing_selected: "Выбери хотя бы один предмет",
+    select_all_label: "Выделить все", disintegrate_btn: "Продать выбранное",
+    disintegrate_success: "Предметы проданы!", nothing_selected: "Выбери хотя бы один предмет",
     open_case_for_btn: "Открыть за",
     games_hub_hint: "Выбери игру", game_rocket: "Ракета", game_upgrader: "Улучшитель",
     game_wheel: "Колесо", game_miner: "Минёр", game_tower: "Башня", game_ladder: "Лесенка",
@@ -109,9 +128,21 @@ const I18N = {
   en: {
     cases_title: "Cases", inventory_title: "Inventory",
     inventory_empty: "Empty for now. Open your first case!",
+    terms_title: "📜 Terms of Service",
+    terms_accept_btn: "Accept and continue",
     profile_title: "Profile", stat_cases: "Cases opened",
     stat_inv_value: "Inventory value", stat_favorite: "Favorite case",
-    stat_top_drop: "Top drop", settings_title: "⚙️ Settings",
+    stat_top_drop: "🏆 Top drop", top_drop_empty: "No drops yet — open your first case!", settings_title: "⚙️ Settings",
+    craft_open_btn: "Craft", craft_title: "🔧 Craft", craft_progress_sub: "selected",
+    craft_rarity_hint: "Pick 5 items of the SAME rarity from your inventory",
+    craft_source_title: "1. Source items (inventory)",
+    craft_target_title: "2. Target item (catalog)",
+    craft_fee_label: "Recipe fee:", craft_submit_btn: "Craft",
+    craft_result_title: "✨ Crafted!",
+    craft_pick_target_hint: "Choose what you want to get",
+    craft_max_rarity: "This rarity is already the highest — nothing to craft up to",
+    craft_success: "Done! New item is in your inventory",
+    craft_not_enough_balance: "Not enough 💎 to pay the recipe fee",
     settings_lang: "🌐 Language", settings_sound: "🔊 Sound",
     sound_on: "On", sound_off: "Off",
     ref_title: "👥 Referral link", copy_btn: "Copy",
@@ -128,7 +159,7 @@ const I18N = {
     buy_btn: "Buy", tab_cases: "Cases", tab_inventory: "Inventory",
     tab_profile: "Profile", tab_minigames: "Games", tab_earn: "Earn",
     open_case_btn: "Open case", contents_title: "📋 Case contents",
-    win_title: "🎉 You got!", keep_btn: "Keep", sell_btn: "Sell",
+    win_title: "🎉 You got!", keep_btn: "To collection", sell_btn: "Sell", open_again_btn: "Open again",
     insufficient_balance: "Not enough 💎 Crystals. Watch an ad on the Earn tab!",
     link_copied: "Link copied!", sell_label: "Sell",
     upgrade_success: "🎉 Success! New price:", upgrade_fail: "💥 Failed. The item is gone.",
@@ -138,8 +169,8 @@ const I18N = {
     giveaways_soon: "Giveaways are coming soon!",
     back_btn: "Back", open_count_label: "Number of openings", open_speed_label: "Speed mode",
     speed_slow: "Slow", speed_fast: "Fast", sell_all_btn: "Sell all",
-    select_all_label: "Select all", disintegrate_btn: "Disintegrate selected into Crystals",
-    disintegrate_success: "Items disintegrated into Crystals!", nothing_selected: "Select at least one item",
+    select_all_label: "Select all", disintegrate_btn: "Sell selected",
+    disintegrate_success: "Items sold!", nothing_selected: "Select at least one item",
     open_case_for_btn: "Open for",
     games_hub_hint: "Pick a game", game_rocket: "Rocket", game_upgrader: "Upgrader",
     game_wheel: "Wheel", game_miner: "Miner", game_tower: "Tower", game_ladder: "Ladder",
@@ -170,9 +201,21 @@ const I18N = {
   uk: {
     cases_title: "Кейси", inventory_title: "Інвентар",
     inventory_empty: "Поки що порожньо. Відкрий перший кейс!",
+    terms_title: "📜 Угода користувача",
+    terms_accept_btn: "Прийняти і продовжити",
     profile_title: "Профіль", stat_cases: "Відкрито кейсів",
     stat_inv_value: "Вартість інвентаря", stat_favorite: "Улюблений кейс",
-    stat_top_drop: "Топ дроп", settings_title: "⚙️ Налаштування",
+    stat_top_drop: "🏆 Топ дроп", top_drop_empty: "Ще немає жодного дропу — відкрий перший кейс!", settings_title: "⚙️ Налаштування",
+    craft_open_btn: "Крафт", craft_title: "🔧 Крафт", craft_progress_sub: "вибрано",
+    craft_rarity_hint: "Обери 5 предметів ОДНІЄЇ рідкості з інвентаря",
+    craft_source_title: "1. Вихідні предмети (інвентар)",
+    craft_target_title: "2. Цільовий предмет (каталог)",
+    craft_fee_label: "Плата за рецепт:", craft_submit_btn: "Скрафтити",
+    craft_result_title: "✨ Скрафчено!",
+    craft_pick_target_hint: "Обери, що хочеш отримати",
+    craft_max_rarity: "Ця рідкість вже максимальна — крафтити далі нікуди",
+    craft_success: "Готово! Новий предмет вже в інвентарі",
+    craft_not_enough_balance: "Не вистачає 💎 на оплату рецепта",
     settings_lang: "🌐 Мова", settings_sound: "🔊 Звук",
     sound_on: "Увім.", sound_off: "Вимк.",
     ref_title: "👥 Реферальне посилання", copy_btn: "Копіювати",
@@ -189,7 +232,7 @@ const I18N = {
     buy_btn: "Купити", tab_cases: "Кейси", tab_inventory: "Інвентар",
     tab_profile: "Профіль", tab_minigames: "Міні-ігри", tab_earn: "Заробити",
     open_case_btn: "Відкрити кейс", contents_title: "📋 Вміст кейса",
-    win_title: "🎉 Випало!", keep_btn: "Залишити", sell_btn: "Продати",
+    win_title: "🎉 Випало!", keep_btn: "У колекцію", sell_btn: "Продати", open_again_btn: "Відкрити ще",
     insufficient_balance: "Недостатньо Кристаликів 💎. Подивись рекламу на вкладці «Заробити»!",
     link_copied: "Посилання скопійовано!", sell_label: "Продати",
     upgrade_success: "🎉 Успіх! Нова ціна:", upgrade_fail: "💥 Невдача. Предмет згорів.",
@@ -199,8 +242,8 @@ const I18N = {
     giveaways_soon: "Розділ розіграшів скоро зʼявиться тут!",
     back_btn: "Назад", open_count_label: "Кількість відкриттів", open_speed_label: "Режим швидкості",
     speed_slow: "Повільно", speed_fast: "Швидко", sell_all_btn: "Продати все",
-    select_all_label: "Виділити все", disintegrate_btn: "Розпилити вибране в Кристалики",
-    disintegrate_success: "Предмети розпилено в Кристалики!", nothing_selected: "Обери хоча б один предмет",
+    select_all_label: "Виділити все", disintegrate_btn: "Продати вибране",
+    disintegrate_success: "Предмети продано!", nothing_selected: "Обери хоча б один предмет",
     open_case_for_btn: "Відкрити за",
     games_hub_hint: "Обери гру", game_rocket: "Ракета", game_upgrader: "Покращувач",
     game_wheel: "Колесо", game_miner: "Мінер", game_tower: "Вежа", game_ladder: "Драбинка",
@@ -247,7 +290,103 @@ function applyTranslations() {
   const soundLabel = document.getElementById("sound-switch-label");
   if (soundLabel) soundLabel.textContent = state.soundEnabled ? t("sound_on") : t("sound_off");
   document.getElementById("earn-ad-desc").textContent = t("earn_ad_desc");
+  applyTermsBodyTranslation();
 }
+
+// ============================================
+// Пользовательское соглашение (Terms of Service)
+// ============================================
+// Текст соглашения содержит HTML (<br><br> для абзацев), поэтому он не
+// проходит через обычный data-i18n/textContent (он бы съел разметку) —
+// хранится отдельно и подставляется через innerHTML.
+const TERMS_TEXT = {
+  ru: `Добро пожаловать! Прежде чем начать, ознакомься с условиями:
+    <br><br>
+    1. Это развлекательное приложение. Все "Кристаллики" 💎 и предметы —
+    исключительно внутриигровые виртуальные объекты, не имеющие реальной
+    денежной стоимости и не подлежащие обмену, продаже или выводу за
+    пределы приложения.
+    <br><br>
+    2. VIP-статус приобретается за Telegram Stars и даёт только
+    косметические/удобные преимущества (отключение рекламы, оформление
+    интерфейса) — он не влияет на шансы выпадения предметов.
+    <br><br>
+    3. Мы сохраняем часть данных твоего профиля Telegram (имя, username,
+    аватар) для работы приложения — реферальной программы, отображения
+    профиля и лидербордов.
+    <br><br>
+    4. Продолжая, ты подтверждаешь, что ознакомился(ась) с условиями
+    использования и согласен(на) с ними.`,
+  en: `Welcome! Before you start, please review the terms:
+    <br><br>
+    1. This is an entertainment app. All 💎 Crystals and items are purely
+    in-app virtual objects with no real-world monetary value, and cannot
+    be exchanged, sold, or withdrawn outside the app.
+    <br><br>
+    2. VIP status is purchased with Telegram Stars and only grants
+    cosmetic/convenience perks (ad removal, interface theme) — it does
+    not affect item drop odds.
+    <br><br>
+    3. We store some of your Telegram profile data (name, username,
+    avatar) to run the app — the referral program, profile display, and
+    leaderboards.
+    <br><br>
+    4. By continuing, you confirm that you have read and agree to these
+    terms of use.`,
+  uk: `Ласкаво просимо! Перш ніж почати, ознайомся з умовами:
+    <br><br>
+    1. Це розважальний застосунок. Усі "Кристалики" 💎 та предмети —
+    виключно внутрішньоігрові віртуальні об'єкти, що не мають реальної
+    грошової вартості і не підлягають обміну, продажу чи виведенню за
+    межі застосунку.
+    <br><br>
+    2. VIP-статус купується за Telegram Stars і дає лише
+    косметичні/зручні переваги (вимкнення реклами, оформлення
+    інтерфейсу) — він не впливає на шанси випадіння предметів.
+    <br><br>
+    3. Ми зберігаємо частину даних твого профілю Telegram (ім'я,
+    username, аватар) для роботи застосунку — реферальної програми,
+    відображення профілю та лідербордів.
+    <br><br>
+    4. Продовжуючи, ти підтверджуєш, що ознайомився(лась) з умовами
+    використання і згоден(на) з ними.`,
+};
+
+function applyTermsBodyTranslation() {
+  const el = document.getElementById("terms-body");
+  if (el) el.innerHTML = TERMS_TEXT[state.lang] || TERMS_TEXT.ru;
+}
+
+// Показывает модалку соглашения, если она ещё не была принята. Источник
+// истины — профиль с бэкенда (profile.terms_accepted), localStorage
+// используется только для МГНОВЕННОГО показа/скрытия при следующих
+// запусках (чтобы не было "мигания" модалки, пока грузится профиль).
+function maybeShowTermsModal(termsAcceptedOnBackend) {
+  const acceptedLocally = localStorage.getItem("cs2_terms_accepted") === "1";
+  if (termsAcceptedOnBackend || acceptedLocally) {
+    localStorage.setItem("cs2_terms_accepted", "1");
+    return;
+  }
+  applyTermsBodyTranslation();
+  document.getElementById("terms-overlay").classList.add("active");
+}
+
+document.getElementById("terms-accept-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("terms-accept-btn");
+  btn.disabled = true;
+  try {
+    await apiPost("/accept-terms", { telegram_id: state.telegramId });
+  } catch (e) {
+    console.error("Не удалось сохранить принятие соглашения на сервере:", e);
+    // Даже если запрос не прошёл (например, нет сети) — не блокируем
+    // пользователя повторно на этом устройстве; на следующем визите
+    // профиль с бэкенда всё равно попробует досинхронизироваться.
+  } finally {
+    localStorage.setItem("cs2_terms_accepted", "1");
+    document.getElementById("terms-overlay").classList.remove("active");
+    btn.disabled = false;
+  }
+});
 
 function setLang(lang) {
   state.lang = lang;
@@ -262,43 +401,162 @@ document.getElementById("lang-switch").addEventListener("click", (e) => {
 });
 
 // ============================================
-// Звук (Web Audio API — синтезированные эффекты, файлы не нужны)
+// Звук (Web Audio API — синтезированные CS2-style эффекты)
 // ============================================
+// ВАЖНО про копирайт: настоящие звуковые файлы CS2/CS:GO принадлежат
+// Valve — встраивать их в проект нельзя. Вместо этого все эффекты
+// синтезируются на лету через Web Audio API (осцилляторы), но подобраны
+// так, чтобы попадать в узнаваемый "фил" CS2: короткие механические
+// клики по UI, дробный "тик-тик-тик" прокрутки рулетки, тревожный
+// низкий сигнал при проигрыше, восходящие фанфары при редком дропе,
+// и отдельный "кассовый" звук при продаже предметов.
 const AudioCtx = window.AudioContext || window.webkitAudioContext;
 let audioCtx = null;
+let audioUnlocked = false;
+let masterCompressor = null;
+
 function ensureAudioCtx() {
-  if (!audioCtx && AudioCtx) audioCtx = new AudioCtx();
-  if (audioCtx?.state === "suspended") audioCtx.resume();
-  return audioCtx;
+  if (!AudioCtx) return null; // браузер вообще не поддерживает Web Audio API
+  try {
+    if (!audioCtx) {
+      audioCtx = new AudioCtx();
+      // Общий компрессор перед выходом на колонки — сглаживает звук и не
+      // даёт эффектам "трещать"/клиппинговать, когда несколько звуков
+      // накладываются друг на друга (например, при мульти-открытии
+      // кейсов, где карточки раскрываются одна за другой с шагом ~220мс).
+      masterCompressor = audioCtx.createDynamicsCompressor();
+      masterCompressor.threshold.value = -18;
+      masterCompressor.knee.value = 24;
+      masterCompressor.ratio.value = 6;
+      masterCompressor.attack.value = 0.003;
+      masterCompressor.release.value = 0.15;
+      masterCompressor.connect(audioCtx.destination);
+    }
+    if (audioCtx.state === "suspended") {
+      // Автовоспроизведение звука до первого клика браузеры блокируют —
+      // resume() можно вызывать сколько угодно раз, он безопасен, если
+      // AudioContext уже создан внутри обработчика пользовательского
+      // жеста (клика/тапа), как здесь.
+      audioCtx.resume().catch(() => {
+        // Тихо игнорируем: значит браузер ещё не считает это жестом
+        // пользователя — звук просто не сыграет в этот раз, это не баг.
+      });
+    }
+    return audioCtx;
+  } catch (err) {
+    console.warn("Web Audio API недоступен, звук отключается:", err);
+    return null;
+  }
 }
+
+// iOS Safari иногда требует ПОЛНОЦЕННОЕ воспроизведение (пусть и
+// беззвучного) буфера внутри самого первого касания, иначе весь
+// AudioContext остаётся "залоченным" даже после resume(). Делаем это
+// один раз при самом первом клике/тапе по приложению.
+function unlockAudioOnce() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  const ctx = ensureAudioCtx();
+  if (!ctx) return;
+  try {
+    const buffer = ctx.createBuffer(1, 1, 22050);
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(ctx.destination);
+    src.start(0);
+  } catch (err) {
+    console.warn("Не удалось разблокировать аудио-контекст:", err);
+  }
+}
+document.addEventListener("pointerdown", unlockAudioOnce, { once: true, capture: true });
 
 function tone(freq, duration, type = "sine", gainStart = 0.15, delay = 0) {
   if (!state.soundEnabled) return;
   const ctx = ensureAudioCtx();
   if (!ctx) return;
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.type = type;
-  osc.frequency.value = freq;
-  const startAt = ctx.currentTime + delay;
-  gain.gain.setValueAtTime(gainStart, startAt);
-  gain.gain.exponentialRampToValueAtTime(0.001, startAt + duration);
-  osc.connect(gain);
-  gain.connect(ctx.destination);
-  osc.start(startAt);
-  osc.stop(startAt + duration);
+  try {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    const startAt = ctx.currentTime + delay;
+    gain.gain.setValueAtTime(gainStart, startAt);
+    gain.gain.exponentialRampToValueAtTime(0.001, startAt + duration);
+    osc.connect(gain);
+    gain.connect(masterCompressor || ctx.destination);
+    osc.start(startAt);
+    osc.stop(startAt + duration);
+  } catch (err) {
+    // Не даём звуку уронить остальной интерфейс — просто пропускаем его
+    console.warn(`Не удалось проиграть звук (${freq}Hz):`, err);
+  }
+}
+
+// Короткий "белый шум" — используется для механического щелчка клика по
+// UI и для кассового "шелеста" при продаже, звучит более "физично",
+// чем чистый осциллятор.
+function noiseBurst(duration, gainStart = 0.12, delay = 0, filterFreq = 3000) {
+  if (!state.soundEnabled) return;
+  const ctx = ensureAudioCtx();
+  if (!ctx) return;
+  try {
+    const bufferSize = Math.floor(ctx.sampleRate * duration);
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = "highpass";
+    filter.frequency.value = filterFreq;
+
+    const gain = ctx.createGain();
+    const startAt = ctx.currentTime + delay;
+    gain.gain.setValueAtTime(gainStart, startAt);
+    gain.gain.exponentialRampToValueAtTime(0.001, startAt + duration);
+
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(masterCompressor || ctx.destination);
+    src.start(startAt);
+  } catch (err) {
+    console.warn("Не удалось проиграть звук (noise):", err);
+  }
 }
 
 const sfx = {
-  click: () => tone(700, 0.05, "square", 0.08),
-  spinTick: () => tone(500 + Math.random() * 200, 0.04, "square", 0.06),
+  // Короткий механический клик по любой кнопке/пункту меню
+  click: () => { tone(700, 0.045, "square", 0.07); noiseBurst(0.02, 0.05, 0, 4000); },
+
+  // "Тик" прокрутки рулетки кейса — короткий, дробный, слегка разной
+  // высоты на каждый вызов (имитирует механическое колесо)
+  spinTick: () => tone(500 + Math.random() * 200, 0.035, "square", 0.06),
+
+  // Щелчок фиксации предмета в центре рулетки
   lock: () => { tone(220, 0.12, "triangle", 0.18); tone(440, 0.1, "triangle", 0.1, 0.05); },
+
+  // Проигрыш / неудачный исход
   lose: () => { tone(220, 0.25, "sawtooth", 0.12); tone(140, 0.3, "sawtooth", 0.12, 0.08); },
+
+  // Победные фанфары — для редких/особо редких предметов (Тайное/Нож/Перчатки)
   fanfare: () => {
-    // победные фанфары для редких/особо редких предметов
     [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, 0.35, "triangle", 0.18, i * 0.09));
+    noiseBurst(0.4, 0.08, 0.05, 1500); // лёгкий "сияющий" шум поверх нот
   },
+
+  // Обычный (не редкий) выигрыш
   win: () => { tone(523.25, 0.15, "triangle", 0.15); tone(659.25, 0.18, "triangle", 0.15, 0.1); },
+
+  // Продажа предмета(ов) — короткий "кассовый" звук: нисходящий шелест
+  // шума + звонкий двойной "дзынь", отдельный от звука выигрыша, чтобы
+  // продажа ощущалась как самостоятельное действие.
+  sell: () => {
+    noiseBurst(0.12, 0.1, 0, 2500);
+    tone(1046.5, 0.08, "sine", 0.12, 0.03);
+    tone(1568.0, 0.1, "sine", 0.1, 0.09);
+  },
 };
 
 // Haptic feedback (Telegram WebApp) — единая точка вызова для всех мини-игр
@@ -348,12 +606,24 @@ document.addEventListener("click", (e) => {
 // Утилиты
 // ============================================
 // Числовая часть без значка — используется там, где 💎 уже вынесен в отдельный элемент (например, в шапке)
+//
+// БАГ, который здесь был исправлен: toLocaleString(..., { maximumFractionDigits: 0 })
+// ОКРУГЛЯЕТ дробную часть до целого — баланс 2003.23 показывался как "2,003"
+// (а 2003.6 вообще превращался в "2,004", то есть баланс визуально "рос" сам
+// по себе). Теперь дробная часть сначала ОТБРАСЫВАЕТСЯ (усечение, а не
+// округление) до 2 знаков через Math.trunc, и уже усечённое число форматируется
+// с фиксированными 2 знаками после запятой — округления вверх больше нет
+// ни при каких значениях баланса.
+function truncateTo2(num) {
+  // Math.trunc всегда отбрасывает "лишнее" в сторону нуля, а не округляет —
+  // 2003.2356 -> 2003.23, а не 2003.24
+  return Math.trunc(num * 100) / 100;
+}
+
 function fmtNumber(n) {
   const num = Number(n) || 0;
-  if (num > 0 && num < 1) {
-    return num.toFixed(2);
-  }
-  return num.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  const truncated = truncateTo2(num);
+  return truncated.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 // Полное отображение суммы со значком Кристалла: 💎 1,250 / 💎 0.15
@@ -405,6 +675,18 @@ function switchScreen(name) {
   document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
   document.getElementById(`screen-${name}`).classList.add("active");
   document.querySelector(`.tab-btn[data-screen="${name}"]`).classList.add("active");
+
+  // Плашка продажи (disintegrate-bar) физически лежит ВНЕ секции
+  // #screen-inventory (она "прилипшая" к низу экрана), поэтому раньше при
+  // переходе на другую вкладку она оставалась видимой, если в инвентаре
+  // были предметы — теперь при уходе с вкладки инвентаря она всегда
+  // принудительно скрывается, а на самой вкладке её видимость зависит
+  // только от того, выделены ли предметы (см. updateInventorySelectionUI).
+  if (name !== "inventory") {
+    document.getElementById("disintegrate-bar").style.display = "none";
+  } else {
+    updateInventorySelectionUI();
+  }
 
   if (name === "inventory") loadInventory();
   if (name === "profile") loadProfile();
@@ -470,8 +752,16 @@ function openCaseScreen(caseData) {
         <div class="contents-item-rarity">${rarityLabel(item.rarity)}</div>
       </div>
       <div class="contents-item-price">~${fmt(item.base_price)}</div>
+      <div class="contents-item-chance-overlay">
+        <span class="contents-item-chance-value">${formatDropChance(item.drop_chance)}</span>
+        <span class="contents-item-chance-sep">|</span>
+        <span class="contents-item-chance-price">${fmtNumber(item.base_price)} 💎</span>
+      </div>
     `;
-    el.addEventListener("click", () => showDropRateModal(item));
+    // Клик по предмету сразу (без закрытия просмотра кейса) показывает
+    // полупрозрачный блюр с точным % шанса и ценой прямо на карточке —
+    // повторный клик скрывает его обратно.
+    el.addEventListener("click", () => el.classList.toggle("revealed"));
     list.appendChild(el);
   });
 
@@ -563,25 +853,44 @@ function showMultiResults(drops) {
   const grid = document.getElementById("multi-results-grid");
   grid.style.display = "grid";
   grid.innerHTML = "";
+  document.getElementById("multi-results-actions").style.display = "none"; // покажем после анимации
+
   let total = 0;
+  const cards = [];
   drops.forEach(drop => {
     total += drop.price;
     const el = document.createElement("div");
-    el.className = `multi-result-card ${rarityClass(drop.rarity)}`;
+    el.className = `multi-result-card ${rarityClass(drop.rarity)} reveal-pending`;
     el.innerHTML = `
       <img src="${drop.image}" alt="${drop.name}" loading="lazy">
       <div class="multi-result-card-name">${drop.name}</div>
       <div class="multi-result-card-price">${fmt(drop.price)}</div>
     `;
     grid.appendChild(el);
+    cards.push({ el, drop });
   });
 
-  document.getElementById("multi-results-total").innerHTML =
-    `${drops.length} × — <b>${fmt(total)}</b>`;
-  document.getElementById("multi-results-actions").style.display = "block";
+  // Вместо мгновенного показа всей сетки — последовательно "открываем"
+  // карточки одну за другой с небольшой задержкой (как будто прокручивается
+  // каждый выбранный кейс), а не моментальный скип всех сразу.
+  const STAGGER_MS = 220;
+  cards.forEach(({ el, drop }, i) => {
+    setTimeout(() => {
+      el.classList.remove("reveal-pending");
+      el.classList.add("revealed-pop");
+      const isRare = ["Covert", "Knife", "Gloves"].includes(drop.rarity);
+      playSound(isRare ? "fanfare" : "spinTick");
+    }, i * STAGGER_MS);
+  });
 
-  const isRare = drops.some(d => ["Covert", "Knife", "Gloves"].includes(d.rarity));
-  playSound(isRare ? "fanfare" : "win");
+  const totalRevealTime = cards.length * STAGGER_MS + 350;
+  setTimeout(() => {
+    document.getElementById("multi-results-total").innerHTML =
+      `${drops.length} × — <b>${fmt(total)}</b>`;
+    document.getElementById("multi-results-actions").style.display = "block";
+    const anyRare = drops.some(d => ["Covert", "Knife", "Gloves"].includes(d.rarity));
+    if (!anyRare) playSound("win");
+  }, totalRevealTime);
 }
 
 document.getElementById("multi-keep-all-btn").addEventListener("click", () => {
@@ -602,6 +911,7 @@ document.getElementById("multi-sell-all-btn").addEventListener("click", async ()
     });
     state.balance = result.new_balance;
     updateBalanceDisplay();
+    playSound("sell");
   } catch (e) {
     tg?.showAlert?.(e.message);
   } finally {
@@ -721,11 +1031,23 @@ document.getElementById("win-sell-btn").addEventListener("click", async () => {
     });
     state.balance = result.new_balance;
     updateBalanceDisplay();
+    playSound("sell");
   } catch (e) {
     tg?.showAlert?.(e.message);
   } finally {
     document.getElementById("win-modal").classList.remove("active");
     state.pendingDrop = null;
+  }
+});
+
+// "Открыть ещё" — закрывает окно результата и сразу возвращает на экран
+// того же кейса, чтобы можно было открыть его снова без лишних кликов.
+document.getElementById("win-open-again-btn").addEventListener("click", () => {
+  document.getElementById("win-modal").classList.remove("active");
+  state.pendingDrop = null;
+  loadProfile();
+  if (state.currentCase) {
+    openCaseScreen(state.currentCase);
   }
 });
 
@@ -810,7 +1132,9 @@ function renderInventory() {
   }
   empty.style.display = "none";
   toolbar.style.display = "flex";
-  disintegrateBar.style.display = "block";
+  // ВАЖНО: плашку здесь больше НЕ показываем принудительно — её видимость
+  // теперь полностью зависит от того, выделены ли предметы прямо сейчас
+  // (см. updateInventorySelectionUI ниже, вызывается в конце этой функции).
 
   grid.innerHTML = "";
   state.inventory.forEach(item => {
@@ -854,6 +1178,7 @@ function renderInventory() {
         state.selectedInventoryIds.delete(id);
         updateBalanceDisplay();
         renderInventory();
+        playSound("sell");
       } catch (e) {
         tg?.showAlert?.(e.message);
       }
@@ -871,6 +1196,7 @@ function updateInventorySelectionUI() {
   const countLabel = document.getElementById("inventory-selected-count");
   const disintegrateBtn = document.getElementById("disintegrate-btn");
   const totalLabel = document.getElementById("disintegrate-total");
+  const disintegrateBar = document.getElementById("disintegrate-bar");
 
   const selectedCount = state.selectedInventoryIds.size;
   const totalCount = state.inventory.length;
@@ -885,6 +1211,12 @@ function updateInventorySelectionUI() {
 
   disintegrateBtn.disabled = selectedCount === 0;
   totalLabel.textContent = selectedCount > 0 ? `— ${fmt(selectedValue)}` : "";
+
+  // Плашка появляется ТОЛЬКО когда есть активное выделение — и только
+  // пока пользователь реально находится на вкладке "Инвентарь" (иначе
+  // switchScreen уже принудительно её скрыл при переходе на другую вкладку).
+  const onInventoryScreen = document.getElementById("screen-inventory").classList.contains("active");
+  disintegrateBar.style.display = (onInventoryScreen && selectedCount > 0) ? "block" : "none";
 }
 
 document.getElementById("inventory-select-all").addEventListener("change", (e) => {
@@ -912,10 +1244,220 @@ document.getElementById("disintegrate-btn").addEventListener("click", async () =
     state.selectedInventoryIds.clear();
     updateBalanceDisplay();
     renderInventory();
+    playSound("sell");
     tg?.showAlert?.(t("disintegrate_success"));
   } catch (e) {
     tg?.showAlert?.(e.message);
   }
+});
+
+// ============================================
+// Крафт / Гарантированный обмен (Trade-Up Contract)
+// ============================================
+// Никакого риска: сервер ГАРАНТИРОВАННО меняет 5 предметов одной редкости
+// + плату за рецепт на 1 предмет следующей редкости, который игрок сам
+// выбирает из каталога заранее — случайность здесь только в "физике"
+// нового экземпляра (качество/float/StatTrak™), как у любого предмета.
+
+const RARITY_ORDER_JS = ["Consumer", "Industrial", "Mil-Spec", "Restricted", "Classified", "Covert", "Gloves", "Knife"];
+
+function nextCraftRarity(rarity) {
+  const idx = RARITY_ORDER_JS.indexOf(rarity);
+  if (idx === -1 || idx + 1 >= RARITY_ORDER_JS.length) return null;
+  return RARITY_ORDER_JS[idx + 1];
+}
+
+async function ensureCraftCatalogLoaded() {
+  if (state.craftCatalog) return;
+  try {
+    const data = await apiGet("/craft-catalog");
+    state.craftCatalog = data.catalog || {};
+  } catch (e) {
+    console.error("Не удалось загрузить каталог крафта:", e);
+    state.craftCatalog = {};
+  }
+}
+
+async function openCraftScreen() {
+  state.craftSourceRarity = null;
+  state.craftSelectedIds = new Set();
+  state.craftTargetName = null;
+  await ensureCraftCatalogLoaded();
+  document.getElementById("craft-screen").classList.add("active");
+  renderCraftSourceGrid();
+  updateCraftProgress();
+}
+
+function closeCraftScreen() {
+  document.getElementById("craft-screen").classList.remove("active");
+}
+
+document.getElementById("craft-open-btn").addEventListener("click", openCraftScreen);
+document.getElementById("craft-back-btn").addEventListener("click", closeCraftScreen);
+
+function renderCraftSourceGrid() {
+  const grid = document.getElementById("craft-source-grid");
+  grid.innerHTML = "";
+
+  state.inventory.forEach(item => {
+    const isSelected = state.craftSelectedIds.has(item.id);
+    // Пока не выбрана "рабочая" редкость — доступны все предметы.
+    // После первого выбора — только предметы ТОЙ ЖЕ редкости, остальные
+    // визуально гаснут (disabled), а после набора 5 штук гаснут и они.
+    const rarityLocked = state.craftSourceRarity && item.rarity !== state.craftSourceRarity;
+    const full = state.craftSelectedIds.size >= state.craftItemsRequired && !isSelected;
+    const disabled = rarityLocked || full;
+
+    const el = document.createElement("div");
+    el.className = `craft-item-card ${rarityClass(item.rarity)}${isSelected ? " selected" : ""}${disabled ? " disabled" : ""}`;
+    el.innerHTML = `
+      <div class="craft-item-card-check">✓</div>
+      <img src="${item.image || ""}" alt="${item.name}">
+      <div class="craft-item-card-name">${item.name}</div>
+      <div class="craft-item-card-price">${fmt(item.price)}</div>
+    `;
+    if (!disabled) {
+      el.addEventListener("click", () => toggleCraftSourceItem(item));
+    }
+    grid.appendChild(el);
+  });
+}
+
+function toggleCraftSourceItem(item) {
+  if (state.craftSelectedIds.has(item.id)) {
+    state.craftSelectedIds.delete(item.id);
+    if (state.craftSelectedIds.size === 0) state.craftSourceRarity = null;
+  } else {
+    if (state.craftSelectedIds.size >= state.craftItemsRequired) return;
+    state.craftSourceRarity = item.rarity;
+    state.craftSelectedIds.add(item.id);
+  }
+  state.craftTargetName = null; // при изменении набора исходников выбор цели сбрасывается
+  renderCraftSourceGrid();
+  updateCraftProgress();
+}
+
+function renderCraftTargetGrid(targetRarity) {
+  const section = document.getElementById("craft-target-section");
+  const grid = document.getElementById("craft-target-grid");
+  const catalog = (state.craftCatalog && state.craftCatalog[targetRarity]) || [];
+
+  if (!catalog.length) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "block";
+  grid.innerHTML = "";
+
+  catalog.forEach(entry => {
+    const isSelected = state.craftTargetName === entry.name;
+    const el = document.createElement("div");
+    el.className = `craft-item-card ${rarityClass(entry.rarity)}${isSelected ? " selected" : ""}`;
+    el.innerHTML = `
+      <div class="craft-item-card-check">✓</div>
+      <img src="${entry.image || ""}" alt="${entry.name}">
+      <div class="craft-item-card-name">${entry.name}</div>
+      <div class="craft-item-card-price">${fmtNumber(entry.base_price)} 💎</div>
+    `;
+    el.addEventListener("click", () => {
+      state.craftTargetName = entry.name;
+      renderCraftTargetGrid(targetRarity);
+      updateCraftSubmitState();
+    });
+    grid.appendChild(el);
+  });
+}
+
+function updateCraftProgress() {
+  const selectedCount = state.craftSelectedIds.size;
+  const total = state.craftItemsRequired;
+  const circumference = 326.7; // 2*pi*52, совпадает со значением в CSS
+
+  const fill = document.getElementById("craft-progress-fill");
+  fill.style.strokeDashoffset = String(circumference * (1 - selectedCount / total));
+  document.getElementById("craft-progress-count").textContent = `${selectedCount}/${total}`;
+
+  const hint = document.getElementById("craft-rarity-hint");
+  const targetSection = document.getElementById("craft-target-section");
+
+  if (selectedCount === 0) {
+    hint.textContent = t("craft_rarity_hint");
+    targetSection.style.display = "none";
+    state.craftTargetName = null;
+  } else if (selectedCount < total) {
+    hint.textContent = `${rarityLabel(state.craftSourceRarity)} — ${selectedCount}/${total}`;
+    targetSection.style.display = "none";
+    state.craftTargetName = null;
+  } else {
+    const targetRarity = nextCraftRarity(state.craftSourceRarity);
+    if (!targetRarity) {
+      hint.textContent = t("craft_max_rarity");
+      targetSection.style.display = "none";
+    } else {
+      hint.textContent = t("craft_pick_target_hint");
+      renderCraftTargetGrid(targetRarity);
+    }
+  }
+
+  updateCraftFeeDisplay();
+  updateCraftSubmitState();
+}
+
+function updateCraftFeeDisplay() {
+  const fee = state.craftSourceRarity ? (state.craftFeeByRarity[state.craftSourceRarity] ?? 0) : 0;
+  document.getElementById("craft-fee-value").textContent = `${fmtNumber(fee)} 💎`;
+}
+
+function updateCraftSubmitState() {
+  const fee = state.craftSourceRarity ? (state.craftFeeByRarity[state.craftSourceRarity] ?? 0) : 0;
+  const ready =
+    state.craftSelectedIds.size === state.craftItemsRequired &&
+    !!state.craftTargetName &&
+    !!nextCraftRarity(state.craftSourceRarity) &&
+    state.balance >= fee;
+  document.getElementById("craft-submit-btn").disabled = !ready;
+}
+
+document.getElementById("craft-submit-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("craft-submit-btn");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  try {
+    const result = await apiPost("/craft", {
+      telegram_id: state.telegramId,
+      inventory_ids: Array.from(state.craftSelectedIds),
+      target_name: state.craftTargetName,
+    });
+
+    state.balance = result.new_balance;
+    state.inventory = state.inventory.filter(i => !state.craftSelectedIds.has(i.id));
+    updateBalanceDisplay();
+
+    const isRare = ["Covert", "Knife", "Gloves"].includes(result.crafted_item.rarity);
+    playSound(isRare ? "fanfare" : "win");
+
+    showCraftResult(result.crafted_item);
+    closeCraftScreen();
+    await loadInventory();
+  } catch (e) {
+    tg?.showAlert?.(e.message || t("craft_not_enough_balance"));
+    updateCraftSubmitState();
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function showCraftResult(item) {
+  document.getElementById("craft-result-image").src = item.image || "";
+  document.getElementById("craft-result-name").textContent = item.name;
+  document.getElementById("craft-result-quality").textContent =
+    `${item.quality_name || ""}${item.stattrak ? " · StatTrak™" : ""}`;
+  document.getElementById("craft-result-price").textContent = fmt(item.price);
+  document.getElementById("craft-result-modal").classList.add("active");
+}
+
+document.getElementById("craft-result-ok-btn").addEventListener("click", () => {
+  document.getElementById("craft-result-modal").classList.remove("active");
 });
 
 // ============================================
@@ -942,6 +1484,7 @@ function applyProfileData(profile) {
   }
   updateBalanceDisplay();
   renderProfileScreen(profile);
+  maybeShowTermsModal(!!profile.terms_accepted);
 }
 
 // Только отрисовка DOM вкладки "Профиль" — вызывается после каждого
@@ -971,8 +1514,22 @@ function renderProfileScreen(profile) {
   document.getElementById("stat-cases").textContent = profile.total_cases_opened ?? 0;
   document.getElementById("stat-inventory-value").textContent = fmt(profile.inventory_total_value ?? 0);
   document.getElementById("stat-favorite").textContent = profile.favorite_case || "—";
-  document.getElementById("stat-top-drop").textContent =
-    profile.most_expensive_item ? profile.most_expensive_item.name : "—";
+
+  // Топ дроп — берём ИМЕННО persisted-поле top_drop с бэкенда (не
+  // most_expensive_item из текущего инвентаря), чтобы карточка не
+  // очищалась после продажи предмета.
+  const topDropCard = document.getElementById("top-drop-card");
+  const topDropEmpty = document.getElementById("top-drop-empty");
+  if (profile.top_drop) {
+    document.getElementById("top-drop-image").src = profile.top_drop.image || "";
+    document.getElementById("top-drop-name").textContent = profile.top_drop.name;
+    document.getElementById("top-drop-price").textContent = fmt(profile.top_drop.price);
+    topDropCard.style.display = "block";
+    topDropEmpty.style.display = "none";
+  } else {
+    topDropCard.style.display = "none";
+    topDropEmpty.style.display = "block";
+  }
 
   document.getElementById("ref-link-input").value =
     `https://t.me/${state.botUsername}?start=ref_${state.telegramId}`;
@@ -2218,6 +2775,13 @@ document.getElementById("open-giveaways").addEventListener("click", () => {
     state.refBonusInviter = cfg.ref_bonus_inviter;
     state.refBonusInvited = cfg.ref_bonus_invited;
     state.vipPriceStars = cfg.vip_price_stars || state.vipPriceStars;
+    state.craftFeeByRarity = cfg.craft_fee_by_rarity || {};
+    state.craftItemsRequired = cfg.craft_items_required || 5;
+    // Раньше загруженная цена VIP из конфига нигде не использовалась —
+    // текст в UI оставался захардкоженным "150 ⭐" даже если бэкенд
+    // отдавал другое значение. Теперь подставляем актуальную цену в лейбл.
+    const vipLabel = document.getElementById("vip-price-label");
+    if (vipLabel) vipLabel.textContent = `${state.vipPriceStars} ⭐ Telegram Stars, навсегда`;
   } catch (e) {
     console.error("Ошибка загрузки конфигурации:", e);
   }

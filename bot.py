@@ -22,6 +22,7 @@ from config import (
     VIP_PRICE_STARS, REF_BONUS_INVITER, REF_BONUS_INVITED,
 )
 from database import init_db, async_session, User, Inventory, PromoCode
+from format_utils import format_balance, format_balance_with_icon
 
 logging.basicConfig(level=logging.INFO)
 
@@ -32,7 +33,10 @@ dp = Dispatcher()
 # ---------------------------------------------------
 # Вспомогательные функции
 # ---------------------------------------------------
-async def get_or_create_user(telegram_id: int, username: str | None, referred_by: int | None = None) -> User:
+async def get_or_create_user(
+    telegram_id: int, username: str | None, referred_by: int | None = None,
+    first_name: str | None = None,
+) -> User:
     async with async_session() as session:
         result = await session.execute(select(User).where(User.telegram_id == telegram_id))
         user = result.scalar_one_or_none()
@@ -44,11 +48,17 @@ async def get_or_create_user(telegram_id: int, username: str | None, referred_by
             user = User(
                 telegram_id=telegram_id,
                 username=username,
+                first_name=first_name,
                 balance=starting_balance,
                 ref_code=str(uuid.uuid4())[:8],
                 referred_by=referred_by,
             )
             session.add(user)
+            await session.commit()
+            await session.refresh(user)
+        elif first_name and user.first_name != first_name:
+            # Освежаем имя, если юзер его сменил в Telegram
+            user.first_name = first_name
             await session.commit()
             await session.refresh(user)
 
@@ -111,6 +121,7 @@ async def cmd_start(message: Message):
         user = await get_or_create_user(
             telegram_id=message.from_user.id,
             username=message.from_user.username,
+            first_name=message.from_user.first_name,
             referred_by=referred_by,
         )
 
@@ -124,7 +135,7 @@ async def cmd_start(message: Message):
             f"Добро пожаловать в <b>CS2 Case Simulator</b> — фановый симулятор открытия кейсов "
             f"без реального вывода денег и скинов.\n"
             f"{bonus_note}\n"
-            f"💰 Твой баланс: <b>{user.balance:.0f} 💎</b>\n\n"
+            f"💰 Твой баланс: <b>{format_balance_with_icon(user.balance)}</b>\n\n"
             f"Жми кнопку ниже, чтобы начать открывать кейсы 👇"
         )
 
@@ -245,7 +256,8 @@ ADMIN_MENU_TEXT = (
     "/stats — общая статистика по всем юзерам в базе\n"
     "/give_crystals &lt;user_id&gt; &lt;amount&gt; — выдать 💎 Кристаллы по TG ID\n"
     "/give_vip &lt;user_id&gt; — выдать VIP-статус навсегда по TG ID\n"
-    "/addpromo &lt;code&gt; &lt;type:value&gt; &lt;max_activations&gt; — создать промокод\n"
+    "/create_promo &lt;code&gt; &lt;reward_crystals&gt; &lt;activations&gt; — создать промокод на 💎\n"
+    "/addpromo &lt;code&gt; &lt;type:value&gt; &lt;max_activations&gt; — создать промокод (case/skin)\n"
     "/user_info &lt;user_id&gt; — подробная информация о пользователе"
 )
 
@@ -279,7 +291,7 @@ async def cmd_stats(message: Message):
             f"👥 Пришло по рефералке: <b>{referred_users}</b>\n"
             f"📦 Всего открыто кейсов: <b>{total_cases}</b>\n"
             f"🎒 Предметов в инвентарях: <b>{total_items}</b>\n"
-            f"💰 Суммарный баланс всех юзеров: <b>{total_balance:,.0f} 💎</b>\n"
+            f"💰 Суммарный баланс всех юзеров: <b>{format_balance_with_icon(total_balance)}</b>\n"
         )
         await message.answer(text, parse_mode="HTML")
 
@@ -315,16 +327,17 @@ async def cmd_give_crystals(message: Message):
         user.balance += amount
         await session.commit()
 
+        sign = "+" if amount > 0 else ""
         await message.answer(
-            f"✅ Пользователю <code>{target_id}</code> начислено <b>{amount:+,.0f} 💎</b>\n"
-            f"Новый баланс: <b>{user.balance:,.0f} 💎</b>",
+            f"✅ Пользователю <code>{target_id}</code> начислено <b>{sign}{format_balance_with_icon(amount)}</b>\n"
+            f"Новый баланс: <b>{format_balance_with_icon(user.balance)}</b>",
             parse_mode="HTML"
         )
 
     try:
         await bot.send_message(
             target_id,
-            f"🎁 Администратор начислил тебе <b>{amount:+,.0f} 💎</b>!",
+            f"🎁 Администратор начислил тебе <b>{sign}{format_balance_with_icon(amount)}</b>!",
             parse_mode="HTML",
         )
     except Exception:
@@ -425,6 +438,62 @@ async def cmd_add_promo(message: Message):
         )
 
 
+@dp.message(Command("create_promo"))
+async def cmd_create_promo(message: Message):
+    """/create_promo <code> <reward_crystals> <activations>
+
+    Упрощённый алиас поверх /addpromo — всегда создаёт промокод с
+    наградой типа "balance" (начисление кристаллов), без необходимости
+    указывать reward_type вручную.
+    """
+    if not is_admin(message.from_user.id):
+        return
+
+    args = message.text.split()
+    if len(args) != 4:
+        await message.answer(
+            "Использование: /create_promo <code> <reward_crystals> <activations>\n\n"
+            "Пример: /create_promo WELCOME2026 1000 500"
+        )
+        return
+
+    code = args[1].upper()
+    try:
+        reward_crystals = float(args[2])
+        max_activations = int(args[3])
+    except ValueError:
+        await message.answer("❌ reward_crystals и activations должны быть числами")
+        return
+
+    if reward_crystals <= 0 or max_activations <= 0:
+        await message.answer("❌ reward_crystals и activations должны быть положительными")
+        return
+
+    async with async_session() as session:
+        existing = await session.execute(select(PromoCode).where(PromoCode.code == code))
+        if existing.scalar_one_or_none():
+            await message.answer(f"❌ Промокод {code} уже существует")
+            return
+
+        promo = PromoCode(
+            code=code,
+            reward_type="balance",
+            reward_value=str(reward_crystals),
+            max_activations=max_activations,
+            used_count=0,
+        )
+        session.add(promo)
+        await session.commit()
+
+        await message.answer(
+            f"✅ Промокод создан:\n"
+            f"Код: <code>{code}</code>\n"
+            f"Награда: {format_balance_with_icon(reward_crystals)}\n"
+            f"Лимит активаций: {max_activations}",
+            parse_mode="HTML"
+        )
+
+
 @dp.message(Command("user_info"))
 async def cmd_user_info(message: Message):
     if not is_admin(message.from_user.id):
@@ -454,7 +523,7 @@ async def cmd_user_info(message: Message):
         await message.answer(
             f"👤 <b>Пользователь {target_id}</b>\n\n"
             f"Username: @{user.username or '—'}\n"
-            f"Баланс: {user.balance:,.0f} 💎\n"
+            f"Баланс: {format_balance_with_icon(user.balance)}\n"
             f"VIP: {'✅ навсегда' if (user.is_vip and not user.vip_expires_at) else ('✅ до ' + user.vip_expires_at.strftime('%d.%m.%Y') if user.is_vip else '❌')}\n"
             f"Кейсов открыто: {user.total_cases_opened}\n"
             f"Предметов в инвентаре: {inv_count}\n"

@@ -36,7 +36,10 @@
 
     <!-- INVENTORY SCREEN -->
     <section class="screen" id="screen-inventory">
-      <h1 class="screen-title" data-i18n="inventory_title">Инвентарь</h1>
+      <div class="screen-title-row">
+        <h1 class="screen-title" data-i18n="inventory_title">Инвентарь</h1>
+        <button class="craft-open-btn" id="craft-open-btn">🔧 <span data-i18n="craft_open_btn">Крафт</span></button>
+      </div>
 
       <div class="inventory-toolbar" id="inventory-toolbar" style="display:none;">
         <label class="select-all-row">
@@ -55,7 +58,7 @@
     <!-- disintegrate selected -> crystals, sticky bottom bar -->
     <div class="disintegrate-bar" id="disintegrate-bar" style="display:none;">
       <button class="btn-primary full" id="disintegrate-btn" disabled>
-        <span data-i18n="disintegrate_btn">Распылить выбранное в Кристаллы</span> 💎
+        <span data-i18n="disintegrate_btn">Продать выбранное</span> 💎
         <span id="disintegrate-total"></span>
       </button>
     </div>
@@ -87,10 +90,25 @@
           <div class="stat-label" data-i18n="stat_favorite">Любимый кейс</div>
           <div class="stat-value small" id="stat-favorite">—</div>
         </div>
-        <div class="stat-box highlight">
-          <div class="stat-label" data-i18n="stat_top_drop">Топ дроп</div>
-          <div class="stat-value small" id="stat-top-drop">—</div>
+      </div>
+
+      <!-- ТОП ДРОП — самый дорогой предмет, КОГДА-ЛИБО выпавший игроку.
+           Хранится отдельно на бэкенде (User.top_drop_*) и НЕ пересчитывается
+           из текущего инвентаря — поэтому продажа предмета не убирает его
+           из этой карточки. -->
+      <div class="top-drop-card" id="top-drop-card" style="display:none;">
+        <div class="top-drop-label" data-i18n="stat_top_drop">🏆 Топ дроп</div>
+        <div class="top-drop-content">
+          <img id="top-drop-image" src="" alt="">
+          <div class="top-drop-info">
+            <div class="top-drop-name" id="top-drop-name">—</div>
+            <div class="top-drop-price" id="top-drop-price">0 💎</div>
+          </div>
         </div>
+      </div>
+      <div class="top-drop-card top-drop-empty" id="top-drop-empty" style="display:none;">
+        <div class="top-drop-label" data-i18n="stat_top_drop">🏆 Топ дроп</div>
+        <div class="top-drop-empty-text" data-i18n="top_drop_empty">Пока нет ни одного дропа — открой первый кейс!</div>
       </div>
 
       <div class="settings-block">
@@ -209,7 +227,7 @@
         <div class="earn-info">
           <div class="earn-title" data-i18n="earn_vip_title">VIP-статус</div>
           <div class="earn-desc" data-i18n="earn_vip_desc">Без рекламы + косметические бонусы</div>
-          <div class="earn-desc" id="vip-price-label">150 ⭐ Telegram Stars, навсегда</div>
+          <div class="earn-desc" id="vip-price-label">25 ⭐ Telegram Stars, навсегда</div>
         </div>
         <button class="btn-secondary small" id="buy-vip-btn" data-i18n="buy_btn">Купить</button>
       </div>
@@ -329,8 +347,9 @@
         <div class="win-item-price" id="win-item-price">0 💎</div>
       </div>
       <div class="win-actions">
-        <button class="btn-secondary" id="win-keep-btn" data-i18n="keep_btn">Оставить</button>
+        <button class="btn-secondary" id="win-keep-btn" data-i18n="keep_btn">В коллекцию</button>
         <button class="btn-primary" id="win-sell-btn" data-i18n="sell_btn">Продать</button>
+        <button class="btn-secondary" id="win-open-again-btn" data-i18n="open_again_btn">Открыть ещё</button>
       </div>
     </div>
   </div>
@@ -388,6 +407,103 @@
     <div class="interstitial-box">
       <div class="interstitial-label">Реклама Adsgram</div>
       <div class="interstitial-timer" id="interstitial-timer">5</div>
+    </div>
+  </div>
+
+  <!-- ==================== ПОЛЬЗОВАТЕЛЬСКОЕ СОГЛАШЕНИЕ (Terms of Service) ====================
+       Показывается ОДИН РАЗ при самом первом входе (пока terms_accepted=false
+       и в БД, и в localStorage). Закрыть его иначе, чем нажатием "Принять",
+       нельзя намеренно — ни клик по фону, ни системная кнопка "назад" его
+       не скрывают, поэтому здесь нет модификатора .modal-overlay (там есть
+       закрытие по клику на фон) — используется отдельный, немодифицируемый
+       извне класс. -->
+  <div class="terms-overlay" id="terms-overlay">
+    <div class="terms-sheet">
+      <div class="terms-title" data-i18n="terms_title">📜 Пользовательское соглашение</div>
+      <div class="terms-body" id="terms-body">
+        Добро пожаловать! Прежде чем начать, ознакомься с условиями:
+        <br><br>
+        1. Это развлекательное приложение. Все "Кристаллики" 💎 и предметы —
+        исключительно внутриигровые виртуальные объекты, не имеющие
+        реальной денежной стоимости и не подлежащие обмену, продаже или
+        выводу за пределы приложения.
+        <br><br>
+        2. VIP-статус приобретается за Telegram Stars и даёт только
+        косметические/удобные преимущества (отключение рекламы, оформление
+        интерфейса) — он не влияет на шансы выпадения предметов.
+        <br><br>
+        3. Мы сохраняем часть данных твоего профиля Telegram (имя,
+        username, аватар) для работы приложения — реферальной программы,
+        отображения профиля и лидербордов.
+        <br><br>
+        4. Продолжая, ты подтверждаешь, что ознакомился(ась) с условиями
+        использования и согласен(на) с ними.
+      </div>
+      <button class="btn-primary full" id="terms-accept-btn" data-i18n="terms_accept_btn">Принять и продолжить</button>
+    </div>
+  </div>
+
+  <!-- ==================== КРАФТ / ГАРАНТИРОВАННЫЙ ОБМЕН (Trade-Up) ====================
+       Полноэкранный оверлей (как case-open-screen) — открывается кнопкой
+       "🔧 Крафт" на вкладке инвентаря. Никакого риска: 5 предметов одной
+       редкости + небольшая плата гарантированно превращаются в 1 выбранный
+       игроком предмет следующей редкости. -->
+  <div class="craft-screen" id="craft-screen">
+    <div class="craft-header">
+      <button class="back-btn" id="craft-back-btn">←</button>
+      <div class="craft-header-title" data-i18n="craft_title">🔧 Крафт</div>
+    </div>
+
+    <div class="craft-body">
+      <!-- Круговой индикатор прогресса рецепта (X/5 выбрано) -->
+      <div class="craft-progress-wrap">
+        <svg viewBox="0 0 120 120" class="craft-progress-ring">
+          <circle class="craft-progress-track" cx="60" cy="60" r="52"></circle>
+          <circle class="craft-progress-fill" id="craft-progress-fill" cx="60" cy="60" r="52"></circle>
+        </svg>
+        <div class="craft-progress-label">
+          <div class="craft-progress-count" id="craft-progress-count">0/5</div>
+          <div class="craft-progress-sub" data-i18n="craft_progress_sub">выбрано</div>
+        </div>
+      </div>
+
+      <div class="craft-rarity-hint" id="craft-rarity-hint" data-i18n="craft_rarity_hint">
+        Выбери 5 предметов ОДНОЙ редкости
+      </div>
+
+      <!-- Шаг 1: выбор 5 исходных предметов из инвентаря -->
+      <div class="craft-section" id="craft-source-section">
+        <div class="craft-section-title" data-i18n="craft_source_title">1. Исходные предметы (инвентарь)</div>
+        <div class="craft-source-grid" id="craft-source-grid"><!-- injected by JS --></div>
+      </div>
+
+      <!-- Шаг 2: выбор целевого предмета из каталога следующей редкости -->
+      <div class="craft-section" id="craft-target-section" style="display:none;">
+        <div class="craft-section-title" data-i18n="craft_target_title">2. Целевой предмет (каталог)</div>
+        <div class="craft-target-grid" id="craft-target-grid"><!-- injected by JS --></div>
+      </div>
+    </div>
+
+    <div class="craft-footer">
+      <div class="craft-fee-row">
+        <span data-i18n="craft_fee_label">Плата за рецепт:</span>
+        <span id="craft-fee-value">— 💎</span>
+      </div>
+      <button class="btn-primary full" id="craft-submit-btn" disabled data-i18n="craft_submit_btn">Скрафтить</button>
+    </div>
+  </div>
+
+  <!-- ==================== РЕЗУЛЬТАТ КРАФТА ==================== -->
+  <div class="modal-overlay" id="craft-result-modal">
+    <div class="modal-sheet win-sheet">
+      <div class="win-title" data-i18n="craft_result_title">✨ Скрафчено!</div>
+      <div class="win-item-card" id="craft-result-card">
+        <img id="craft-result-image" src="" alt="">
+        <div class="win-item-name" id="craft-result-name">—</div>
+        <div class="win-item-quality" id="craft-result-quality"></div>
+        <div class="win-item-price" id="craft-result-price">0 💎</div>
+      </div>
+      <button class="btn-primary full" id="craft-result-ok-btn" data-i18n="ok_btn">Отлично!</button>
     </div>
   </div>
 

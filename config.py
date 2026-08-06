@@ -44,7 +44,7 @@ START_BALANCE = 500
 #         в обычном браузере, а не только внутри Telegram.
 # False — ОБЯЗАТЕЛЬНО поставь False перед продакшн-деплоем, иначе
 #         кто угодно сможет залогиниться под произвольным telegram_id.
-DEV_MODE = True
+DEV_MODE = False
 
 # Бонус рефереру и приглашённому (в 💎 Кристалликах)
 # Пригласившему начисляется автоматически при регистрации друга по реф-ссылке.
@@ -52,7 +52,7 @@ REF_BONUS_INVITER = 1000
 REF_BONUS_INVITED = 1000
 
 # Цена VIP-статуса в Telegram Stars — зафиксирована: только "навсегда".
-VIP_PRICE_STARS = 150
+VIP_PRICE_STARS = 25
 
 # Путь к базе данных SQLite
 DATABASE_URL = "sqlite+aiosqlite:///./cs2_simulator.db"

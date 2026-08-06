@@ -24,6 +24,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     telegram_id = Column(BigInteger, unique=True, nullable=False, index=True)
     username = Column(String, nullable=True)
+    first_name = Column(String, nullable=True)         # имя из Telegram initData
     photo_url = Column(String, nullable=True)         # аватар из Telegram WebApp
 
     balance = Column(Float, default=500.0)           # виртуальный баланс (Кристаллики 💎)
@@ -38,6 +39,17 @@ class User(Base):
 
     total_cases_opened = Column(Integer, default=0)
     favorite_case = Column(String, nullable=True)
+
+    # ---- Пользовательское соглашение (Terms of Service) ----
+    terms_accepted = Column(Boolean, default=False)
+
+    # ---- Топ дроп: самый дорогой предмет, КОГДА-ЛИБО выпавший игроку.
+    # Хранится отдельно от инвентаря и НЕ уменьшается/не исчезает при
+    # продаже предмета — обновляется только если новый дроп дороже текущего.
+    top_drop_name = Column(String, nullable=True)
+    top_drop_price = Column(Float, nullable=True)
+    top_drop_rarity = Column(String, nullable=True)
+    top_drop_image = Column(String, nullable=True)
 
     # ---- Ежедневные награды за вход (Daily Streak, 1-7 день) ----
     daily_streak = Column(Integer, default=0)               # текущая серия дней подряд

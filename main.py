@@ -16,6 +16,7 @@ from sqlalchemy import select
 from database import async_session, init_db, User, Inventory, PromoCode
 from cases_data import CASES
 from auth import parse_and_verify_init_data, InitDataError
+from format_utils import format_balance_with_icon
 import config
 
 app = FastAPI(title="CS2 Case Simulator API")
@@ -163,6 +164,31 @@ def get_item_drop_chances(case_key: str) -> dict[str, float]:
 
 
 def calculate_case_price(case_key: str) -> float:
+    """Возвращает цену кейса в 💎.
+
+    ВАЖНО: раньше цена считалась как expected_value / target_rtp без верхней
+    границы — из-за высокой базовой цены ножей/перчаток (BASE_PRICE_BY_RARITY)
+    цена кейса могла улетать далеко за пределы разумного (тысячи и десятки
+    тысяч 💎). Теперь цены всех кейсов в каталоге нормализуются в единый
+    диапазон 100–999 💎: самый "дешёвый" по ожидаемой ценности контента кейс
+    стоит 100 💎, самый "дорогой" — 999 💎, остальные — линейно между ними.
+    Это гарантирует и то, что при открытии списывается ровно эта же сумма
+    (open_case ниже использует эту же функцию), и то, что каталог всегда
+    отсортирован в разумных пределах, сколько бы кейсов ни было (3 сид-кейса
+    или полный список из sync_cases.py).
+    """
+    return _case_price_map().get(case_key, CASE_PRICE_MIN)
+
+
+CASE_PRICE_MIN = 100
+CASE_PRICE_MAX = 999
+
+_CASE_PRICE_CACHE: dict[str, float] = {}
+
+
+def _raw_case_expected_value(case_key: str) -> float:
+    """Сырая ожидаемая ценность содержимого кейса (для ранжирования цен
+    между собой — сама по себе эта величина пользователю не показывается)."""
     items = CASES[case_key]["items"]
     weights = get_case_weights(case_key)
 
@@ -176,10 +202,65 @@ def calculate_case_price(case_key: str) -> float:
         per_item_weight = rarity_weight / len(group)
         for _ in group:
             expected_value += (per_item_weight / 100) * BASE_PRICE_BY_RARITY[rarity]
+    return expected_value
 
-    target_rtp = 0.70  # ~70% возврата — казино-баланс виртуальной экономики
-    price = expected_value / target_rtp
-    return round(price, -1) or 10.0  # округляем до десятков 💎
+
+def _case_price_map() -> dict[str, float]:
+    """Считает и кэширует нормализованные цены (100–999 💎) один раз для
+    всех кейсов сразу — иначе относительное ранжирование "дешевле/дороже"
+    между кейсами было бы невозможно посчитать по одному кейсу за раз."""
+    if _CASE_PRICE_CACHE:
+        return _CASE_PRICE_CACHE
+
+    raw_values = {key: _raw_case_expected_value(key) for key in CASES}
+    if not raw_values:
+        return _CASE_PRICE_CACHE
+
+    min_v = min(raw_values.values())
+    max_v = max(raw_values.values())
+
+    for key, v in raw_values.items():
+        if max_v == min_v:
+            # Единственный кейс в каталоге (или все с одинаковой EV) —
+            # ставим нижнюю границу диапазона.
+            price = CASE_PRICE_MIN
+        else:
+            ratio = (v - min_v) / (max_v - min_v)
+            price = CASE_PRICE_MIN + ratio * (CASE_PRICE_MAX - CASE_PRICE_MIN)
+        # округляем до десятков для красоты (100, 250, 470, 999 и т.п.),
+        # затем на всякий случай подрезаем обратно в границы диапазона
+        price = round(price / 10) * 10
+        price = max(CASE_PRICE_MIN, min(CASE_PRICE_MAX, price))
+        _CASE_PRICE_CACHE[key] = float(price)
+
+    return _CASE_PRICE_CACHE
+
+
+def _roll_item_instance(name: str, rarity: str, image: str) -> dict:
+    """Собирает конкретный экземпляр предмета (качество, StatTrak™, float,
+    итоговая цена) для уже ВЫБРАННЫХ имени/редкости/картинки. Вынесено из
+    roll_item(), чтобы этой же логикой мог пользоваться крафт (там имя и
+    редкость предмета уже известны заранее — рандомна только "физика"
+    конкретного экземпляра, а не сам факт получения предмета)."""
+    quality = random.choices(QUALITIES, weights=[QUALITY_WEIGHTS[q] for q in QUALITIES])[0]
+    stattrak = rarity in STATTRAK_ELIGIBLE_RARITIES and random.random() < STATTRAK_CHANCE
+
+    base_price = BASE_PRICE_BY_RARITY[rarity]
+    price = base_price * QUALITY_PRICE_MULTIPLIER[quality]
+    if stattrak:
+        price *= STATTRAK_MULTIPLIER
+    price = round(price)
+
+    return {
+        "name": name,
+        "rarity": rarity,
+        "image": image,
+        "quality": quality,
+        "quality_name": QUALITY_FULL_NAME[quality],
+        "price": price,
+        "float_val": round(random.uniform(0.00, 1.00), 4),
+        "stattrak": stattrak,
+    }
 
 
 def roll_item(case_key: str) -> dict:
@@ -201,30 +282,171 @@ def roll_item(case_key: str) -> dict:
             break
 
     chosen = random.choice(by_rarity[chosen_rarity])
+    return _roll_item_instance(chosen["name"], chosen_rarity, chosen["image"])
 
-    quality = random.choices(QUALITIES, weights=[QUALITY_WEIGHTS[q] for q in QUALITIES])[0]
 
-    stattrak = (
-        chosen_rarity in STATTRAK_ELIGIBLE_RARITIES
-        and random.random() < STATTRAK_CHANCE
-    )
+# ============================================
+# КРАФТ / ГАРАНТИРОВАННЫЙ ОБМЕН (Trade-Up Contract)
+# ============================================
+# Честная механика без риска: игрок отдаёт 5 предметов ОДНОЙ редкости +
+# небольшую плату за рецепт — и ГАРАНТИРОВАННО получает 1 предмет
+# следующей по старшинству редкости (сам конкретный предмет из каталога
+# этой редкости выбирает игрок заранее на фронте — рандома в исходе нет
+# вообще, только "физика" экземпляра — качество/float/StatTrak, как и у
+# любого другого предмета в инвентаре).
 
-    base_price = BASE_PRICE_BY_RARITY[chosen_rarity]
-    price = base_price * QUALITY_PRICE_MULTIPLIER[quality]
-    if stattrak:
-        price *= STATTRAK_MULTIPLIER
-    price = round(price)
+CRAFT_ITEMS_REQUIRED = 5
 
-    return {
-        "name": chosen["name"],
-        "rarity": chosen_rarity,
-        "image": chosen["image"],
-        "quality": quality,
-        "quality_name": QUALITY_FULL_NAME[quality],
-        "price": price,
-        "float_val": round(random.uniform(0.00, 1.00), 4),
-        "stattrak": stattrak,
-    }
+# Плата за рецепт в 💎 — небольшая по сравнению со стоимостью результата,
+# растёт вместе с редкостью исходных предметов.
+CRAFT_FEE_BY_RARITY = {
+    "Consumer": 10,
+    "Industrial": 20,
+    "Mil-Spec": 40,
+    "Restricted": 80,
+    "Classified": 150,
+    "Covert": 300,
+    "Gloves": 500,
+    # Knife — уже максимальная редкость, крафт из неё недоступен (см. проверку ниже)
+}
+
+
+def _next_craft_rarity(rarity: str) -> Optional[str]:
+    """Следующая по старшинству редкость для трейд-апа. None — если
+    редкость уже максимальная (Knife) и апгрейдить дальше некуда."""
+    try:
+        idx = RARITY_ORDER.index(rarity)
+    except ValueError:
+        return None
+    if idx + 1 >= len(RARITY_ORDER):
+        return None
+    return RARITY_ORDER[idx + 1]
+
+
+_CRAFT_CATALOG_CACHE: dict[str, list[dict]] = {}
+
+
+def _craft_catalog_by_rarity() -> dict[str, list[dict]]:
+    """Уникальные предметы (по имени) для каждой редкости, собранные из
+    всех кейсов сразу — это и есть "общий каталог предметов" для крафта."""
+    if _CRAFT_CATALOG_CACHE:
+        return _CRAFT_CATALOG_CACHE
+    seen: dict[str, set] = {}
+    for case in CASES.values():
+        for it in case["items"]:
+            rarity = it["rarity"]
+            seen.setdefault(rarity, set())
+            if it["name"] in seen[rarity]:
+                continue
+            seen[rarity].add(it["name"])
+            _CRAFT_CATALOG_CACHE.setdefault(rarity, []).append({
+                "name": it["name"],
+                "rarity": rarity,
+                "image": it["image"],
+                "base_price": BASE_PRICE_BY_RARITY[rarity],
+            })
+    return _CRAFT_CATALOG_CACHE
+
+
+class CraftRequest(BaseModel):
+    telegram_id: int
+    inventory_ids: List[int]
+    target_name: str
+
+
+@app.get("/api/craft-catalog")
+async def get_craft_catalog():
+    """Каталог предметов, доступных как цель крафта, сгруппированный по
+    редкости — фронт использует его, чтобы показать игроку, что именно он
+    получит ДО того, как тот подтвердит крафт (никакой неожиданности в
+    исходе, только сам предмет заранее известен)."""
+    return {"catalog": _craft_catalog_by_rarity()}
+
+
+@app.post("/api/craft")
+async def craft_item(req: CraftRequest):
+    if len(req.inventory_ids) != CRAFT_ITEMS_REQUIRED:
+        raise HTTPException(400, f"Для крафта нужно ровно {CRAFT_ITEMS_REQUIRED} предметов")
+    if len(set(req.inventory_ids)) != CRAFT_ITEMS_REQUIRED:
+        raise HTTPException(400, "Предметы не должны повторяться")
+
+    async with async_session() as session:
+        result_user = await session.execute(select(User).where(User.telegram_id == req.telegram_id))
+        user = result_user.scalar_one_or_none()
+        if not user:
+            raise HTTPException(404, "Пользователь не найден")
+
+        result_items = await session.execute(
+            select(Inventory).where(
+                Inventory.id.in_(req.inventory_ids),
+                Inventory.user_id == user.id,
+            )
+        )
+        source_items = result_items.scalars().all()
+
+        if len(source_items) != CRAFT_ITEMS_REQUIRED:
+            raise HTTPException(400, "Один или несколько предметов не найдены в твоём инвентаре")
+
+        rarities = {i.rarity for i in source_items}
+        if len(rarities) != 1:
+            raise HTTPException(400, "Все 5 предметов должны быть одной редкости")
+        source_rarity = rarities.pop()
+
+        target_rarity = _next_craft_rarity(source_rarity)
+        if target_rarity is None:
+            raise HTTPException(400, "Эта редкость уже максимальная — крафтить дальше некуда")
+
+        catalog = _craft_catalog_by_rarity().get(target_rarity, [])
+        target_entry = next((c for c in catalog if c["name"] == req.target_name), None)
+        if not target_entry:
+            raise HTTPException(400, "Выбранный целевой предмет не найден в каталоге этой редкости")
+
+        fee = CRAFT_FEE_BY_RARITY.get(source_rarity, 0)
+        if user.balance < fee:
+            raise HTTPException(400, "Недостаточно 💎 для оплаты рецепта")
+
+        # Гарантированный обмен: сначала списываем плату и удаляем ровно
+        # эти 5 предметов, затем начисляем целевой — атомарно в одной
+        # транзакции, без промежуточных состояний.
+        user.balance -= fee
+        for item in source_items:
+            await session.delete(item)
+
+        new_item = _roll_item_instance(target_entry["name"], target_rarity, target_entry["image"])
+        item_record = Inventory(
+            user_id=user.id,
+            skin_name=new_item["name"],
+            skin_price=new_item["price"],
+            rarity=new_item["rarity"],
+            quality=new_item["quality"],
+            stattrak=new_item["stattrak"],
+            float_val=new_item["float_val"],
+            image_url=new_item["image"],
+            obtained_from_case="Крафт",
+        )
+        session.add(item_record)
+        _maybe_update_top_drop(user, new_item)
+
+        await session.commit()
+        await session.refresh(item_record)
+
+        return {
+            "success": True,
+            "new_balance": user.balance,
+            "crafted_item": {
+                "id": item_record.id,
+                "name": new_item["name"],
+                "rarity": new_item["rarity"],
+                "quality": new_item["quality"],
+                "quality_name": new_item["quality_name"],
+                "price": new_item["price"],
+                "image": new_item["image"],
+                "stattrak": new_item["stattrak"],
+                "float_val": new_item["float_val"],
+            },
+        }
+
+
 
 
 # ============================================
@@ -336,6 +558,8 @@ async def app_config():
         "vip_price_stars": config.VIP_PRICE_STARS,
         "bonus_reward_amount": BONUS_REWARD_AMOUNT,
         "bonus_cooldown_seconds": BONUS_COOLDOWN_SECONDS,
+        "craft_fee_by_rarity": CRAFT_FEE_BY_RARITY,
+        "craft_items_required": CRAFT_ITEMS_REQUIRED,
     }
 
 
@@ -366,6 +590,9 @@ async def get_cases():
                 )
             ],
         })
+    # Каталог всегда отсортирован по цене — от дешёвых (базовых) к дорогим
+    # (элитным/ножевым), как и просили: от 100 до 999 💎.
+    result.sort(key=lambda c: c["price"])
     return {"cases": result}
 
 
@@ -417,6 +644,7 @@ async def open_case(req: OpenCaseRequest):
             session.add(item_record)
             drops.append(drop)
             item_records.append(item_record)
+            _maybe_update_top_drop(user, drop)
 
         await session.commit()
         for item_record in item_records:
@@ -552,7 +780,7 @@ async def activate_promo(req: PromoRequest):
         if promo.reward_type == "balance":
             amount = float(promo.reward_value)
             user.balance += amount
-            message = f"Начислено {amount:.0f} 💎 на баланс"
+            message = f"Начислено {format_balance_with_icon(amount)} на баланс"
 
         elif promo.reward_type == "case":
             case_key = promo.reward_value
@@ -571,6 +799,7 @@ async def activate_promo(req: PromoRequest):
                 obtained_from_case=CASES[case_key]["name"] + " (промо)",
             )
             session.add(item_record)
+            _maybe_update_top_drop(user, drop)
             message = f"Открыт бесплатный кейс: {CASES[case_key]['name']}"
 
         elif promo.reward_type == "skin":
@@ -587,6 +816,7 @@ async def activate_promo(req: PromoRequest):
                 obtained_from_case="Промокод",
             )
             session.add(item_record)
+            _maybe_update_top_drop(user, {"name": name, "price": price, "rarity": rarity, "image": None})
             message = f"Получен скин: {name}"
 
         promo.used_count += 1
@@ -599,6 +829,19 @@ async def activate_promo(req: PromoRequest):
 # 7. Авторизация + Профиль
 # ============================================
 
+def _maybe_update_top_drop(user: User, drop: dict) -> None:
+    """Обновляет "Топ дроп" пользователя, ЕСЛИ новый предмет дороже текущего
+    рекорда. Вызывается при любом получении предмета (открытие кейса,
+    промокод и т.п.) — само поле живёт на User, а не считается из
+    инвентаря, поэтому продажа предмета никогда его не затирает."""
+    price = drop.get("price", 0) or 0
+    if user.top_drop_price is None or price > user.top_drop_price:
+        user.top_drop_name = drop.get("name")
+        user.top_drop_price = price
+        user.top_drop_rarity = drop.get("rarity")
+        user.top_drop_image = drop.get("image")
+
+
 async def _build_profile_payload(session, user: User) -> dict:
     """Единая сборка полного профиля: баланс, VIP, статистика, инвентарь."""
     result_inv = await session.execute(
@@ -607,26 +850,30 @@ async def _build_profile_payload(session, user: User) -> dict:
     inventory = result_inv.scalars().all()
 
     total_value = sum(i.skin_price for i in inventory) if inventory else 0
-    most_expensive = max(inventory, key=lambda i: i.skin_price, default=None) if inventory else None
 
     return {
         "telegram_id": user.telegram_id,
         "username": user.username,
+        "first_name": user.first_name,
         "photo_url": user.photo_url,
         "balance": user.balance,
         "is_vip": user.is_vip,
         "vip_expires_at": user.vip_expires_at.isoformat() if user.vip_expires_at else None,
         "lang": user.lang or "ru",
         "sound_enabled": user.sound_enabled,
+        "terms_accepted": bool(user.terms_accepted),
         "total_cases_opened": user.total_cases_opened,
         "favorite_case": user.favorite_case or "—",
         "inventory_total_value": round(total_value, 0),
         "inventory_count": len(inventory),
-        "most_expensive_item": {
-            "name": most_expensive.skin_name,
-            "price": most_expensive.skin_price,
-            "rarity": most_expensive.rarity,
-        } if most_expensive else None,
+        # "Топ дроп" — самый дорогой предмет за ВСЁ время, персистентный
+        # (не пересчитывается из текущего инвентаря, продажа его не убирает).
+        "top_drop": {
+            "name": user.top_drop_name,
+            "price": user.top_drop_price,
+            "rarity": user.top_drop_rarity,
+            "image": user.top_drop_image,
+        } if user.top_drop_name else None,
         # Полный массив инвентаря — фронту не нужно делать второй запрос,
         # чтобы отрисовать вкладку "Профиль" сразу после логина.
         "inventory": [
@@ -647,7 +894,27 @@ async def _build_profile_payload(session, user: User) -> dict:
     }
 
 
-async def _get_or_create_user(session, telegram_id: int, username: str, photo_url: Optional[str]) -> User:
+@app.post("/api/accept-terms")
+async def accept_terms(req: DevAuthRequest):
+    """Отмечает, что пользователь принял Пользовательское соглашение.
+    Используем ту же простую схему {telegram_id}, что и dev-логин —
+    сюда достаточно передать telegram_id, доп. данных не требуется."""
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id == req.telegram_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(404, "Пользователь не найден")
+        user.terms_accepted = True
+        await session.commit()
+        return {"success": True}
+
+
+
+
+async def _get_or_create_user(
+    session, telegram_id: int, username: str, photo_url: Optional[str],
+    first_name: Optional[str] = None,
+) -> User:
     result = await session.execute(select(User).where(User.telegram_id == telegram_id))
     user = result.scalar_one_or_none()
 
@@ -656,6 +923,7 @@ async def _get_or_create_user(session, telegram_id: int, username: str, photo_ur
         user = User(
             telegram_id=telegram_id,
             username=username or "Игрок",
+            first_name=first_name,
             photo_url=photo_url,
             balance=config.START_BALANCE,
             ref_code=secrets.token_hex(4),
@@ -670,6 +938,9 @@ async def _get_or_create_user(session, telegram_id: int, username: str, photo_ur
         changed = False
         if username and user.username != username:
             user.username = username
+            changed = True
+        if first_name and user.first_name != first_name:
+            user.first_name = first_name
             changed = True
         if photo_url and user.photo_url != photo_url:
             user.photo_url = photo_url
@@ -707,7 +978,10 @@ async def auth_telegram(req: TelegramAuthRequest):
     photo_url = tg_user.get("photo_url")
 
     async with async_session() as session:
-        user = await _get_or_create_user(session, telegram_id, display_name, photo_url)
+        user = await _get_or_create_user(
+            session, telegram_id, display_name, photo_url,
+            first_name=tg_user.get("first_name"),
+        )
         payload = await _build_profile_payload(session, user)
         payload["telegram_username"] = tg_user.get("username")  # @handle, если задан в Telegram
         return payload

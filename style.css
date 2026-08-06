@@ -311,6 +311,43 @@ html, body {
 .stat-value { font-size: 16px; font-weight: 700; }
 .stat-value.small { font-size: 13px; }
 
+/* ==================== ТОП ДРОП — карточка профиля ==================== */
+.top-drop-card {
+  background: linear-gradient(135deg, rgba(248,156,28,0.14), rgba(248,156,28,0.02));
+  border: 1px solid var(--accent-orange);
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 20px;
+}
+.top-drop-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-orange);
+  margin-bottom: 10px;
+}
+.top-drop-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.top-drop-content img {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  flex-shrink: 0;
+  filter: drop-shadow(0 0 8px rgba(248,156,28,0.35));
+}
+.top-drop-info { min-width: 0; }
+.top-drop-name {
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.top-drop-price { font-size: 13px; font-weight: 700; color: var(--accent-orange); margin-top: 2px; }
+.top-drop-empty-text { font-size: 12px; color: var(--text-secondary); }
+
 .ref-block, .promo-block {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
@@ -778,6 +815,8 @@ html, body {
   border-left: 3px solid var(--rarity-consumer);
   border-radius: 8px;
   padding: 6px 10px;
+  position: relative;
+  overflow: hidden;
 }
 
 .contents-item img { width: 36px; height: 36px; object-fit: contain; flex-shrink: 0; }
@@ -791,6 +830,35 @@ html, body {
 }
 .contents-item-rarity { font-size: 10px; color: var(--text-secondary); }
 .contents-item-price { font-size: 12px; font-weight: 700; color: var(--accent-orange); flex-shrink: 0; }
+
+/* Блюр-плашка "1.1% | 200 💎", которая накладывается на карточку предмета
+   сразу по клику — прямо во время просмотра кейса, без открытия
+   отдельного окна. Скрыта по умолчанию (opacity:0 + pointer-events:none),
+   появляется при добавлении класса .revealed на .contents-item. */
+.contents-item-chance-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: rgba(15, 20, 30, 0.72);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: 8px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+  font-size: 13px;
+  font-weight: 700;
+}
+.contents-item.revealed .contents-item-chance-overlay {
+  opacity: 1;
+  pointer-events: auto;
+}
+.contents-item-chance-value { color: var(--accent-orange); }
+.contents-item-chance-sep { color: var(--text-secondary); font-weight: 400; }
+.contents-item-chance-price { color: var(--text-primary); }
 
 /* ==================== QUALITY / STATTRAK BADGES ==================== */
 .badge-row { display: flex; gap: 6px; justify-content: center; margin: 6px 0; }
@@ -883,8 +951,9 @@ html, body {
 .win-item-name { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
 .win-item-price { color: var(--accent-orange); font-weight: 700; font-size: 16px; }
 
-.win-actions { display: flex; gap: 10px; }
-.win-actions button { flex: 1; padding: 12px; }
+.win-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.win-actions button { flex: 1 1 calc(50% - 5px); padding: 12px; min-width: 100px; }
+.win-actions button#win-open-again-btn { flex-basis: 100%; }
 
 /* ==================== INTERSTITIAL ==================== */
 .interstitial-overlay {
@@ -903,6 +972,59 @@ html, body {
 
 .interstitial-label { font-size: 14px; color: var(--text-secondary); margin-bottom: 10px; }
 .interstitial-timer { font-size: 42px; font-weight: 700; color: var(--accent-orange); }
+
+/* ==================== TERMS OF SERVICE OVERLAY ====================
+   Стильное модальное окно принятия условий при первом входе. Выше по
+   z-index, чем ЛЮБОЙ другой оверлей в приложении (включая рекламный
+   interstitial, z-index:200) — пока условия не приняты, ничего другого
+   не должно быть доступно поверх него. Скрыто по умолчанию через display:none,
+   показывается добавлением класса .active из JS. */
+.terms-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 10, 16, 0.86);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+  padding: 16px;
+}
+.terms-overlay.active { display: flex; }
+
+.terms-sheet {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 20px;
+  padding: 24px 20px 20px;
+  width: 100%;
+  max-width: 420px;
+  max-height: 82vh;
+  overflow-y: auto;
+  animation: slideUp 0.3s ease;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+
+.terms-title {
+  font-size: 18px;
+  font-weight: 800;
+  margin-bottom: 14px;
+  text-align: center;
+}
+
+.terms-body {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 18px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.terms-body b, .terms-body strong { color: var(--text-primary); }
 
 /* ==================== RARITY COLOR HELPERS ==================== */
 .r-Consumer { border-color: var(--rarity-consumer) !important; }
@@ -929,6 +1051,156 @@ html, body {
 }
 
 .case-open-screen.active { display: flex; }
+
+/* ==================== КРАФТ / TRADE-UP ==================== */
+.screen-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.craft-open-btn {
+  background: var(--bg-card);
+  border: 1px solid var(--accent-orange);
+  color: var(--accent-orange);
+  border-radius: 20px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.craft-screen {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-primary);
+  display: none;
+  flex-direction: column;
+  z-index: 160;
+  max-width: 480px;
+  margin: 0 auto;
+}
+.craft-screen.active { display: flex; }
+
+.craft-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+.craft-header-title { font-size: 16px; font-weight: 700; }
+
+.craft-body { flex: 1; overflow-y: auto; padding: 16px; }
+
+/* Круговой SVG-индикатор прогресса рецепта (0/5 -> 100%) */
+.craft-progress-wrap {
+  position: relative;
+  width: 140px;
+  height: 140px;
+  margin: 0 auto 14px;
+}
+.craft-progress-ring { width: 100%; height: 100%; transform: rotate(-90deg); }
+.craft-progress-track {
+  fill: none;
+  stroke: var(--bg-card);
+  stroke-width: 10;
+}
+.craft-progress-fill {
+  fill: none;
+  stroke: var(--accent-orange);
+  stroke-width: 10;
+  stroke-linecap: round;
+  /* длина окружности r=52 -> 2*pi*52 ≈ 326.7 — используется в JS для stroke-dasharray/offset */
+  stroke-dasharray: 326.7;
+  stroke-dashoffset: 326.7;
+  transition: stroke-dashoffset 0.35s ease;
+}
+.craft-progress-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.craft-progress-count { font-size: 22px; font-weight: 800; }
+.craft-progress-sub { font-size: 11px; color: var(--text-secondary); }
+
+.craft-rarity-hint {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+}
+
+.craft-section { margin-bottom: 18px; }
+.craft-section-title { font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+
+.craft-source-grid, .craft-target-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.craft-item-card {
+  position: relative;
+  background: var(--bg-card);
+  border: 2px solid var(--border-color);
+  border-radius: 12px;
+  padding: 8px 6px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.craft-item-card img { width: 100%; height: 40px; object-fit: contain; margin-bottom: 4px; }
+.craft-item-card-name {
+  font-size: 10px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.craft-item-card-price { font-size: 10px; color: var(--accent-orange); font-weight: 700; margin-top: 2px; }
+.craft-item-card.selected {
+  border-color: var(--accent-orange);
+  transform: scale(0.96);
+  box-shadow: 0 0 0 2px rgba(248,156,28,0.25);
+}
+.craft-item-card.disabled { opacity: 0.35; pointer-events: none; }
+.craft-item-card-check {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent-orange);
+  color: #fff;
+  font-size: 11px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.craft-item-card.selected .craft-item-card-check { display: flex; }
+
+.craft-footer {
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-color);
+}
+.craft-fee-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+#craft-submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .case-open-header {
   display: flex;
@@ -1034,6 +1306,24 @@ html, body {
   border-radius: 10px;
   padding: 8px;
   text-align: center;
+}
+
+/* Последовательное появление карточек при мульти-открытии (x2/x3/x5) —
+   вместо мгновенного показа всей сетки сразу. reveal-pending — карточка
+   ещё "не открыта" (плейсхолдер, полупрозрачная и уменьшенная),
+   revealed-pop — момент раскрытия с лёгким "выскакиванием". */
+.multi-result-card.reveal-pending {
+  opacity: 0;
+  transform: scale(0.7);
+  filter: blur(2px);
+}
+.multi-result-card.revealed-pop {
+  animation: multiCardPop 0.32s cubic-bezier(0.22, 1.4, 0.36, 1) forwards;
+}
+@keyframes multiCardPop {
+  0%   { opacity: 0; transform: scale(0.7); filter: blur(2px); }
+  60%  { opacity: 1; transform: scale(1.08); filter: blur(0); }
+  100% { opacity: 1; transform: scale(1); filter: blur(0); }
 }
 
 .multi-result-card img { width: 100%; height: 44px; object-fit: contain; margin-bottom: 4px; }
