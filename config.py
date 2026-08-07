@@ -61,5 +61,22 @@ REF_COMMISSION_PERCENT = 0.05
 # Цена VIP-статуса в Telegram Stars — зафиксирована: только "навсегда".
 VIP_PRICE_STARS = 25
 
+# ============================================
+# Золото (Gold) — премиум-валюта за Telegram Stars
+# ============================================
+# ВАЖНО: Gold — ОТДЕЛЬНАЯ валюта от Кристаллов/₽ (User.gold_balance,
+# см. database.py). Покупается ТОЛЬКО за Telegram Stars и тратится
+# ТОЛЬКО на косметику (тайтлы/рамки, витрина и т.п. — не влияет на
+# игровую экономику кейсов/апгрейда). Курс фиксированный, не связан
+# с живым курсом RUB/USD/UAH из currency.py (тот отвечает только за
+# отображение Кристаллов в разных валютах).
+STARS_TO_GOLD_RATE = 2  # 1 Telegram Star = 2 Gold
+
+
+def stars_to_gold(stars_amount: int) -> float:
+    """Конвертирует количество купленных Telegram Stars в Gold."""
+    return stars_amount * STARS_TO_GOLD_RATE
+
+
 # Путь к базе данных SQLite
 DATABASE_URL = "sqlite+aiosqlite:///./cs2_simulator.db"

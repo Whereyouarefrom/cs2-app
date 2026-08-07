@@ -133,6 +133,32 @@ QUALITY_FULL_NAME = {
 QUALITY_WEIGHTS = {"FN": 3, "MW": 8, "FT": 45, "WW": 12, "BS": 32}
 QUALITY_PRICE_MULTIPLIER = {"FN": 1.65, "MW": 1.25, "FT": 1.0, "WW": 0.82, "BS": 0.62}
 
+# Официальные пороги float Valve — граница качества определяется ТОЛЬКО
+# позицией float_val внутри этого диапазона (раньше quality и float_val
+# роллились независимо друг от друга, из-за чего мог выпасть, например,
+# "Factory New" с float 0.9, чего в игре быть не может).
+QUALITY_FLOAT_RANGE = {
+    "FN": (0.00, 0.07),
+    "MW": (0.07, 0.15),
+    "FT": (0.15, 0.38),
+    "WW": (0.38, 0.45),
+    "BS": (0.45, 1.00),
+}
+
+
+def _roll_quality_and_float() -> tuple[str, float]:
+    """Сначала роллим качество по QUALITY_WEIGHTS (сохраняет заданное
+    распределение — большинство предметов Field-Tested/Battle-Scarred), а
+    ЗАТЕМ float_val — равномерно, но строго внутри диапазона выбранного
+    качества. Порядок важен: генерировать float первым и выводить из него
+    качество дало бы распределение, продиктованное шириной диапазонов
+    Valve (BS ~55%), а не заданными весами игры."""
+    quality = random.choices(QUALITIES, weights=[QUALITY_WEIGHTS[q] for q in QUALITIES])[0]
+    lo, hi = QUALITY_FLOAT_RANGE[quality]
+    float_val = round(random.uniform(lo, hi), 4)
+    return quality, float_val
+
+
 STATTRAK_CHANCE = 0.10
 STATTRAK_MULTIPLIER = 1.8
 # StatTrak™ не бывает у перчаток (как и в самой игре)
@@ -302,7 +328,7 @@ def _roll_item_instance(name: str, rarity: str, image: str) -> dict:
     roll_item(), чтобы этой же логикой мог пользоваться крафт (там имя и
     редкость предмета уже известны заранее — рандомна только "физика"
     конкретного экземпляра, а не сам факт получения предмета)."""
-    quality = random.choices(QUALITIES, weights=[QUALITY_WEIGHTS[q] for q in QUALITIES])[0]
+    quality, float_val = _roll_quality_and_float()
     stattrak = rarity in STATTRAK_ELIGIBLE_RARITIES and random.random() < STATTRAK_CHANCE
 
     # Если для этого конкретного предмета есть реальная StatTrak-цена со
@@ -325,7 +351,7 @@ def _roll_item_instance(name: str, rarity: str, image: str) -> dict:
         "quality": quality,
         "quality_name": QUALITY_FULL_NAME[quality],
         "price": price,
-        "float_val": round(random.uniform(0.00, 1.00), 4),
+        "float_val": float_val,
         "stattrak": stattrak,
     }
 
@@ -350,6 +376,12 @@ def roll_item(case_key: str) -> dict:
 
     chosen = random.choice(by_rarity[chosen_rarity])
     return _roll_item_instance(chosen["name"], chosen_rarity, chosen["image"])
+
+
+# Алиас под именование из ТЗ Спринта 3 (routers/cases.py: POST /api/cases/open
+# генерирует дропы через generate_item_drop) — та же функция, что и roll_item,
+# просто под другим именем для совместимости с новым роутером.
+generate_item_drop = roll_item
 
 
 # ============================================
@@ -1126,7 +1158,7 @@ async def activate_promo(req: PromoRequest):
                 rarity=rarity,
                 quality="FT",
                 stattrak=False,
-                float_val=round(random.uniform(0, 1), 4),
+                float_val=round(random.uniform(*QUALITY_FLOAT_RANGE["FT"]), 4),
                 obtained_from_case="Промокод",
             )
             session.add(item_record)
@@ -1572,7 +1604,7 @@ def _roll_bonus_skin(rarity_pool: list[str]) -> dict:
     available = [r for r in rarity_pool if _ALL_ITEMS_BY_RARITY.get(r)]
     rarity = random.choice(available) if available else "Classified"
     item = random.choice(_ALL_ITEMS_BY_RARITY[rarity])
-    quality = random.choices(QUALITIES, weights=[QUALITY_WEIGHTS[q] for q in QUALITIES])[0]
+    quality, float_val = _roll_quality_and_float()
     price = round(get_base_price_rub(item["name"], rarity) * QUALITY_PRICE_MULTIPLIER[quality])
     return {
         "name": item["name"],
@@ -1581,7 +1613,7 @@ def _roll_bonus_skin(rarity_pool: list[str]) -> dict:
         "quality": quality,
         "quality_name": QUALITY_FULL_NAME[quality],
         "price": price,
-        "float_val": round(random.uniform(0.00, 1.00), 4),
+        "float_val": float_val,
         "stattrak": False,
     }
 
@@ -1842,7 +1874,17 @@ def _instance_from_registry_item(entry: dict, forced_price: float) -> dict:
     \"вида\", итоговая цена ФИКСИРОВАНА на forced_price, потому что это
     результат Апгрейдера/компенсации, а не обычный дроп из кейса)."""
     rarity = entry["rarity"]
-    quality = random.choices(QUALITIES, weights=[QUALITY_WEIGHTS[q] for q in QUALITIES])[0]
+    quality, float_val = _roll_quality_and_float()
+    # У части предметов собственный допустимый диапазон float (уже теснее,
+    # чем полный диапазон качества Valve) — пересекаем его с диапазоном
+    # выбранного качества, чтобы не выйти за пределы того, что реально
+    # возможно для этого конкретного скина.
+    entry_lo = entry.get("min_float", 0.0)
+    entry_hi = entry.get("max_float", 1.0)
+    q_lo, q_hi = QUALITY_FLOAT_RANGE[quality]
+    lo, hi = max(entry_lo, q_lo), min(entry_hi, q_hi)
+    if lo < hi:
+        float_val = round(random.uniform(lo, hi), 4)
     stattrak = bool(entry.get("stattrak_available")) and random.random() < STATTRAK_CHANCE
     return {
         "name": entry["name"],
@@ -1851,7 +1893,7 @@ def _instance_from_registry_item(entry: dict, forced_price: float) -> dict:
         "quality": quality,
         "quality_name": QUALITY_FULL_NAME[quality],
         "price": round(forced_price, 2),
-        "float_val": round(random.uniform(entry.get("min_float", 0.0), entry.get("max_float", 1.0)), 4),
+        "float_val": float_val,
         "stattrak": stattrak,
     }
 
@@ -2652,6 +2694,21 @@ async def get_inventory(telegram_id: int):
                 for i in items
             ]
         }
+
+
+# ============================================
+# 13. Роутеры Спринта 3: /api/cases/open (мульти-спин)
+# ============================================
+# Импорт СОЗНАТЕЛЬНО стоит здесь, в самом низу файла — после того, как уже
+# определены app, CASES, roll_item/generate_item_drop, calculate_case_price,
+# _award_xp, _credit_referral_commission, _maybe_update_top_drop и т.д.
+# routers/cases.py делает `import main` и обращается к этим именам через
+# main.<имя> только ВНУТРИ обработчиков запросов (то есть в момент реального
+# HTTP-запроса, когда весь этот файл уже полностью загружен), а не на этапе
+# импорта модуля — поэтому цикличность импорта (main -> routers.cases ->
+# main) здесь безопасна и не вызывает ImportError.
+from routers.cases import router as cases_router  # noqa: E402
+app.include_router(cases_router)
 
 
 if __name__ == "__main__":

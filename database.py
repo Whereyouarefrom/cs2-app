@@ -6,8 +6,8 @@ import os
 import secrets
 import datetime
 from sqlalchemy import (
-    Column, Integer, String, Float, Boolean, ForeignKey, DateTime, BigInteger,
-    inspect, text,
+    Column, Integer, String, Float, Boolean, ForeignKey, DateTime, BigInteger, Date,
+    UniqueConstraint, inspect, text,
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -72,6 +72,25 @@ class User(Base):
     # ---- Ежедневные награды за вход (Daily Streak, 1-7 день) ----
     daily_streak = Column(Integer, default=0)               # текущая серия дней подряд
     last_daily_claim_at = Column(DateTime, nullable=True)    # когда забрали последнюю ежедневную награду
+    daily_total_claims = Column(Integer, default=0)          # суммарно ежедневок забрано за всё время (не сбрасывается)
+
+    # ---- Золото (Gold) — премиум-валюта за Telegram Stars, ТОЛЬКО на
+    # косметику (см. config.STARS_TO_GOLD_RATE). Отдельно от balance
+    # (Кристаллов), никогда не конвертируется обратно в Кристаллы. ----
+    gold_balance = Column(Float, default=0.0)
+
+    # ---- Косметика профиля (титулы/рамки аватара), выдаётся через
+    # ачивки/баттлпасс/магазин Gold — ключ выбранного варианта из числа
+    # тех, что открыты игроку (список "открытых" ведётся на уровне
+    # UserAchievement / BattlePassProgress, здесь только ТЕКУЩИЙ выбор). ----
+    selected_title = Column(String, nullable=True)
+    selected_frame = Column(String, nullable=True)
+
+    # ---- Модерация чата/сообщества ----
+    is_muted = Column(Boolean, default=False)
+    mute_until = Column(DateTime, nullable=True)     # None при is_muted=True = мут навсегда
+    mute_reason = Column(String, nullable=True)
+    is_chat_banned = Column(Boolean, default=False)  # полный бан написания в чат (жёстче мута)
 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
@@ -87,13 +106,18 @@ class Inventory(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
+    item_id = Column(String, nullable=True, index=True)  # стабильный ключ предмета из items_data (для группировки/маркета)
     skin_name = Column(String, nullable=False)
     skin_price = Column(Float, nullable=False)     # виртуальная цена на момент выпадения
     rarity = Column(String, nullable=False)        # Consumer / Industrial / ... / Covert / Knife
-    quality = Column(String, nullable=True)         # FN / MW / FT / WW / BS
+    quality = Column(String, nullable=True)         # FN / MW / FT / WW / BS — служит "wear_category" из ТЗ
     stattrak = Column(Boolean, default=False)
+    stattrak_count = Column(Integer, default=0)     # счётчик StatTrak™ (фраги/использования)
     float_val = Column(Float, nullable=True)        # Float value (0.00 - 1.00)
     image_url = Column(String, nullable=True)       # прямая ссылка на Steam CDN
+
+    is_on_market = Column(Boolean, default=False)   # выставлен на P2P-маркет (когда появится)
+    is_in_showcase = Column(Boolean, default=False)  # закреплён в публичной витрине профиля
 
     obtained_from_case = Column(String, nullable=True)
     obtained_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -137,6 +161,136 @@ class Giveaway(Base):
     winner_telegram_id = Column(BigInteger, nullable=True)
 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+# ---------------------------------------------------
+# Активации промокодов (кто и когда что активировал)
+# ---------------------------------------------------
+# Раньше промокод учитывал только общий used_count/max_activations — один
+# и тот же игрок мог активировать один код много раз, пока не исчерпан
+# общий лимит. Эта таблица добавляет персональный лог активаций, чтобы
+# в следующих спринтах можно было запретить повторную активацию одним
+# и тем же пользователем (проверка: exists(user_id, promo_id)).
+class PromoActivation(Base):
+    __tablename__ = "promo_activations"
+    __table_args__ = (UniqueConstraint("user_id", "promo_id", name="uq_promo_activation_user_promo"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    promo_id = Column(Integer, ForeignKey("promo_codes.id"), nullable=False)
+    activated_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+# ---------------------------------------------------
+# Колесо фортуны (бесплатный + платные спины в день)
+# ---------------------------------------------------
+class WheelSpin(Base):
+    __tablename__ = "wheel_spins"
+
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    last_free_spin = Column(DateTime, nullable=True)
+    paid_spins_today = Column(Integer, default=0)
+    last_spin_reset_date = Column(Date, nullable=True)  # дата (UTC), на которую считается paid_spins_today
+
+
+# ---------------------------------------------------
+# Еженедельный турнир активности
+# ---------------------------------------------------
+class TournamentScore(Base):
+    __tablename__ = "tournament_scores"
+    __table_args__ = (UniqueConstraint("user_id", "week_identifier", name="uq_tournament_user_week"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    week_identifier = Column(String, nullable=False, index=True)  # напр. '2026-W32' (ISO-неделя)
+    activity_points = Column(Integer, default=0)
+    best_upgrade_mult = Column(Float, default=0.0)  # лучший достигнутый множитель в Upgrade за неделю
+
+
+# ---------------------------------------------------
+# Задания (подписка на канал/чат, рефералы, заполнение профиля...)
+# ---------------------------------------------------
+class Task(Base):
+    __tablename__ = "tasks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    key = Column(String, unique=True, nullable=False, index=True)
+    title = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    reward_gold = Column(Float, default=0.0)
+    reward_crystals = Column(Float, default=0.0)
+    action_url = Column(String, nullable=True)
+    task_type = Column(String, nullable=False)  # 'telegram_channel' | 'telegram_chat' | 'referrals' | 'profile'
+    is_active = Column(Boolean, default=True)
+
+
+class UserTaskCompletion(Base):
+    __tablename__ = "user_task_completions"
+    __table_args__ = (UniqueConstraint("user_id", "task_id", name="uq_task_completion_user_task"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False)
+    completed_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+# ---------------------------------------------------
+# Достижения
+# ---------------------------------------------------
+class Achievement(Base):
+    __tablename__ = "achievements"
+
+    key = Column(String, primary_key=True)
+    title = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    icon = Column(String, nullable=True)
+    max_progress = Column(Integer, default=1)
+    reward_type = Column(String, nullable=False)   # 'crystals' | 'gold' | 'title' | 'frame'
+    reward_value = Column(String, nullable=False)  # число (как строка) для crystals/gold, ключ для title/frame
+
+
+class UserAchievement(Base):
+    __tablename__ = "user_achievements"
+    __table_args__ = (UniqueConstraint("user_id", "achievement_key", name="uq_user_achievement"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    achievement_key = Column(String, ForeignKey("achievements.key"), nullable=False)
+    current_progress = Column(Integer, default=0)
+    is_completed = Column(Boolean, default=False)
+    claimed = Column(Boolean, default=False)
+    completed_at = Column(DateTime, nullable=True)
+
+
+# ---------------------------------------------------
+# Жалобы на сообщения в чате
+# ---------------------------------------------------
+class ChatReport(Base):
+    __tablename__ = "chat_reports"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    reporter_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    reported_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    message_id = Column(String, nullable=True)
+    reason = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    is_hidden = Column(Boolean, default=False)  # сообщение скрыто модератором по жалобе
+
+
+# ---------------------------------------------------
+# Боевой пропуск (Battle Pass)
+# ---------------------------------------------------
+class BattlePassProgress(Base):
+    __tablename__ = "battle_pass_progress"
+
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
+    is_vip_pass = Column(Boolean, default=False)
+    level = Column(Integer, default=1)
+    xp = Column(Integer, default=0)
+    claimed_free_levels = Column(String, default="[]")   # JSON-массив int, напр. "[1,2,3]"
+    claimed_vip_levels = Column(String, default="[]")    # JSON-массив int
+    daily_tasks_completed = Column(Integer, default=0)
+    last_task_reset = Column(Date, nullable=True)
 
 
 # ---------------------------------------------------
