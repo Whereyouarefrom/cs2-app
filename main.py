@@ -4,6 +4,7 @@
 
 import random
 import secrets
+import math
 import datetime
 from typing import Optional, List
 
@@ -15,6 +16,7 @@ from sqlalchemy import select
 
 from database import async_session, init_db, close_db, User, Inventory, PromoCode
 from cases_data import CASES
+import items_data
 from auth import parse_and_verify_init_data, InitDataError
 from format_utils import format_balance_with_icon
 import config
@@ -499,8 +501,24 @@ class AdRewardRequest(BaseModel):
 
 class UpgradeRequest(BaseModel):
     telegram_id: int
-    inventory_id: int
-    target_multiplier: float
+    # До 6 предметов инвентаря объединяются в один апгрейд — их суммарная
+    # стоимость становится "старой ценой" для расчёта шанса/цели.
+    # inventory_id оставлен для обратной совместимости со старым фронтом
+    # (один предмет); если передан inventory_ids — используется он.
+    inventory_id: Optional[int] = None
+    inventory_ids: Optional[List[int]] = None
+    # Игрок задаёт цель ОДНИМ из четырёх способов (mode):
+    #   "item"       — выбрал конкретный скин из поиска -> target_name
+    #   "price"      — вручную ввёл желаемую стоимость   -> target_price
+    #   "multiplier" — быстрая кнопка/ползунок множителя -> multiplier (x2/x3/x5...)
+    #   "chance"     — быстрая кнопка/ползунок шанса     -> chance (30/55/75...)
+    # Ровно одно из полей target_name/target_price/multiplier/chance должно
+    # соответствовать выбранному mode — остальные игнорируются бэкендом.
+    mode: str = "multiplier"
+    target_name: Optional[str] = None
+    target_price: Optional[float] = None
+    multiplier: Optional[float] = None
+    chance: Optional[float] = None  # в процентах, 1-80
 
 
 class CrashBetRequest(BaseModel):
@@ -591,6 +609,13 @@ async def get_cases():
                     "image": i["image"],
                     "base_price": BASE_PRICE_BY_RARITY[i["rarity"]],
                     "drop_chance": chances.get(i["name"], 0.0),
+                    # Есть ли у ЭТОГО конкретного скина StatTrak™-версия (для
+                    # ножей/перчаток не используется — там показывается
+                    # агрегированная статистика по всей категории, см. фронт).
+                    "stattrak_available": (
+                        i["rarity"] != "Gloves"
+                        and (i["rarity"] == "Knife" or bool((items_data.get_item(i["name"]) or {}).get("stattrak_available")))
+                    ),
                 }
                 for i in sorted(
                     case["items"],
@@ -1392,64 +1417,265 @@ async def daily_claim(req: DailyClaimRequest):
 
 
 # ============================================
-# 10. UPGRADE
+# 10. UPGRADE (Апгрейдер)
 # ============================================
-@app.post("/api/minigames/upgrade")
-async def upgrade_skin(req: UpgradeRequest):
-    if req.target_multiplier < 1.1 or req.target_multiplier > 20.0:
-        raise HTTPException(400, "Множитель должен быть от 1.1x до 20x")
+# Экономика Апгрейдера:
+#   - target_house_edge задаёт средний преимущество казино (85% от
+#     "честного" 1/multiplier) — то же значение, что было и раньше.
+#   - success_chance всегда пересчитывается ИЗ multiplier (даже если игрок
+#     стартовал с шанса кнопкой "55%") — это гарантирует, что выведенные на
+#     экран шанс и множитель всегда взаимно согласованы и математика бьётся.
+#   - На ПОБЕДЕ игрок получает предмет РОВНО целевой стоимости (либо
+#     конкретный выбранный скин — тогда цена берётся из его собственной
+#     редкости; либо, если цель задавалась ценой/множителем/шансом без
+#     привязки к конкретному скину, случайный предмет из глобального
+#     реестра items_data с ближайшей по рынку редкостью для target_price).
+#   - На ПРОИГРЫШЕ предмет сгорает, но игрок ГАРАНТИРОВАННО получает
+#     утешительный скин ровно на 10% от стоимости сгоревшего предмета
+#     (см. _grant_compensation ниже) — предметы для механизма компенсации
+#     также берутся из items_data, поэтому пул кандидатов не ограничен
+#     содержимым кейсов.
 
+UPGRADE_HOUSE_EDGE = 0.85
+UPGRADE_MIN_CHANCE = 0.01   # 1%
+UPGRADE_MAX_CHANCE = 0.80   # 80%
+UPGRADE_MIN_MULTIPLIER = 1.05
+UPGRADE_MAX_MULTIPLIER = 100.0
+
+COMPENSATION_RATIO = 0.10       # 10% от стоимости сгоревшего предмета
+COMPENSATION_TOLERANCE = 0.01   # допустимая погрешность ±1%
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _chance_from_multiplier(multiplier: float) -> float:
+    return _clamp(UPGRADE_HOUSE_EDGE / multiplier, UPGRADE_MIN_CHANCE, UPGRADE_MAX_CHANCE)
+
+
+def _resolve_upgrade_target(req: "UpgradeRequest", old_price: float) -> tuple[float, float, Optional[dict]]:
+    """Возвращает (target_price, success_chance, explicit_item|None) по
+    выбранному режиму (req.mode). explicit_item — запись из items_data,
+    если игрок целился в конкретный скин по имени (тогда именно он и будет
+    выдан при победе); иначе None (при победе подберём случайный предмет
+    нужной стоимости через _pick_item_for_price)."""
+
+    if req.mode == "item":
+        if not req.target_name:
+            raise HTTPException(400, "Не указан целевой предмет")
+        explicit_item = items_data.get_item(req.target_name)
+        if not explicit_item:
+            raise HTTPException(400, "Целевой предмет не найден в базе")
+        target_price = float(BASE_PRICE_BY_RARITY[explicit_item["rarity"]])
+        if target_price <= old_price:
+            raise HTTPException(400, "Целевой предмет должен быть дороже улучшаемого")
+        multiplier = _clamp(target_price / old_price, UPGRADE_MIN_MULTIPLIER, UPGRADE_MAX_MULTIPLIER)
+        return target_price, _chance_from_multiplier(multiplier), explicit_item
+
+    if req.mode == "price":
+        if not req.target_price or req.target_price <= old_price:
+            raise HTTPException(400, "Целевая стоимость должна быть больше стоимости предмета")
+        multiplier = _clamp(req.target_price / old_price, UPGRADE_MIN_MULTIPLIER, UPGRADE_MAX_MULTIPLIER)
+        return old_price * multiplier, _chance_from_multiplier(multiplier), None
+
+    if req.mode == "chance":
+        if not req.chance or not (1.0 <= req.chance <= 80.0):
+            raise HTTPException(400, "Шанс должен быть от 1% до 80%")
+        chance_frac = req.chance / 100.0
+        multiplier = _clamp(UPGRADE_HOUSE_EDGE / chance_frac, UPGRADE_MIN_MULTIPLIER, UPGRADE_MAX_MULTIPLIER)
+        return old_price * multiplier, _chance_from_multiplier(multiplier), None
+
+    # mode == "multiplier" (значение по умолчанию, включая быстрые x2/x3/x5)
+    if not req.multiplier or not (UPGRADE_MIN_MULTIPLIER <= req.multiplier <= UPGRADE_MAX_MULTIPLIER):
+        raise HTTPException(400, f"Множитель должен быть от {UPGRADE_MIN_MULTIPLIER}x до {UPGRADE_MAX_MULTIPLIER}x")
+    return old_price * req.multiplier, _chance_from_multiplier(req.multiplier), None
+
+
+def _pick_item_for_price(target_price: float) -> dict:
+    """Подбирает случайный предмет из глобального реестра items_data,
+    редкость которого ближе всего (в логарифмической шкале — цены редкостей
+    растут на порядки) к желаемой стоимости target_price."""
+    target_log = math.log(max(target_price, 1.0))
+    best_rarity = min(
+        RARITY_ORDER,
+        key=lambda r: abs(math.log(BASE_PRICE_BY_RARITY[r]) - target_log),
+    )
+    pool = items_data.ITEMS_BY_RARITY.get(best_rarity) or items_data.ALL_ITEMS
+    return random.choice(pool)
+
+
+def _instance_from_registry_item(entry: dict, forced_price: float) -> dict:
+    """Собирает конкретный экземпляр (качество/StatTrak/float — для
+    \"вида\", итоговая цена ФИКСИРОВАНА на forced_price, потому что это
+    результат Апгрейдера/компенсации, а не обычный дроп из кейса)."""
+    rarity = entry["rarity"]
+    quality = random.choices(QUALITIES, weights=[QUALITY_WEIGHTS[q] for q in QUALITIES])[0]
+    stattrak = bool(entry.get("stattrak_available")) and random.random() < STATTRAK_CHANCE
+    return {
+        "name": entry["name"],
+        "rarity": rarity,
+        "image": entry["image"],
+        "quality": quality,
+        "quality_name": QUALITY_FULL_NAME[quality],
+        "price": round(forced_price, 2),
+        "float_val": round(random.uniform(entry.get("min_float", 0.0), entry.get("max_float", 1.0)), 4),
+        "stattrak": stattrak,
+    }
+
+
+@app.get("/api/items/search")
+async def search_items(q: str = "", limit: int = 30):
+    """Поиск целевого скина для Апгрейдера (используется полем поиска на
+    фронте) — обходит ВЕСЬ глобальный реестр items_data, а не только
+    предметы из кейсов."""
+    limit = max(1, min(limit, 60))
+    results = items_data.search_items(q, limit=limit)
+    return {
+        "results": [
+            {
+                "name": it["name"],
+                "rarity": it["rarity"],
+                "category": it["category"],
+                "image": it["image"],
+                "base_price": BASE_PRICE_BY_RARITY[it["rarity"]],
+            }
+            for it in results
+        ]
+    }
+
+
+MAX_UPGRADE_ITEMS = 6
+
+
+@app.post("/api/upgrade")
+async def upgrade_skin(req: UpgradeRequest):
     async with async_session() as session:
         result = await session.execute(select(User).where(User.telegram_id == req.telegram_id))
         user = result.scalar_one_or_none()
         if not user:
             raise HTTPException(404, "Пользователь не найден")
 
-        result_item = await session.execute(
+        # До 6 предметов сразу — их суммарная цена и есть "старая цена"
+        ids = req.inventory_ids if req.inventory_ids else ([req.inventory_id] if req.inventory_id else [])
+        ids = list(dict.fromkeys(ids))  # без дублей, сохраняя порядок
+        if not ids:
+            raise HTTPException(400, "Не выбрано ни одного предмета для апгрейда")
+        if len(ids) > MAX_UPGRADE_ITEMS:
+            raise HTTPException(400, f"Максимум {MAX_UPGRADE_ITEMS} предметов за раз")
+
+        result_items = await session.execute(
             select(Inventory).where(
-                Inventory.id == req.inventory_id,
+                Inventory.id.in_(ids),
                 Inventory.user_id == user.id,
             )
         )
-        item = result_item.scalar_one_or_none()
-        if not item:
-            raise HTTPException(404, "Предмет не найден в инвентаре")
+        items = result_items.scalars().all()
+        if len(items) != len(ids):
+            raise HTTPException(404, "Один или несколько предметов не найдены в инвентаре")
 
-        target_house_edge = 0.85
-        success_chance = target_house_edge / req.target_multiplier
-        success_chance = max(0.01, min(0.80, success_chance))
+        old_price = sum(i.skin_price for i in items)
+        target_price, success_chance, explicit_item = _resolve_upgrade_target(req, old_price)
 
-        roll = random.random()
-        success = roll < success_chance
-
-        old_price = item.skin_price
+        success = random.random() < success_chance
 
         if success:
-            new_price = round(old_price * req.target_multiplier, 2)
-            item.skin_price = new_price
-            item.skin_name = f"{item.skin_name} (Upgraded)"
+            # Победа: выдаём либо ровно выбранный игроком скин, либо
+            # случайный предмет нужной по рынку редкости — но с ценой,
+            # РОВНО равной той, что игрок видел на экране (target_price).
+            won_entry = explicit_item or _pick_item_for_price(target_price)
+            won_instance = _instance_from_registry_item(won_entry, target_price)
+
+            for i in items:
+                await session.delete(i)
+            new_item = Inventory(
+                user_id=user.id,
+                skin_name=won_instance["name"],
+                skin_price=won_instance["price"],
+                rarity=won_instance["rarity"],
+                quality=won_instance["quality"],
+                stattrak=won_instance["stattrak"],
+                float_val=won_instance["float_val"],
+                image_url=won_instance["image"],
+                obtained_from_case="Апгрейдер",
+            )
+            session.add(new_item)
+            _maybe_update_top_drop(user, won_instance)
             await session.commit()
+            await session.refresh(new_item)
 
             return {
                 "success": True,
                 "result": "win",
                 "chance_used": round(success_chance * 100, 2),
                 "old_price": old_price,
-                "new_price": new_price,
-                "item_id": item.id,
+                "target_price": round(target_price, 2),
+                "item": {
+                    "id": new_item.id,
+                    "name": won_instance["name"],
+                    "rarity": won_instance["rarity"],
+                    "quality": won_instance["quality"],
+                    "quality_name": won_instance["quality_name"],
+                    "price": won_instance["price"],
+                    "image": won_instance["image"],
+                    "stattrak": won_instance["stattrak"],
+                    "float_val": won_instance["float_val"],
+                },
             }
         else:
-            await session.delete(item)
+            # Проигрыш: все выбранные предметы сгорают, но игрок гарантированно
+            # получает утешительный скин ровно на 10% (±1%) от их суммарной стоимости.
+            for i in items:
+                await session.delete(i)
+
+            comp_price = round(old_price * COMPENSATION_RATIO, 2)
+            # На случай экстремально дешёвых предметов (comp_price -> 0)
+            # не даём компенсации уйти в ноль — минимум 1 💎.
+            comp_price = max(comp_price, 1.0)
+            comp_entry = _pick_item_for_price(comp_price)
+            comp_instance = _instance_from_registry_item(comp_entry, comp_price)
+
+            comp_item = Inventory(
+                user_id=user.id,
+                skin_name=comp_instance["name"],
+                skin_price=comp_instance["price"],
+                rarity=comp_instance["rarity"],
+                quality=comp_instance["quality"],
+                stattrak=comp_instance["stattrak"],
+                float_val=comp_instance["float_val"],
+                image_url=comp_instance["image"],
+                obtained_from_case="Компенсация Апгрейдера",
+            )
+            session.add(comp_item)
             await session.commit()
+            await session.refresh(comp_item)
 
             return {
                 "success": True,
                 "result": "lose",
                 "chance_used": round(success_chance * 100, 2),
                 "old_price": old_price,
-                "new_price": 0,
-                "item_id": None,
+                "target_price": round(target_price, 2),
+                "compensation": {
+                    "id": comp_item.id,
+                    "name": comp_instance["name"],
+                    "rarity": comp_instance["rarity"],
+                    "quality": comp_instance["quality"],
+                    "quality_name": comp_instance["quality_name"],
+                    "price": comp_instance["price"],
+                    "image": comp_instance["image"],
+                    "stattrak": comp_instance["stattrak"],
+                    "float_val": comp_instance["float_val"],
+                },
             }
+
+
+# Старый путь оставлен как алиас для обратной совместимости (вдруг где-то
+# на клиенте закэширован старый билд фронтенда) — просто вызывает ту же
+# логику, что и новый /api/upgrade.
+@app.post("/api/minigames/upgrade")
+async def upgrade_skin_legacy_alias(req: UpgradeRequest):
+    return await upgrade_skin(req)
 
 
 # ============================================

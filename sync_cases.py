@@ -39,10 +39,9 @@ RARITY_MAP = {
     # для ножей/перчаток Valve использует тот же "ancient", отличаем по имени
 }
 
-# Максимум редких предметов (ножи/перчатки), которые сохраняем на кейс —
-# в игре их реально 15-90 (по одной раскраске на нож), но для witdget-а
-# мобильного приложения оставляем репрезентативную выборку.
-MAX_RARE_PER_CASE = 6
+# Редкие предметы (ножи/перчатки) сохраняем ВСЕ, без обрезки — в кейсе
+# реально может быть 5-20+ разных типов ножей/перчаток, и игрок должен
+# видеть/выигрывать любой из них, а не только первый в списке API.
 MAX_ITEMS_PER_RARITY = 8
 
 
@@ -70,15 +69,11 @@ def transform_case(raw: dict) -> dict | None:
         by_rarity_count[rarity] += 1
         items.append({"name": it["name"], "rarity": rarity, "image": it["image"]})
 
-    rare_added = 0
     for it in raw.get("contains_rare", []):
-        if rare_added >= MAX_RARE_PER_CASE:
-            break
         if not it.get("image"):
             continue
         rarity = classify_rare(it["name"])
         items.append({"name": it["name"], "rarity": rarity, "image": it["image"]})
-        rare_added += 1
 
     if not items:
         return None

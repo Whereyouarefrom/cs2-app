@@ -507,6 +507,27 @@
     </div>
   </div>
 
+  <!-- ==================== РЕЗУЛЬТАТ АПГРЕЙДА (успех / компенсация при неудаче) ====================
+       Один и тот же модал для обоих исходов Апгрейдера: при победе
+       показывает выданный целевой скин, при поражении — заголовок
+       меняется на "не удался" (доп. класс .upgrade-lose-sheet красит
+       рамку в красный) и под заголовком появляется поясняющая строка
+       "Предмет сгорел, но ты получил утешительный скин:" — сам скин
+       рендерится в ту же карточку win-item-card, что и на победе. -->
+  <div class="modal-overlay" id="upgrade-result-modal">
+    <div class="modal-sheet win-sheet" id="upgrade-result-sheet">
+      <div class="win-title" id="upgrade-result-title">🎉 Апгрейд удался!</div>
+      <div class="upgrade-result-subtitle" id="upgrade-result-subtitle" style="display:none;"></div>
+      <div class="win-item-card" id="upgrade-result-card">
+        <img id="upgrade-result-image" src="" alt="">
+        <div class="win-item-name" id="upgrade-result-name">—</div>
+        <div class="win-item-quality" id="upgrade-result-quality"></div>
+        <div class="win-item-price" id="upgrade-result-price">0 💎</div>
+      </div>
+      <button class="btn-primary full" id="upgrade-result-ok-btn" data-i18n="upgrade_result_ok_btn">Отлично!</button>
+    </div>
+  </div>
+
 </div>
 
 <script src="app.js"></script>

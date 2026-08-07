@@ -75,9 +75,20 @@ const I18N = {
     ref_title: "👥 Реферальная ссылка", copy_btn: "Копировать",
     promo_title: "🎁 Промокод", promo_placeholder: "Введите промокод",
     activate_btn: "Активировать", minigames_title: "Мини-игры",
-    upgrade_desc: "Выбери предмет из инвентаря и множитель — при успехе цена вырастет, при неудаче предмет сгорает.",
+    upgrade_desc: "Выбери предмет из инвентаря и цель — при успехе получишь целевой скин, при неудаче предмет сгорает (но ты получишь утешительный скин).",
     multiplier_label: "Множитель", chance_preview_label: "Примерный шанс успеха",
     upgrade_btn: "Улучшить", crash_desc: "Ставь Кристаллики и укажи, на каком множителе хочешь забрать выигрыш.",
+    upgrade_mode_item: "Выбрать скин", upgrade_mode_price: "Своя цена", upgrade_mode_multiplier: "Множитель", upgrade_mode_chance: "Шанс",
+    upgrade_search_placeholder: "Поиск скина по названию…", upgrade_search_empty: "Ничего не найдено",
+    upgrade_target_price_label: "Желаемая стоимость (💎)", upgrade_target_price_placeholder: "Например, 2500",
+    upgrade_your_item_label: "Твой предмет", upgrade_target_label: "Цель",
+    sort_price_label: "Цена", upgrade_max_items_hint: "Можно выбрать до 6 предметов сразу — их стоимость суммируется",
+    upgrade_quick_multiplier: "Быстрый множитель", upgrade_quick_chance: "Быстрый шанс",
+    upgrade_spin_btn: "Запуск", upgrade_spinning: "Крутим…",
+    upgrade_success_title: "🎉 Апгрейд удался!", upgrade_fail_title: "💥 Апгрейд не удался",
+    upgrade_fail_desc: "Предмет сгорел. Но ты получил утешительный скин:",
+    upgrade_result_ok_btn: "Отлично!", upgrade_pick_item_first: "Сначала выбери предмет для улучшения",
+    upgrade_pick_target_first: "Укажи цель апгрейда",
     bet_label: "Ставка (💎)", cashout_label: "Забрать на", play_btn: "Играть",
     earn_title: "Заработать", earn_ad_title: "Посмотреть видео",
     earn_ad_desc: "Получи +2000 💎 виртуального баланса", watch_btn: "Смотреть",
@@ -148,9 +159,20 @@ const I18N = {
     ref_title: "👥 Referral link", copy_btn: "Copy",
     promo_title: "🎁 Promo code", promo_placeholder: "Enter promo code",
     activate_btn: "Activate", minigames_title: "Mini-games",
-    upgrade_desc: "Pick an item from inventory and a multiplier — succeed and the price grows, fail and it's gone.",
+    upgrade_desc: "Pick an item from inventory and a target — succeed and get the target skin, fail and it burns (you'll still get a consolation skin).",
     multiplier_label: "Multiplier", chance_preview_label: "Approx. success chance",
     upgrade_btn: "Upgrade", crash_desc: "Place a bet and choose the multiplier to cash out at.",
+    upgrade_mode_item: "Pick skin", upgrade_mode_price: "Custom price", upgrade_mode_multiplier: "Multiplier", upgrade_mode_chance: "Chance",
+    upgrade_search_placeholder: "Search skin by name…", upgrade_search_empty: "Nothing found",
+    upgrade_target_price_label: "Desired price (💎)", upgrade_target_price_placeholder: "e.g. 2500",
+    upgrade_your_item_label: "Your item", upgrade_target_label: "Target",
+    sort_price_label: "Price", upgrade_max_items_hint: "Pick up to 6 items at once — their value is combined",
+    upgrade_quick_multiplier: "Quick multiplier", upgrade_quick_chance: "Quick chance",
+    upgrade_spin_btn: "Go", upgrade_spinning: "Spinning…",
+    upgrade_success_title: "🎉 Upgrade succeeded!", upgrade_fail_title: "💥 Upgrade failed",
+    upgrade_fail_desc: "The item burned. But you got a consolation skin:",
+    upgrade_result_ok_btn: "Nice!", upgrade_pick_item_first: "Pick an item to upgrade first",
+    upgrade_pick_target_first: "Set an upgrade target",
     bet_label: "Bet (💎)", cashout_label: "Cash out at", play_btn: "Play",
     earn_title: "Earn", earn_ad_title: "Watch a video",
     earn_ad_desc: "Get +2000 💎 virtual balance", watch_btn: "Watch",
@@ -221,9 +243,20 @@ const I18N = {
     ref_title: "👥 Реферальне посилання", copy_btn: "Копіювати",
     promo_title: "🎁 Промокод", promo_placeholder: "Введіть промокод",
     activate_btn: "Активувати", minigames_title: "Міні-ігри",
-    upgrade_desc: "Обери предмет з інвентаря та множник — при успіху ціна зросте, при невдачі предмет згорить.",
+    upgrade_desc: "Обери предмет з інвентаря та ціль — при успіху отримаєш цільовий скін, при невдачі предмет згорить (але отримаєш втішний скін).",
     multiplier_label: "Множник", chance_preview_label: "Приблизний шанс успіху",
     upgrade_btn: "Покращити", crash_desc: "Став Кристалики та обери множник, на якому забрати виграш.",
+    upgrade_mode_item: "Обрати скін", upgrade_mode_price: "Своя ціна", upgrade_mode_multiplier: "Множник", upgrade_mode_chance: "Шанс",
+    upgrade_search_placeholder: "Пошук скіна за назвою…", upgrade_search_empty: "Нічого не знайдено",
+    upgrade_target_price_label: "Бажана вартість (💎)", upgrade_target_price_placeholder: "Наприклад, 2500",
+    upgrade_your_item_label: "Твій предмет", upgrade_target_label: "Ціль",
+    sort_price_label: "Ціна", upgrade_max_items_hint: "Можна вибрати до 6 предметів одразу — їх вартість підсумовується",
+    upgrade_quick_multiplier: "Швидкий множник", upgrade_quick_chance: "Швидкий шанс",
+    upgrade_spin_btn: "Запуск", upgrade_spinning: "Крутимо…",
+    upgrade_success_title: "🎉 Апгрейд вдався!", upgrade_fail_title: "💥 Апгрейд не вдався",
+    upgrade_fail_desc: "Предмет згорів. Але ти отримав втішний скін:",
+    upgrade_result_ok_btn: "Чудово!", upgrade_pick_item_first: "Спочатку обери предмет для покращення",
+    upgrade_pick_target_first: "Вкажи ціль апгрейду",
     bet_label: "Ставка (💎)", cashout_label: "Забрати на", play_btn: "Грати",
     earn_title: "Заробити", earn_ad_title: "Переглянути відео",
     earn_ad_desc: "Отримай +2000 💎 віртуального балансу", watch_btn: "Дивитись",
@@ -742,25 +775,57 @@ function openCaseScreen(caseData) {
 
   const list = document.getElementById("modal-items-list");
   list.innerHTML = "";
+
+  // Предметы уже приходят с бэкенда отсортированными от дешёвых к дорогим
+  // (по возрастанию редкости/base_price) — просто рендерим по порядку.
+
+  // Агрегированная статистика по ножам/перчаткам ЦЕЛОЙ категорией —
+  // как в самом CS2: тап по любому ножу показывает не шанс именно ЭТОГО
+  // скина, а общий шанс "выпадет какой-то нож" (Обычный / StatTrak) и
+  // разброс цен по всей категории. Считаем один раз на кейс.
+  const rareSummary = { Knife: null, Gloves: null };
+  ["Knife", "Gloves"].forEach(rarity => {
+    const group = caseData.items.filter(it => it.rarity === rarity);
+    if (!group.length) return;
+    const totalChance = group.reduce((s, it) => s + (Number(it.drop_chance) || 0), 0);
+    const basePrice = group[0].base_price;
+    // Диапазон цены задаётся разбросом качества (Battle-Scarred..Factory New),
+    // те же множители, что и в main.py (QUALITY_PRICE_MULTIPLIER: 0.62–1.65).
+    const regularMin = Math.round(basePrice * 0.62);
+    const regularMax = Math.round(basePrice * 1.65);
+    const canStattrak = rarity !== "Gloves"; // как и в игре — перчатки без StatTrak
+    rareSummary[rarity] = {
+      regularChance: canStattrak ? totalChance * (1 - STATTRAK_CHANCE_JS) : totalChance,
+      regularMin, regularMax,
+      stattrakChance: canStattrak ? totalChance * STATTRAK_CHANCE_JS : 0,
+      stattrakMin: Math.round(regularMin * STATTRAK_MULTIPLIER_JS),
+      stattrakMax: Math.round(regularMax * STATTRAK_MULTIPLIER_JS),
+      canStattrak,
+    };
+  });
+
   caseData.items.forEach(item => {
     const el = document.createElement("div");
+    const isRareCategory = item.rarity === "Knife" || item.rarity === "Gloves";
     el.className = `contents-item ${rarityClass(item.rarity)}`;
+    const [weapon, skin] = item.name.replace("★ ", "").split(" | ");
     el.innerHTML = `
       <img src="${item.image}" alt="${item.name}" loading="lazy">
-      <div class="contents-item-info">
-        <div class="contents-item-name">${item.name}</div>
-        <div class="contents-item-rarity">${rarityLabel(item.rarity)}</div>
+      <div class="contents-item-name">
+        <span class="contents-item-weapon">${weapon}</span>
+        <span class="contents-item-skin">${skin || ""}</span>
       </div>
-      <div class="contents-item-price">~${fmt(item.base_price)}</div>
       <div class="contents-item-chance-overlay">
-        <span class="contents-item-chance-value">${formatDropChance(item.drop_chance)}</span>
-        <span class="contents-item-chance-sep">|</span>
-        <span class="contents-item-chance-price">${fmtNumber(item.base_price)} 💎</span>
+        ${
+          isRareCategory
+            ? renderRareCategoryOverlay(rareSummary[item.rarity])
+            : renderRegularOverlay(item)
+        }
       </div>
     `;
-    // Клик по предмету сразу (без закрытия просмотра кейса) показывает
-    // полупрозрачный блюр с точным % шанса и ценой прямо на карточке —
-    // повторный клик скрывает его обратно.
+    // Тап по карточке (без закрытия просмотра кейса) показывает
+    // полупрозрачный блюр с шансом/ценой — цена по умолчанию скрыта,
+    // повторный тап скрывает overlay обратно.
     el.addEventListener("click", () => el.classList.toggle("revealed"));
     list.appendChild(el);
   });
@@ -943,14 +1008,27 @@ function runRouletteAnimation(caseData, drop) {
     }
   }
 
-  reel.forEach(item => {
+  // Для ножей/перчаток выигрышная позиция едет по ленте как золотая
+  // "тайна" (как в самом CS2 — до раскрытия неясно, какой именно нож
+  // и с каким StatTrak выпадет), а не сразу с готовым именем/картинкой.
+  const isRareDrop = ["Knife", "Gloves"].includes(drop.rarity);
+
+  reel.forEach((item, i) => {
     const el = document.createElement("div");
-    el.className = `roulette-item ${rarityClass(item.rarity)}`;
-    el.innerHTML = `
-      <img src="${item.image}" alt="${item.name}">
-      <span>${item.name}</span>
-    `;
+    const mystery = isRareDrop && i === WINNING_INDEX;
+    el.className = `roulette-item ${rarityClass(item.rarity)}${mystery ? " mystery-reveal" : ""}`;
+    el.innerHTML = mystery
+      ? `
+        <div class="mystery-glyph">?</div>
+        <img src="${item.image}" alt="${item.name}">
+        <span>???</span>
+      `
+      : `
+        <img src="${item.image}" alt="${item.name}">
+        <span>${item.name}</span>
+      `;
     track.appendChild(el);
+    if (mystery) el.dataset.winningSlot = "1";
   });
 
   const itemWidth = 102;
@@ -975,9 +1053,31 @@ function runRouletteAnimation(caseData, drop) {
   setTimeout(() => {
     clearInterval(tickInterval);
     playSound("lock");
-    const isRare = ["Covert", "Knife", "Gloves"].includes(drop.rarity);
-    playSound(isRare ? "fanfare" : "win");
-    showWinModal(drop);
+
+    if (isRareDrop) {
+      // Лента остановилась на золотом "?" — держим интригу чуть-чуть,
+      // затем переворачиваем плитку и раскрываем настоящий нож/перчатки
+      // (тип и StatTrak уже определены сервером в drop, игрок просто их видит).
+      const slot = track.querySelector('[data-winning-slot="1"]');
+      setTimeout(() => {
+        if (slot) {
+          slot.classList.add("mystery-flip");
+          setTimeout(() => {
+            slot.classList.remove("mystery-reveal");
+            slot.innerHTML = `
+              <img src="${drop.image}" alt="${drop.name}">
+              <span>${drop.name}</span>
+            `;
+          }, 250); // середина flip-анимации — момент подмены содержимого
+        }
+        playSound("fanfare");
+        setTimeout(() => showWinModal(drop), 550);
+      }, 900);
+    } else {
+      const isRare = drop.rarity === "Covert";
+      playSound(isRare ? "fanfare" : "win");
+      showWinModal(drop);
+    }
   }, 4400);
 }
 
@@ -1076,6 +1176,42 @@ function formatDropChance(chance) {
   if (num > 0 && num < 0.01) return num.toFixed(4) + "%";
   if (num > 0 && num < 1) return num.toFixed(2) + "%";
   return num.toFixed(2) + "%";
+}
+
+// Те же константы экономики, что и в main.py (STATTRAK_CHANCE,
+// STATTRAK_MULTIPLIER) — нужны фронту только для отображения диапазона
+// цен категории ножей/перчаток в оверлее, сам ролл всегда считает бэкенд.
+const STATTRAK_CHANCE_JS = 0.10;
+const STATTRAK_MULTIPLIER_JS = 1.8;
+
+// Оверлей для обычного скина (не нож/перчатки): точный % + цена + отметка
+// о доступности StatTrak™-версии именно у этого скина.
+function renderRegularOverlay(item) {
+  return `
+    <span class="contents-item-chance-value">${formatDropChance(item.drop_chance)}</span>
+    <span class="contents-item-chance-sep">|</span>
+    <span class="contents-item-chance-price">${fmtNumber(item.base_price)} 💎</span>
+    ${item.stattrak_available ? `<span class="contents-item-st-badge">StatTrak™ доступен</span>` : ""}
+  `;
+}
+
+// Оверлей для ножей/перчаток — как в самом CS2: не шанс конкретного скина,
+// а сводка по ВСЕЙ категории (Обычный / StatTrak) с диапазоном цен.
+function renderRareCategoryOverlay(summary) {
+  if (!summary) return "";
+  return `
+    <div class="rare-summary-row">
+      <span class="rare-summary-label">Обычный</span>
+      <span class="rare-summary-chance">${formatDropChance(summary.regularChance)}</span>
+      <span class="rare-summary-price">${fmtNumber(summary.regularMin)}–${fmtNumber(summary.regularMax)} 💎</span>
+    </div>
+    ${summary.canStattrak ? `
+    <div class="rare-summary-row rare-summary-st">
+      <span class="rare-summary-label">StatTrak™</span>
+      <span class="rare-summary-chance">${formatDropChance(summary.stattrakChance)}</span>
+      <span class="rare-summary-price">${fmtNumber(summary.stattrakMin)}–${fmtNumber(summary.stattrakMax)} 💎</span>
+    </div>` : ""}
+  `;
 }
 
 function showDropRateModal(item) {
@@ -2192,80 +2328,500 @@ const RocketGame = {
 };
 
 // ============================================
-// 🔺 УЛУЧШИТЕЛЬ (мини-игра Upgrade)
+// 🔺 УЛУЧШИТЕЛЬ (Upgrader) — v2
 // ============================================
+// Игрок выбирает предмет из инвентаря и ЦЕЛЬ ОДНИМ из 4 способов:
+//   item       — конкретный скин из глобальной базы (поиск)
+//   price      — произвольная желаемая стоимость в 💎
+//   multiplier — быстрые кнопки x2 / x3 / x5 (или свой множитель)
+//   chance     — быстрые кнопки 30% / 55% / 75% (или свой шанс)
+// Ползунок стрелки/дуги — чисто визуальный элемент; реальный результат
+// всегда приходит с бэкенда (/api/upgrade), сам вращение только красиво
+// "доигрывает" уже известный исход после ответа сервера.
+
+const UPGRADER_MULTIPLIER_PRESETS = [2, 3, 5];
+const UPGRADER_CHANCE_PRESETS = [30, 55, 75];
+
 function calcUpgradeChance(multiplier) {
   const targetHouseEdge = 0.85;
-  let chance = targetHouseEdge / multiplier;
+  const chance = targetHouseEdge / multiplier;
   return Math.max(0.01, Math.min(0.80, chance));
 }
 
 const UpgraderGame = {
+  mode: "multiplier",       // item | price | multiplier | chance
+  selectedItemIds: [],      // выбранные предметы ИЗ ИНВЕНТАРЯ (что улучшаем) — до 6 штук
+  sortDir: "asc",           // сортировка списка своих предметов: asc | desc
+  targetEntry: null,        // выбранный ЦЕЛЕВОЙ скин (для mode === "item")
+  multiplier: 2,
+  chance: 42,
+  searchTimer: null,
+  spinning: false,
+
   render() {
     return `
       <div class="game-panel-desc">${t("upgrade_desc")}</div>
-      <select id="upgrader-item-select" class="mg-select"></select>
+
       <div class="mg-row">
-        <label class="mg-label"><span>${t("multiplier_label")}</span>: <span id="upgrader-multiplier-value">2.0x</span></label>
-        <input type="range" id="upgrader-multiplier-slider" min="1.1" max="10" step="0.1" value="2.0">
+        <div class="upg-your-items-header">
+          <label class="mg-label">${t("upgrade_your_item_label")} <span id="upgrader-picked-count">(0/6)</span></label>
+          <button type="button" class="upg-sort-btn" id="upgrader-sort-btn" data-dir="asc">
+            <span id="upgrader-sort-label">↑ ${t("sort_price_label")}</span>
+          </button>
+        </div>
+        <div class="upg-your-items-grid" id="upgrader-items-grid"></div>
       </div>
-      <div class="mg-chance-preview">
-        <span>${t("chance_preview_label")}</span>: <span id="upgrader-chance-preview">42%</span>
+
+      <div class="upg-mode-tabs" id="upgrader-mode-tabs">
+        <button type="button" class="upg-mode-tab active" data-mode="multiplier">${t("upgrade_mode_multiplier")}</button>
+        <button type="button" class="upg-mode-tab" data-mode="chance">${t("upgrade_mode_chance")}</button>
+        <button type="button" class="upg-mode-tab" data-mode="item">${t("upgrade_mode_item")}</button>
+        <button type="button" class="upg-mode-tab" data-mode="price">${t("upgrade_mode_price")}</button>
       </div>
-      <button class="btn-primary full" id="upgrader-play-btn">${t("upgrade_btn")}</button>
+
+      <!-- mode: multiplier -->
+      <div class="upg-mode-pane" id="upg-pane-multiplier">
+        <div class="upg-preset-row">
+          ${UPGRADER_MULTIPLIER_PRESETS.map(m => `<button type="button" class="upg-preset-btn" data-mult="${m}">x${m}</button>`).join("")}
+        </div>
+        <div class="mg-row">
+          <label class="mg-label"><span>${t("multiplier_label")}</span>: <span id="upgrader-multiplier-value">2.0x</span></label>
+          <input type="range" id="upgrader-multiplier-slider" min="1.05" max="20" step="0.05" value="2.0">
+        </div>
+      </div>
+
+      <!-- mode: chance -->
+      <div class="upg-mode-pane" id="upg-pane-chance" style="display:none;">
+        <div class="upg-preset-row">
+          ${UPGRADER_CHANCE_PRESETS.map(c => `<button type="button" class="upg-preset-btn" data-chance="${c}">${c}%</button>`).join("")}
+        </div>
+        <div class="mg-row">
+          <label class="mg-label"><span>${t("chance_preview_label")}</span>: <span id="upgrader-chance-value">42%</span></label>
+          <input type="range" id="upgrader-chance-slider" min="1" max="80" step="1" value="42">
+        </div>
+      </div>
+
+      <!-- mode: item (поиск по глобальной базе скинов) -->
+      <div class="upg-mode-pane" id="upg-pane-item" style="display:none;">
+        <input type="text" id="upgrader-search-input" class="mg-input" placeholder="${t("upgrade_search_placeholder")}">
+        <div class="upg-search-results" id="upgrader-search-results"></div>
+        <div class="upg-target-picked" id="upgrader-target-picked" style="display:none;"></div>
+      </div>
+
+      <!-- mode: price (своя стоимость) -->
+      <div class="upg-mode-pane" id="upg-pane-price" style="display:none;">
+        <label class="mg-label">${t("upgrade_target_price_label")}</label>
+        <input type="number" id="upgrader-price-input" class="mg-input" min="1" step="1" placeholder="${t("upgrade_target_price_placeholder")}">
+      </div>
+
+      <!-- Круговой индикатор шанса + стрелка (визуал) -->
+      <div class="upg-wheel-wrap" id="upgrader-wheel-wrap">
+        <svg width="200" height="200" viewBox="0 0 200 200" class="upg-wheel-svg">
+          <circle class="upg-track-bg" cx="100" cy="100" r="82"></circle>
+          <circle class="upg-track-progress" id="upgrader-track-progress" cx="100" cy="100" r="82"
+            stroke-dasharray="0 515.2" transform="rotate(-90 100 100)"></circle>
+        </svg>
+        <div class="upg-needle-pivot" id="upgrader-needle-pivot"><div class="upg-needle"></div></div>
+        <div class="upg-wheel-center">
+          <div class="upg-wheel-percent"><span id="upgrader-wheel-percent">42</span>%</div>
+          <div class="upg-wheel-sub">${t("chance_preview_label")}</div>
+        </div>
+      </div>
+
+      <div class="upg-summary-row">
+        <div class="upg-summary-box">
+          <div class="upg-summary-label">${t("upgrade_your_item_label")}</div>
+          <div class="upg-summary-value" id="upgrader-summary-old">— 💎</div>
+        </div>
+        <div class="upg-summary-arrow">→</div>
+        <div class="upg-summary-box">
+          <div class="upg-summary-label">${t("upgrade_target_label")}</div>
+          <div class="upg-summary-value" id="upgrader-summary-target">— 💎</div>
+        </div>
+      </div>
+
+      <button class="btn-primary full" id="upgrader-play-btn">${t("upgrade_spin_btn")}</button>
     `;
   },
+
   init() {
-    this.populateSelect();
+    this.mode = "multiplier";
+    this.selectedItemIds = [];
+    this.sortDir = "asc";
+    this.targetEntry = null;
+    this.multiplier = 2;
+    this.chance = 42;
+    this.spinning = false;
 
-    const slider = document.getElementById("upgrader-multiplier-slider");
-    slider.addEventListener("input", () => {
-      const mult = parseFloat(slider.value);
-      document.getElementById("upgrader-multiplier-value").textContent = mult.toFixed(1) + "x";
-      document.getElementById("upgrader-chance-preview").textContent = (calcUpgradeChance(mult) * 100).toFixed(0) + "%";
+    this.renderItemsGrid();
+
+    document.getElementById("upgrader-sort-btn").addEventListener("click", () => {
+      this.sortDir = this.sortDir === "asc" ? "desc" : "asc";
+      this.renderItemsGrid();
     });
 
-    document.getElementById("upgrader-play-btn").addEventListener("click", async () => {
-      const itemId = document.getElementById("upgrader-item-select").value;
-      const multiplier = parseFloat(slider.value);
-
-      if (!itemId) { tg?.showAlert?.(t("select_item_first")); return; }
-
-      try {
-        const result = await apiPost("/minigames/upgrade", {
-          telegram_id: state.telegramId,
-          inventory_id: Number(itemId),
-          target_multiplier: multiplier,
-        });
-
-        playSound(result.result === "win" ? "win" : "lose");
-        tg?.showAlert?.(result.result === "win" ? `${t("upgrade_success")} ${fmt(result.new_price)}` : t("upgrade_fail"));
-
-        state.inventory = state.inventory.filter(i => i.id !== Number(itemId));
-        this.populateSelect();
-        renderInventory();
-        loadProfile();
-      } catch (e) {
-        tg?.showAlert?.(e.message);
-      }
+    document.getElementById("upgrader-mode-tabs").addEventListener("click", (e) => {
+      const btn = e.target.closest(".upg-mode-tab");
+      if (!btn) return;
+      this.setMode(btn.dataset.mode);
     });
+
+    // Быстрые кнопки-множители (x2/x3/x5)
+    document.querySelectorAll("#upg-pane-multiplier .upg-preset-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        this.multiplier = parseFloat(btn.dataset.mult);
+        document.getElementById("upgrader-multiplier-slider").value = this.multiplier;
+        this.onMultiplierChange();
+      });
+    });
+    document.getElementById("upgrader-multiplier-slider").addEventListener("input", (e) => {
+      this.multiplier = parseFloat(e.target.value);
+      this.onMultiplierChange();
+    });
+
+    // Быстрые кнопки-шансы (30/55/75%)
+    document.querySelectorAll("#upg-pane-chance .upg-preset-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        this.chance = parseFloat(btn.dataset.chance);
+        document.getElementById("upgrader-chance-slider").value = this.chance;
+        this.onChanceChange();
+      });
+    });
+    document.getElementById("upgrader-chance-slider").addEventListener("input", (e) => {
+      this.chance = parseFloat(e.target.value);
+      this.onChanceChange();
+    });
+
+    // Поиск целевого скина по глобальной базе (items_data на бэкенде)
+    const searchInput = document.getElementById("upgrader-search-input");
+    searchInput.addEventListener("input", () => {
+      clearTimeout(this.searchTimer);
+      this.searchTimer = setTimeout(() => this.runItemSearch(searchInput.value), 250);
+    });
+
+    // Своя стоимость
+    document.getElementById("upgrader-price-input").addEventListener("input", () => {
+      this.updateSummary();
+    });
+
+    document.getElementById("upgrader-play-btn").addEventListener("click", () => this.play());
+
+    this.onMultiplierChange();
+    this.updateSummary();
   },
+
+  destroy() {
+    clearTimeout(this.searchTimer);
+  },
+
+  setMode(mode) {
+    this.mode = mode;
+    document.querySelectorAll(".upg-mode-tab").forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
+    ["multiplier", "chance", "item", "price"].forEach(m => {
+      document.getElementById(`upg-pane-${m}`).style.display = m === mode ? "" : "none";
+    });
+    this.updateSummary();
+  },
+
   populateSelect() {
-    const select = document.getElementById("upgrader-item-select");
-    if (!select) return;
-    select.innerHTML = "";
+    // Оставлено для обратной совместимости вызовов — реальный рендер
+    // теперь в renderItemsGrid() (карточки с чекбоксами + сортировка).
+    this.renderItemsGrid();
+  },
+
+  // Рисует сетку своих предметов (карточки с чекбоксом) с учётом текущей
+  // сортировки по цене; позволяет отметить до MAX_UPGRADE_ITEMS штук —
+  // их суммарная стоимость становится "старой ценой" апгрейда.
+  renderItemsGrid() {
+    const MAX_ITEMS = 6;
+    const grid = document.getElementById("upgrader-items-grid");
+    const sortBtn = document.getElementById("upgrader-sort-btn");
+    const sortLabel = document.getElementById("upgrader-sort-label");
+    if (!grid) return;
+
+    if (sortBtn) sortBtn.dataset.dir = this.sortDir;
+    if (sortLabel) sortLabel.textContent = `${this.sortDir === "asc" ? "↑" : "↓"} ${t("sort_price_label")}`;
+
+    // убираем из выбранных предметы, которых больше нет в инвентаре
+    this.selectedItemIds = this.selectedItemIds.filter(id =>
+      state.inventory.some(i => String(i.id) === String(id))
+    );
+
+    grid.innerHTML = "";
     if (!state.inventory.length) {
-      select.innerHTML = `<option value="">${t("inventory_empty")}</option>`;
+      grid.innerHTML = `<div class="upg-items-empty">${t("inventory_empty")}</div>`;
+      this.updatePickedCount();
       return;
     }
-    state.inventory.forEach(item => {
-      const opt = document.createElement("option");
-      opt.value = item.id;
-      opt.textContent = `${item.name} — ${fmt(item.price)}`;
-      select.appendChild(opt);
+
+    const sorted = [...state.inventory].sort((a, b) =>
+      this.sortDir === "asc" ? a.price - b.price : b.price - a.price
+    );
+
+    sorted.forEach(item => {
+      const picked = this.selectedItemIds.some(id => String(id) === String(item.id));
+      const disableUnpicked = !picked && this.selectedItemIds.length >= MAX_ITEMS;
+      const el = document.createElement("div");
+      el.className = `upg-item-card ${rarityClass(item.rarity)}${picked ? " picked" : ""}${disableUnpicked ? " disabled" : ""}`;
+      el.innerHTML = `
+        <img src="${item.image}" alt="${item.name}" loading="lazy">
+        <div class="upg-item-card-name">${item.name}</div>
+        <div class="upg-item-card-price">${fmt(item.price)}</div>
+        <div class="upg-item-card-check">${picked ? "✓" : ""}</div>
+      `;
+      el.addEventListener("click", () => {
+        if (picked) {
+          this.selectedItemIds = this.selectedItemIds.filter(id => String(id) !== String(item.id));
+        } else {
+          if (this.selectedItemIds.length >= MAX_ITEMS) return; // лимит 6 штук
+          this.selectedItemIds.push(item.id);
+        }
+        this.renderItemsGrid();
+        this.updateSummary();
+      });
+      grid.appendChild(el);
     });
+
+    this.updatePickedCount();
+  },
+
+  updatePickedCount() {
+    const el = document.getElementById("upgrader-picked-count");
+    if (el) el.textContent = `(${this.selectedItemIds.length}/6)`;
+  },
+
+  getSelectedItems() {
+    return this.selectedItemIds
+      .map(id => state.inventory.find(i => String(i.id) === String(id)))
+      .filter(Boolean);
+  },
+
+  // Суммарная стоимость всех выбранных предметов — она же "старая цена"
+  // апгрейда (несколько скинов объединяются в один апгрейд).
+  getSelectedTotalPrice() {
+    return this.getSelectedItems().reduce((sum, i) => sum + i.price, 0);
+  },
+
+  onMultiplierChange() {
+    document.getElementById("upgrader-multiplier-value").textContent = this.multiplier.toFixed(2) + "x";
+    document.querySelectorAll("#upg-pane-multiplier .upg-preset-btn").forEach(b => {
+      b.classList.toggle("active", parseFloat(b.dataset.mult) === this.multiplier);
+    });
+    this.chance = calcUpgradeChance(this.multiplier) * 100;
+    this.updateSummary();
+  },
+
+  onChanceChange() {
+    document.getElementById("upgrader-chance-value").textContent = Math.round(this.chance) + "%";
+    document.querySelectorAll("#upg-pane-chance .upg-preset-btn").forEach(b => {
+      b.classList.toggle("active", parseFloat(b.dataset.chance) === this.chance);
+    });
+    this.multiplier = 0.85 / (this.chance / 100);
+    this.updateSummary();
+  },
+
+  async runItemSearch(query) {
+    const box = document.getElementById("upgrader-search-results");
+    if (!box) return;
+    try {
+      const data = await apiGet(`/items/search?q=${encodeURIComponent(query)}&limit=20`);
+      if (!data.results.length) {
+        box.innerHTML = `<div class="upg-search-empty">${t("upgrade_search_empty")}</div>`;
+        return;
+      }
+      box.innerHTML = "";
+      data.results.forEach(entry => {
+        const el = document.createElement("div");
+        el.className = `upg-search-item ${rarityClass(entry.rarity)}`;
+        el.innerHTML = `
+          <img src="${entry.image}" alt="">
+          <div class="upg-search-item-info">
+            <div class="upg-search-item-name">${entry.name}</div>
+            <div class="upg-search-item-price">${fmtNumber(entry.base_price)} 💎</div>
+          </div>
+        `;
+        el.addEventListener("click", () => {
+          this.targetEntry = entry;
+          box.innerHTML = "";
+          document.getElementById("upgrader-search-input").value = entry.name;
+          this.showPickedTarget();
+          this.updateSummary();
+        });
+        box.appendChild(el);
+      });
+    } catch (e) { /* тихо игнорируем сетевые сбои поиска */ }
+  },
+
+  showPickedTarget() {
+    const el = document.getElementById("upgrader-target-picked");
+    if (!this.targetEntry) { el.style.display = "none"; return; }
+    el.style.display = "flex";
+    el.innerHTML = `
+      <img src="${this.targetEntry.image}" alt="">
+      <div>
+        <div class="upg-search-item-name">${this.targetEntry.name}</div>
+        <div class="upg-search-item-price">${fmtNumber(this.targetEntry.base_price)} 💎</div>
+      </div>
+    `;
+  },
+
+  // Пересчитывает и показывает старую/целевую стоимость + дугу-индикатор
+  // ЧИСТО НА ФРОНТЕ (для мгновенного превью) — финальные цифры при
+  // фактическом апгрейде всегда пересчитываются и проверяются на бэкенде.
+  updateSummary() {
+    const items = this.getSelectedItems();
+    const oldPrice = this.getSelectedTotalPrice();
+    document.getElementById("upgrader-summary-old").textContent = items.length ? fmt(oldPrice) : "—";
+
+    let targetPrice = 0;
+    let chancePct = this.chance;
+
+    if (this.mode === "item") {
+      targetPrice = this.targetEntry ? this.targetEntry.base_price : 0;
+      if (items.length && targetPrice > oldPrice) chancePct = calcUpgradeChance(targetPrice / oldPrice) * 100;
+    } else if (this.mode === "price") {
+      const manual = parseFloat(document.getElementById("upgrader-price-input").value);
+      targetPrice = manual > 0 ? manual : 0;
+      if (items.length && targetPrice > oldPrice) chancePct = calcUpgradeChance(targetPrice / oldPrice) * 100;
+    } else if (this.mode === "multiplier") {
+      targetPrice = oldPrice * this.multiplier;
+      chancePct = calcUpgradeChance(this.multiplier) * 100;
+    } else if (this.mode === "chance") {
+      const mult = 0.85 / (this.chance / 100);
+      targetPrice = oldPrice * mult;
+      chancePct = this.chance;
+    }
+
+    document.getElementById("upgrader-summary-target").textContent = targetPrice > 0 ? fmt(targetPrice) : "—";
+    this.setWheelChance(chancePct);
+  },
+
+  setWheelChance(chancePct) {
+    chancePct = Math.max(0, Math.min(100, chancePct || 0));
+    const CIRC = 2 * Math.PI * 82;
+    const dash = (chancePct / 100) * CIRC;
+    document.getElementById("upgrader-track-progress").style.strokeDasharray = `${dash} ${CIRC - dash}`;
+    document.getElementById("upgrader-wheel-percent").textContent = Math.round(chancePct);
+  },
+
+  buildRequestBody() {
+    const items = this.getSelectedItems();
+    if (!items.length) return null;
+    const body = {
+      telegram_id: state.telegramId,
+      inventory_ids: items.map(i => Number(i.id)),
+      mode: this.mode,
+    };
+    if (this.mode === "item") {
+      if (!this.targetEntry) return null;
+      body.target_name = this.targetEntry.name;
+    } else if (this.mode === "price") {
+      const manual = parseFloat(document.getElementById("upgrader-price-input").value);
+      if (!(manual > 0)) return null;
+      body.target_price = manual;
+    } else if (this.mode === "multiplier") {
+      body.multiplier = this.multiplier;
+    } else if (this.mode === "chance") {
+      body.chance = this.chance;
+    }
+    return body;
+  },
+
+  async play() {
+    if (this.spinning) return;
+    const items = this.getSelectedItems();
+    if (!items.length) { tg?.showAlert?.(t("upgrade_pick_item_first")); return; }
+
+    const body = this.buildRequestBody();
+    if (!body) { tg?.showAlert?.(t("upgrade_pick_target_first")); return; }
+
+    const playBtn = document.getElementById("upgrader-play-btn");
+    this.spinning = true;
+    playBtn.disabled = true;
+    playBtn.textContent = t("upgrade_spinning");
+
+    try {
+      const result = await apiPost("/upgrade", body);
+      this.spinWheelToResult(result);
+    } catch (e) {
+      tg?.showAlert?.(e.message);
+      this.spinning = false;
+      playBtn.disabled = false;
+      playBtn.textContent = t("upgrade_spin_btn");
+    }
+  },
+
+  // Крутит стрелку "вслепую" (визуально), а по окончании анимации
+  // показывает уже известный (пришедший с сервера) результат.
+  spinWheelToResult(result) {
+    const pivot = document.getElementById("upgrader-needle-pivot");
+    const chanceUsed = result.chance_used;
+    // Угол "победной" зоны — от 0 до chanceUsed% окружности.
+    const winThreshold = chanceUsed * 3.6;
+    const landingAngle = result.result === "win"
+      ? Math.random() * winThreshold
+      : winThreshold + Math.random() * (360 - winThreshold);
+
+    const extraSpins = 5 + Math.floor(Math.random() * 3);
+    const targetRotation = extraSpins * 360 + landingAngle;
+
+    pivot.style.transition = "transform 3.6s cubic-bezier(0.12, 0.75, 0.15, 1)";
+    pivot.style.transform = `translate(-50%,-50%) rotate(${targetRotation}deg)`;
+
+    setTimeout(() => this.finishRound(result), 3800);
+  },
+
+  async finishRound(result) {
+    playSound(result.result === "win" ? "win" : "lose");
+
+    if (result.result === "win") {
+      showUpgradeResult(true, result.item);
+    } else {
+      showUpgradeResult(false, result.compensation);
+    }
+
+    state.inventory = state.inventory.filter(i => !this.selectedItemIds.some(id => String(id) === String(i.id)));
+    await loadInventory();
+    this.selectedItemIds = [];
+    this.renderItemsGrid();
+    this.targetEntry = null;
+    document.getElementById("upgrader-search-input").value = "";
+    this.showPickedTarget();
+    this.updateSummary();
+    loadProfile();
+
+    const playBtn = document.getElementById("upgrader-play-btn");
+    this.spinning = false;
+    playBtn.disabled = false;
+    playBtn.textContent = t("upgrade_spin_btn");
+
+    // Сброс стрелки без анимации, чтобы следующий раунд стартовал с нуля
+    const pivot = document.getElementById("upgrader-needle-pivot");
+    pivot.style.transition = "none";
+    pivot.style.transform = "translate(-50%,-50%) rotate(0deg)";
   },
 };
+
+// Модалка результата Апгрейдера — используется и для победы (выданный
+// целевой скин), и для поражения (утешительный компенсационный скин).
+function showUpgradeResult(isWin, item) {
+  const modal = document.getElementById("upgrade-result-modal");
+  const sheet = modal.querySelector(".modal-sheet");
+  sheet.classList.toggle("upgrade-lose-sheet", !isWin);
+  document.getElementById("upgrade-result-title").textContent = isWin ? t("upgrade_success_title") : t("upgrade_fail_title");
+  document.getElementById("upgrade-result-subtitle").style.display = isWin ? "none" : "block";
+  document.getElementById("upgrade-result-subtitle").textContent = t("upgrade_fail_desc");
+  document.getElementById("upgrade-result-image").src = item.image || "";
+  document.getElementById("upgrade-result-name").textContent = item.name;
+  document.getElementById("upgrade-result-quality").textContent =
+    `${item.quality_name || ""}${item.stattrak ? " · StatTrak™" : ""}`;
+  document.getElementById("upgrade-result-price").textContent = fmt(item.price);
+  modal.classList.add("active");
+}
+
+document.getElementById("upgrade-result-ok-btn")?.addEventListener("click", () => {
+  document.getElementById("upgrade-result-modal").classList.remove("active");
+});
 
 // ============================================
 // 🎡 КОЛЕСО (Wheel)
