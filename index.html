@@ -21,6 +21,7 @@
     </div>
     <div class="topbar-right">
       <div class="vip-pill" id="vip-pill" style="display:none;">⭐ VIP</div>
+      <button class="currency-toggle-btn" id="header-currency-toggle" title="Currency">₽</button>
       <button class="sound-toggle-btn" id="header-sound-toggle" title="Sound">🔊</button>
     </div>
   </header>
@@ -120,6 +121,15 @@
             <button class="lang-btn" data-lang="ru">RU</button>
             <button class="lang-btn" data-lang="en">EN</button>
             <button class="lang-btn" data-lang="uk">UA</button>
+          </div>
+        </div>
+
+        <div class="settings-row">
+          <span class="settings-label" data-i18n="settings_currency">💱 Валюта</span>
+          <div class="currency-switch" id="currency-switch">
+            <button class="currency-btn" data-currency="RUB">₽ RUB</button>
+            <button class="currency-btn" data-currency="USD">$ USD</button>
+            <button class="currency-btn" data-currency="UAH">₴ UAH</button>
           </div>
         </div>
 

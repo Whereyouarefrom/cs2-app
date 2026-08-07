@@ -5,6 +5,7 @@
 import random
 import secrets
 import math
+import asyncio
 import datetime
 from typing import Optional, List
 
@@ -17,6 +18,7 @@ from sqlalchemy import select
 from database import async_session, init_db, close_db, User, Inventory, PromoCode
 from cases_data import CASES
 import items_data
+import currency
 from auth import parse_and_verify_init_data, InitDataError
 from format_utils import format_balance_with_icon
 import config
@@ -34,6 +36,10 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     await init_db()
+    # Фоновая задача курса валют — первое обновление прямо сейчас (не
+    # блокирует запуск сервера, если сети нет: тихо останется на
+    # FALLBACK_RATES), дальше сама себя перезапускает каждые несколько часов.
+    asyncio.create_task(currency.periodic_refresh())
 
 
 @app.on_event("shutdown")
@@ -57,18 +63,60 @@ RARITY_ORDER = [
 # Их суммарный шанс всегда фиксирован в 1-2%, независимо от состава кейса.
 RARE_TIER = {"Covert", "Knife", "Gloves"}
 
-# Базовая цена предмета в 💎 Кристалликах по редкости (до модификаторов
-# качества и StatTrak™) — виртуальная величина, подобрана для баланса игры.
-BASE_PRICE_BY_RARITY = {
-    "Consumer": 25,
-    "Industrial": 55,
-    "Mil-Spec": 150,
-    "Restricted": 650,
-    "Classified": 2400,
-    "Covert": 8000,
-    "Gloves": 42000,
-    "Knife": 60000,
+# ---------------------------------------------------------------
+# ЦЕНЫ ПРЕДМЕТОВ: реальные цены Steam Market + fallback по редкости
+# ---------------------------------------------------------------
+# Раньше цена ЛЮБОГО предмета определялась ТОЛЬКО его редкостью (плоская
+# таблица BASE_PRICE_BY_RARITY) — то есть AWP | Dragon Lore и любой другой
+# "Тайный" (Covert) скин стоили в игре одинаковые 8 000 💎, что не имеет
+# ничего общего с реальными ценами на площадке Steam (где Dragon Lore
+# стоит тысячи долларов, а рядовой Covert-скин — единицы).
+#
+# Теперь цена конкретного предмета в 💎 Кристалликах (= ₽, см. currency.py)
+# берётся ИЗ РЕАЛЬНОЙ цены Steam Community Market (items_data.py подтягивает
+# её из items_prices.json, который генерирует sync_prices.py — см. докстринг
+# того файла: полная синхронизация ~1950 предметов делается один раз/по
+# расписанию на сервере с доступом в интернет, ключ не нужен).
+#
+# FALLBACK_USD_BY_RARITY ниже используется ТОЛЬКО для предметов, для
+# которых sync_prices.py ещё не нашёл реальную цену (например, скрипт ещё
+# ни разу не запускался, либо у конкретного скина сейчас нет предложений
+# на площадке) — это заведомо консервативная (нижняя) оценка по редкости,
+# просто чтобы экономика не ломалась, а не попытка угадать точную цену.
+FALLBACK_USD_BY_RARITY = {
+    "Consumer": 0.03,
+    "Industrial": 0.08,
+    "Mil-Spec": 0.60,
+    "Restricted": 3.50,
+    "Classified": 14.00,
+    "Covert": 45.00,
+    "Gloves": 250.00,
+    "Knife": 350.00,
 }
+
+# Оставлена для обратной совместимости (используется в паре мест как
+# отображаемая "базовая" цена редкости до реального лукапа по имени) —
+# теперь выражена уже в 💎/₽ через текущий курс, а не захардкожена.
+def _fallback_base_price_rub(rarity: str) -> float:
+    return currency.usd_to_rub(FALLBACK_USD_BY_RARITY.get(rarity, 1.0))
+
+
+def get_base_price_rub(name: str, rarity: str, stattrak: bool = False) -> float:
+    """Главная точка входа для цены предмета в 💎/₽: реальная цена со Steam
+    Market (если для этого имени она уже засинкана), иначе — консервативный
+    fallback по редкости. При stattrak=True сначала пробуем реальную
+    StatTrak-цену конкретного предмета (если засинкана) — и только если её
+    нет, применяем общий множитель STATTRAK_MULTIPLIER к обычной цене
+    (см. _roll_item_instance)."""
+    item = items_data.get_item(name)
+    usd = None
+    if item:
+        if stattrak and item.get("usd_price_stattrak"):
+            return currency.usd_to_rub(item["usd_price_stattrak"])
+        usd = item.get("usd_price")
+    if usd is None:
+        usd = FALLBACK_USD_BY_RARITY.get(rarity, 1.0)
+    return currency.usd_to_rub(usd)
 
 QUALITIES = ["FN", "MW", "FT", "WW", "BS"]
 QUALITY_FULL_NAME = {
@@ -210,8 +258,8 @@ def _raw_case_expected_value(case_key: str) -> float:
     for rarity, group in by_rarity.items():
         rarity_weight = weights.get(rarity, 0.0)
         per_item_weight = rarity_weight / len(group)
-        for _ in group:
-            expected_value += (per_item_weight / 100) * BASE_PRICE_BY_RARITY[rarity]
+        for it in group:
+            expected_value += (per_item_weight / 100) * get_base_price_rub(it["name"], rarity)
     return expected_value
 
 
@@ -255,9 +303,16 @@ def _roll_item_instance(name: str, rarity: str, image: str) -> dict:
     quality = random.choices(QUALITIES, weights=[QUALITY_WEIGHTS[q] for q in QUALITIES])[0]
     stattrak = rarity in STATTRAK_ELIGIBLE_RARITIES and random.random() < STATTRAK_CHANCE
 
-    base_price = BASE_PRICE_BY_RARITY[rarity]
+    # Если для этого конкретного предмета есть реальная StatTrak-цена со
+    # Steam Market — get_base_price_rub(..., stattrak=True) уже вернёт её
+    # напрямую (без дополнительного умножения на STATTRAK_MULTIPLIER, чтобы
+    # не задвоить премию). Иначе — обычная цена * приблизительный множитель.
+    base_price = get_base_price_rub(name, rarity, stattrak=stattrak)
+    has_real_stattrak_price = stattrak and bool(
+        (items_data.get_item(name) or {}).get("usd_price_stattrak")
+    )
     price = base_price * QUALITY_PRICE_MULTIPLIER[quality]
-    if stattrak:
+    if stattrak and not has_real_stattrak_price:
         price *= STATTRAK_MULTIPLIER
     price = round(price)
 
@@ -353,7 +408,7 @@ def _craft_catalog_by_rarity() -> dict[str, list[dict]]:
                 "name": it["name"],
                 "rarity": rarity,
                 "image": it["image"],
-                "base_price": BASE_PRICE_BY_RARITY[rarity],
+                "base_price": get_base_price_rub(it["name"], rarity),
             })
     return _CRAFT_CATALOG_CACHE
 
@@ -586,7 +641,28 @@ async def app_config():
         "bonus_cooldown_seconds": BONUS_COOLDOWN_SECONDS,
         "craft_fee_by_rarity": CRAFT_FEE_BY_RARITY,
         "craft_items_required": CRAFT_ITEMS_REQUIRED,
+        # Курс валют для переключателя ₽/$/₴ в шапке WebApp — фронт получает
+        # его один раз при старте вместе с остальным конфигом (без лишнего
+        # запроса) и сам умножает крестики/цены на нужный множитель при
+        # переключении валюты. См. также отдельный /api/currency/rates —
+        # он дублирует то же самое для случаев, когда фронт хочет обновить
+        # курс без полной перезагрузки конфига (например, раз в несколько
+        # минут, пока открыт WebApp).
+        "currency_rates": currency.get_rates(),
+        "currency_symbols": {"RUB": "💎", "USD": "$", "UAH": "₴"},
     }
+
+
+# ============================================
+# 2b. GET /api/currency/rates — курс валют отдельным лёгким эндпоинтом
+# ============================================
+@app.get("/api/currency/rates")
+async def currency_rates():
+    """Отдаёт актуальный (закэшированный, обновляется раз в 6 часов в
+    фоне — см. currency.periodic_refresh) курс RUB->USD/UAH. RUB всегда
+    равен 1.0, потому что это и есть внутренняя единица 💎 Кристалла."""
+    return {"rates": currency.get_rates(), "base": "RUB"}
+
 
 
 # ============================================
@@ -607,7 +683,7 @@ async def get_cases():
                     "name": i["name"],
                     "rarity": i["rarity"],
                     "image": i["image"],
-                    "base_price": BASE_PRICE_BY_RARITY[i["rarity"]],
+                    "base_price": get_base_price_rub(i["name"], i["rarity"]),
                     "drop_chance": chances.get(i["name"], 0.0),
                     # Есть ли у ЭТОГО конкретного скина StatTrak™-версия (для
                     # ножей/перчаток не используется — там показывается
@@ -1271,7 +1347,7 @@ def _roll_bonus_skin(rarity_pool: list[str]) -> dict:
     rarity = random.choice(available) if available else "Classified"
     item = random.choice(_ALL_ITEMS_BY_RARITY[rarity])
     quality = random.choices(QUALITIES, weights=[QUALITY_WEIGHTS[q] for q in QUALITIES])[0]
-    price = round(BASE_PRICE_BY_RARITY[rarity] * QUALITY_PRICE_MULTIPLIER[quality])
+    price = round(get_base_price_rub(item["name"], rarity) * QUALITY_PRICE_MULTIPLIER[quality])
     return {
         "name": item["name"],
         "rarity": rarity,
@@ -1467,7 +1543,7 @@ def _resolve_upgrade_target(req: "UpgradeRequest", old_price: float) -> tuple[fl
         explicit_item = items_data.get_item(req.target_name)
         if not explicit_item:
             raise HTTPException(400, "Целевой предмет не найден в базе")
-        target_price = float(BASE_PRICE_BY_RARITY[explicit_item["rarity"]])
+        target_price = get_base_price_rub(explicit_item["name"], explicit_item["rarity"])
         if target_price <= old_price:
             raise HTTPException(400, "Целевой предмет должен быть дороже улучшаемого")
         multiplier = _clamp(target_price / old_price, UPGRADE_MIN_MULTIPLIER, UPGRADE_MAX_MULTIPLIER)
@@ -1493,15 +1569,36 @@ def _resolve_upgrade_target(req: "UpgradeRequest", old_price: float) -> tuple[fl
 
 
 def _pick_item_for_price(target_price: float) -> dict:
-    """Подбирает случайный предмет из глобального реестра items_data,
-    редкость которого ближе всего (в логарифмической шкале — цены редкостей
-    растут на порядки) к желаемой стоимости target_price."""
+    """Подбирает предмет из глобального реестра items_data, чья РЕАЛЬНАЯ
+    цена (Steam Market, с fallback по редкости — см. get_base_price_rub)
+    ближе всего к желаемой стоимости target_price.
+
+    Раньше подбор шёл только по редкости (случайный предмет внутри самой
+    близкой по логарифму цены редкости), из-за чего Апгрейдер мог выдать
+    дешёвый рядовой скин "нужной" редкости с реальной ценой в разы ниже
+    target_price — теперь редкость используется только чтобы сузить пул
+    кандидатов (иначе пришлось бы на каждый запрос пересчитывать цену для
+    всех ~1950 предметов реестра), а финальный выбор — по фактической цене."""
     target_log = math.log(max(target_price, 1.0))
-    best_rarity = min(
+
+    rarities_by_closeness = sorted(
         RARITY_ORDER,
-        key=lambda r: abs(math.log(BASE_PRICE_BY_RARITY[r]) - target_log),
+        key=lambda r: abs(math.log(_fallback_base_price_rub(r)) - target_log),
     )
-    pool = items_data.ITEMS_BY_RARITY.get(best_rarity) or items_data.ALL_ITEMS
+    candidates: list[dict] = []
+    for r in rarities_by_closeness[:3]:
+        candidates.extend(items_data.ITEMS_BY_RARITY.get(r) or [])
+    if not candidates:
+        candidates = items_data.ALL_ITEMS
+
+    def _item_log_distance(it: dict) -> float:
+        price = get_base_price_rub(it["name"], it["rarity"])
+        return abs(math.log(max(price, 0.01)) - target_log)
+
+    candidates.sort(key=_item_log_distance)
+    # Берём топ-12 ближайших по цене и выбираем случайно среди них — иначе
+    # результат для одной и той же целевой цены был бы всегда одинаковым.
+    pool = candidates[:12] or candidates
     return random.choice(pool)
 
 
@@ -1538,7 +1635,7 @@ async def search_items(q: str = "", limit: int = 30):
                 "rarity": it["rarity"],
                 "category": it["category"],
                 "image": it["image"],
-                "base_price": BASE_PRICE_BY_RARITY[it["rarity"]],
+                "base_price": get_base_price_rub(it["name"], it["rarity"]),
             }
             for it in results
         ]

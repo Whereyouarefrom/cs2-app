@@ -46,6 +46,7 @@ from functools import lru_cache
 _HERE = os.path.dirname(__file__)
 _SOURCE_FILE = os.path.join(_HERE, "items_source.txt")
 _IMAGES_FILE = os.path.join(_HERE, "items_images.json")  # генерируется sync_items.py
+_PRICES_FILE = os.path.join(_HERE, "items_prices.json")  # генерируется sync_prices.py (реальные цены Steam Market)
 
 # ---------------------------------------------------------------
 # Маппинг категории из TXT в короткий внутренний код
@@ -176,6 +177,24 @@ def _known_images_from_sync() -> dict[str, str]:
     return {}
 
 
+def _known_prices_from_sync() -> dict[str, dict]:
+    """Реальные цены Steam Market (в USD), сгенерированные sync_prices.py.
+    Формат записи: {"usd": float, "usd_stattrak": float|None, "wear_used": str|None}.
+    Пока файла нет (или он ещё не полный) — просто пустой словарь, и все
+    предметы честно используют fallback-оценку по редкости в main.py
+    (никаких выдуманных цен здесь не подставляется)."""
+    if not os.path.exists(_PRICES_FILE):
+        return {}
+    try:
+        with open(_PRICES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if isinstance(v, dict)}
+    except Exception:
+        pass
+    return {}
+
+
 # Цвета редкости — совпадают с --rarity-* переменными в style.css, чтобы
 # заглушка выглядела органично рядом с настоящими фото.
 _RARITY_COLOR = {
@@ -213,6 +232,7 @@ def _build_registry() -> tuple[list[dict], dict[str, dict], dict[str, list[dict]
     raw_items = _parse_source()
     images = _known_images_from_cases()
     images.update(_known_images_from_sync())  # sync-данные приоритетнее
+    prices = _known_prices_from_sync()
 
     all_items: list[dict] = []
     by_name: dict[str, dict] = {}
@@ -230,10 +250,19 @@ def _build_registry() -> tuple[list[dict], dict[str, dict], dict[str, list[dict]
         if not image:
             image = _placeholder_image(raw["rarity"], raw["category"])
 
+        price_entry = prices.get(name) or {}
+
         item = {
             **raw,
             "image": image,
             "has_real_image": has_real_image,
+            # Реальная цена со Steam Market (USD), если sync_prices.py уже
+            # был запущен и нашёл предложения на площадке для этого
+            # предмета — иначе None, и main.py сам подставит консервативный
+            # fallback по редкости при расчёте внутриигровой цены.
+            "usd_price": price_entry.get("usd"),
+            "usd_price_stattrak": price_entry.get("usd_stattrak"),
+            "has_real_price": price_entry.get("usd") is not None,
         }
         all_items.append(item)
         by_name[name] = item
@@ -261,7 +290,15 @@ def search_items(query: str, limit: int = 30) -> list[dict]:
 
 
 def stats() -> dict:
-    """Для дебага/README: сколько предметов реально имеют фото со Steam CDN."""
+    """Для дебага/README: сколько предметов реально имеют фото со Steam CDN
+    и сколько получили реальную цену Steam Market (после sync_prices.py)."""
     total = len(ALL_ITEMS)
-    real = sum(1 for it in ALL_ITEMS if it["has_real_image"])
-    return {"total": total, "with_real_image": real, "placeholder": total - real}
+    real_image = sum(1 for it in ALL_ITEMS if it["has_real_image"])
+    real_price = sum(1 for it in ALL_ITEMS if it["has_real_price"])
+    return {
+        "total": total,
+        "with_real_image": real_image,
+        "placeholder": total - real_image,
+        "with_real_price": real_price,
+        "price_fallback": total - real_price,
+    }

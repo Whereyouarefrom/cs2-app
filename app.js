@@ -23,6 +23,8 @@ const state = {
   vipExpiresAt: null,
   lang: "ru",
   soundEnabled: true,
+  currency: "RUB",
+  currencyRates: { RUB: 1, USD: 1 / 90, UAH: 1 / 2.2 }, // фолбэк, перезаписывается из /app-config при старте
   cases: [],
   inventory: [],
   casesOpenedSinceAd: 0,
@@ -39,6 +41,7 @@ const state = {
   lastMultiDrops: [],
   selectedInventoryIds: new Set(),
   dailyStatus: null,
+  lastProfile: null, // последний полный профиль с бэкенда — для перерисовки при смене валюты без лишнего запроса
   // ---- Крафт / Trade-Up ----
   craftFeeByRarity: {},
   craftItemsRequired: 5,
@@ -70,7 +73,7 @@ const I18N = {
     craft_max_rarity: "Эта редкость уже максимальная — крафтить дальше некуда",
     craft_success: "Готово! Новый предмет уже в инвентаре",
     craft_not_enough_balance: "Не хватает 💎 на оплату рецепта",
-    settings_lang: "🌐 Язык", settings_sound: "🔊 Звук",
+    settings_lang: "🌐 Язык", settings_sound: "🔊 Звук", settings_currency: "💱 Валюта",
     sound_on: "Вкл", sound_off: "Выкл",
     ref_title: "👥 Реферальная ссылка", copy_btn: "Копировать",
     promo_title: "🎁 Промокод", promo_placeholder: "Введите промокод",
@@ -154,7 +157,7 @@ const I18N = {
     craft_max_rarity: "This rarity is already the highest — nothing to craft up to",
     craft_success: "Done! New item is in your inventory",
     craft_not_enough_balance: "Not enough 💎 to pay the recipe fee",
-    settings_lang: "🌐 Language", settings_sound: "🔊 Sound",
+    settings_lang: "🌐 Language", settings_sound: "🔊 Sound", settings_currency: "💱 Currency",
     sound_on: "On", sound_off: "Off",
     ref_title: "👥 Referral link", copy_btn: "Copy",
     promo_title: "🎁 Promo code", promo_placeholder: "Enter promo code",
@@ -238,7 +241,7 @@ const I18N = {
     craft_max_rarity: "Ця рідкість вже максимальна — крафтити далі нікуди",
     craft_success: "Готово! Новий предмет вже в інвентарі",
     craft_not_enough_balance: "Не вистачає 💎 на оплату рецепта",
-    settings_lang: "🌐 Мова", settings_sound: "🔊 Звук",
+    settings_lang: "🌐 Мова", settings_sound: "🔊 Звук", settings_currency: "💱 Валюта",
     sound_on: "Увім.", sound_off: "Вимк.",
     ref_title: "👥 Реферальне посилання", copy_btn: "Копіювати",
     promo_title: "🎁 Промокод", promo_placeholder: "Введіть промокод",
@@ -653,15 +656,81 @@ function truncateTo2(num) {
   return Math.trunc(num * 100) / 100;
 }
 
+// ============================================
+// Мультивалютность (₽ / $ / ₴)
+// ============================================
+// ВАЖНО: внутренняя игровая экономика (баланс, цены в БД, списания за
+// кейсы/крафт/апгрейдер) всегда считается в 💎 Кристалликах = ₽ — currency
+// здесь влияет ТОЛЬКО на то, что игрок ВИДИТ на экране. Переключение
+// валюты не отправляет на бэкенд ничего, кроме сохранённого предпочтения
+// (для показа той же валюты при следующем визите) — сами суммы,
+// участвующие в игре, остаются в Кристалликах.
+const CURRENCY_ICON = { RUB: "💎", USD: "$", UAH: "₴" };
+
+function currencyIcon() {
+  return CURRENCY_ICON[state.currency] || "💎";
+}
+
+// Крестики (=₽) -> число в выбранной валюте отображения.
+function convertCrystals(n) {
+  const rate = state.currencyRates[state.currency];
+  return (Number(n) || 0) * (typeof rate === "number" ? rate : 1);
+}
+
+// Число + суффикс-иконка валюты: "1,250.00 💎" / "13.50 $" / "550.00 ₴"
+function fmtWithIcon(n) {
+  return `${fmtNumber(n)} ${currencyIcon()}`;
+}
+
+function setCurrency(cur) {
+  if (!CURRENCY_ICON[cur]) return;
+  state.currency = cur;
+  localStorage.setItem("cs2_currency", cur);
+  refreshCurrencyDisplay();
+  apiPost("/user/settings", { telegram_id: state.telegramId, currency: cur }).catch(() => {});
+}
+
+// Перерисовывает ВСЁ, что уже отрисовано на экране, новыми значениями
+// выбранной валюты — без единого лишнего запроса к бэкенду (все данные
+// уже есть в state, просто пересчитываем и перезаписываем DOM).
+function refreshCurrencyDisplay() {
+  document.querySelectorAll(".currency-btn").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.currency === state.currency);
+  });
+  document.getElementById("header-currency-toggle").textContent = currencyIcon();
+  document.querySelectorAll(".balance-icon").forEach(el => { el.textContent = currencyIcon(); });
+
+  updateBalanceDisplay();
+  if (state.cases && state.cases.length) renderCases();
+  if (state.inventory && state.inventory.length) renderInventory();
+  if (state.lastProfile) renderProfileScreen(state.lastProfile);
+  if (state.craftCatalog) {
+    if (state.craftSourceRarity) renderCraftTargetGrid(state.craftSourceRarity);
+    else renderCraftSourceGrid();
+    updateCraftFeeDisplay();
+  }
+}
+
+document.getElementById("header-currency-toggle").addEventListener("click", () => {
+  const order = ["RUB", "USD", "UAH"];
+  const next = order[(order.indexOf(state.currency) + 1) % order.length];
+  setCurrency(next);
+});
+
+document.getElementById("currency-switch").addEventListener("click", (e) => {
+  const btn = e.target.closest(".currency-btn");
+  if (btn) setCurrency(btn.dataset.currency);
+});
+
 function fmtNumber(n) {
-  const num = Number(n) || 0;
-  const truncated = truncateTo2(num);
+  const converted = convertCrystals(n);
+  const truncated = truncateTo2(converted);
   return truncated.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-// Полное отображение суммы со значком Кристалла: 💎 1,250 / 💎 0.15
+// Полное отображение суммы со значком выбранной валюты: 💎 1,250 / $ 13.50 / ₴ 550.00
 function fmt(n) {
-  return "💎 " + fmtNumber(n);
+  return `${currencyIcon()} ${fmtNumber(n)}`;
 }
 
 function rarityClass(rarity) {
@@ -1190,7 +1259,7 @@ function renderRegularOverlay(item) {
   return `
     <span class="contents-item-chance-value">${formatDropChance(item.drop_chance)}</span>
     <span class="contents-item-chance-sep">|</span>
-    <span class="contents-item-chance-price">${fmtNumber(item.base_price)} 💎</span>
+    <span class="contents-item-chance-price">${fmtWithIcon(item.base_price)}</span>
     ${item.stattrak_available ? `<span class="contents-item-st-badge">StatTrak™ доступен</span>` : ""}
   `;
 }
@@ -1203,13 +1272,13 @@ function renderRareCategoryOverlay(summary) {
     <div class="rare-summary-row">
       <span class="rare-summary-label">Обычный</span>
       <span class="rare-summary-chance">${formatDropChance(summary.regularChance)}</span>
-      <span class="rare-summary-price">${fmtNumber(summary.regularMin)}–${fmtNumber(summary.regularMax)} 💎</span>
+      <span class="rare-summary-price">${fmtNumber(summary.regularMin)}–${fmtWithIcon(summary.regularMax)}</span>
     </div>
     ${summary.canStattrak ? `
     <div class="rare-summary-row rare-summary-st">
       <span class="rare-summary-label">StatTrak™</span>
       <span class="rare-summary-chance">${formatDropChance(summary.stattrakChance)}</span>
-      <span class="rare-summary-price">${fmtNumber(summary.stattrakMin)}–${fmtNumber(summary.stattrakMax)} 💎</span>
+      <span class="rare-summary-price">${fmtNumber(summary.stattrakMin)}–${fmtWithIcon(summary.stattrakMax)}</span>
     </div>` : ""}
   `;
 }
@@ -1493,7 +1562,7 @@ function renderCraftTargetGrid(targetRarity) {
       <div class="craft-item-card-check">✓</div>
       <img src="${entry.image || ""}" alt="${entry.name}">
       <div class="craft-item-card-name">${entry.name}</div>
-      <div class="craft-item-card-price">${fmtNumber(entry.base_price)} 💎</div>
+      <div class="craft-item-card-price">${fmtWithIcon(entry.base_price)}</div>
     `;
     el.addEventListener("click", () => {
       state.craftTargetName = entry.name;
@@ -1541,7 +1610,7 @@ function updateCraftProgress() {
 
 function updateCraftFeeDisplay() {
   const fee = state.craftSourceRarity ? (state.craftFeeByRarity[state.craftSourceRarity] ?? 0) : 0;
-  document.getElementById("craft-fee-value").textContent = `${fmtNumber(fee)} 💎`;
+  document.getElementById("craft-fee-value").textContent = fmtWithIcon(fee);
 }
 
 function updateCraftSubmitState() {
@@ -1612,6 +1681,7 @@ function applyProfileData(profile) {
   state.isVip = profile.is_vip;
   state.vipExpiresAt = profile.vip_expires_at || null;
   if (Array.isArray(profile.inventory)) state.inventory = profile.inventory;
+  state.lastProfile = profile; // сохраняем для перерисовки при смене валюты без лишнего запроса
 
   if (profile.lang) { state.lang = profile.lang; applyTranslations(); }
   if (typeof profile.sound_enabled === "boolean") {
@@ -1670,7 +1740,7 @@ function renderProfileScreen(profile) {
   document.getElementById("ref-link-input").value =
     `https://t.me/${state.botUsername}?start=ref_${state.telegramId}`;
   document.getElementById("ref-hint").textContent =
-    `+${state.refBonusInviter} 💎 ${state.lang === "en" ? "for you and" : "тебе и"} +${state.refBonusInvited} 💎 ${state.lang === "en" ? "for a friend for every invite" : "другу за каждого приглашённого"}`;
+    `+${fmtWithIcon(state.refBonusInviter)} ${state.lang === "en" ? "for you and" : "тебе и"} +${fmtWithIcon(state.refBonusInvited)} ${state.lang === "en" ? "for a friend for every invite" : "другу за каждого приглашённого"}`;
 }
 
 // Реальный логин: один раз при старте приложения. Проверяет initData на
@@ -1799,7 +1869,7 @@ document.getElementById("watch-ad-btn").addEventListener("click", async () => {
 
     state.balance = result.new_balance;
     updateBalanceDisplay();
-    tg?.showAlert?.(`+${result.reward.toLocaleString()} 💎 ${t("ad_reward_toast")}`);
+    tg?.showAlert?.(`+${fmtWithIcon(result.reward)} ${t("ad_reward_toast")}`);
   } catch (e) {
     // Adsgram отклоняет промис, если реклама недоступна или пользователь пропустил ролик
     tg?.showAlert?.(e?.message || t("ads_unavailable"));
@@ -1888,7 +1958,7 @@ document.getElementById("claim-bonus-btn").addEventListener("click", async () =>
     const result = await apiPost("/bonus-claim", { telegram_id: state.telegramId });
     state.balance = result.new_balance;
     updateBalanceDisplay();
-    tg?.showAlert?.(`+${result.reward.toLocaleString()} 💎 ${t("bonus_claimed_toast")}`);
+    tg?.showAlert?.(`+${fmtWithIcon(result.reward)} ${t("bonus_claimed_toast")}`);
     startBonusCountdown(result.cooldown_seconds);
   } catch (e) {
     tg?.showAlert?.(e?.message || t("ads_unavailable"));
@@ -1901,10 +1971,10 @@ document.getElementById("claim-bonus-btn").addEventListener("click", async () =>
 const DAILY_DAY_ICONS = { balance: "💎", skin: "🔫", promo: "🎟️", jackpot: "🏆" };
 
 function dailyRewardLabel(rewardDef) {
-  if (rewardDef.type === "balance") return `${rewardDef.amount} 💎`;
+  if (rewardDef.type === "balance") return fmtWithIcon(rewardDef.amount);
   if (rewardDef.type === "skin") return t("daily_reward_skin");
-  if (rewardDef.type === "promo") return `${rewardDef.amount} 💎`;
-  if (rewardDef.type === "jackpot") return `${rewardDef.amount} 💎 + 🏆`;
+  if (rewardDef.type === "promo") return fmtWithIcon(rewardDef.amount);
+  if (rewardDef.type === "jackpot") return `${fmtWithIcon(rewardDef.amount)} + 🏆`;
   return "";
 }
 
@@ -1918,7 +1988,7 @@ function renderDailyDays(data) {
     el.className = `daily-day-card ${isClaimedDay ? "claimed" : ""} ${isCurrent ? "current" : ""} ${r.type === "jackpot" ? "jackpot" : ""}`.trim();
     el.innerHTML = `
       <div class="day-num">${t("daily_day_label").replace("{n}", r.day)}</div>
-      <div class="day-icon">${DAILY_DAY_ICONS[r.type] || "💎"}</div>
+      <div class="day-icon">${r.type === "balance" ? currencyIcon() : (DAILY_DAY_ICONS[r.type] || currencyIcon())}</div>
       <div class="day-reward">${dailyRewardLabel(r)}</div>
     `;
     grid.appendChild(el);
@@ -1967,7 +2037,7 @@ function showDailyResult(result) {
   promoEl.style.display = "none";
 
   if (reward.type === "balance") {
-    icon.textContent = "💎";
+    icon.textContent = currencyIcon();
     nameEl.textContent = t("daily_day_label").replace("{n}", reward.day);
     valueEl.textContent = fmt(reward.amount);
   } else if (reward.type === "skin") {
@@ -2431,12 +2501,12 @@ const UpgraderGame = {
       <div class="upg-summary-row">
         <div class="upg-summary-box">
           <div class="upg-summary-label">${t("upgrade_your_item_label")}</div>
-          <div class="upg-summary-value" id="upgrader-summary-old">— 💎</div>
+          <div class="upg-summary-value" id="upgrader-summary-old">— ${currencyIcon()}</div>
         </div>
         <div class="upg-summary-arrow">→</div>
         <div class="upg-summary-box">
           <div class="upg-summary-label">${t("upgrade_target_label")}</div>
-          <div class="upg-summary-value" id="upgrader-summary-target">— 💎</div>
+          <div class="upg-summary-value" id="upgrader-summary-target">— ${currencyIcon()}</div>
         </div>
       </div>
 
@@ -2637,7 +2707,7 @@ const UpgraderGame = {
           <img src="${entry.image}" alt="">
           <div class="upg-search-item-info">
             <div class="upg-search-item-name">${entry.name}</div>
-            <div class="upg-search-item-price">${fmtNumber(entry.base_price)} 💎</div>
+            <div class="upg-search-item-price">${fmtWithIcon(entry.base_price)}</div>
           </div>
         `;
         el.addEventListener("click", () => {
@@ -2660,7 +2730,7 @@ const UpgraderGame = {
       <img src="${this.targetEntry.image}" alt="">
       <div>
         <div class="upg-search-item-name">${this.targetEntry.name}</div>
-        <div class="upg-search-item-price">${fmtNumber(this.targetEntry.base_price)} 💎</div>
+        <div class="upg-search-item-price">${fmtWithIcon(this.targetEntry.base_price)}</div>
       </div>
     `;
   },
@@ -3036,7 +3106,7 @@ const MinerGame = {
         return;
       }
 
-      tile.textContent = "💎";
+      tile.textContent = currencyIcon();
       tile.className = "mine-tile safe opened";
       this.revealedCount = result.revealed_count || (this.revealedCount + 1);
       document.getElementById("miner-multiplier").textContent = `${result.multiplier.toFixed(2)}x`;
@@ -3321,8 +3391,11 @@ document.getElementById("open-giveaways").addEventListener("click", () => {
   if (savedLang) state.lang = savedLang;
   const savedSound = localStorage.getItem("cs2_sound");
   if (savedSound !== null) state.soundEnabled = savedSound === "1";
+  const savedCurrency = localStorage.getItem("cs2_currency");
+  if (savedCurrency && CURRENCY_ICON[savedCurrency]) state.currency = savedCurrency;
   applyTranslations();
   updateSoundToggleUI();
+  refreshCurrencyDisplay();
 
   try {
     const cfg = await apiGet("/app-config");
@@ -3333,6 +3406,7 @@ document.getElementById("open-giveaways").addEventListener("click", () => {
     state.vipPriceStars = cfg.vip_price_stars || state.vipPriceStars;
     state.craftFeeByRarity = cfg.craft_fee_by_rarity || {};
     state.craftItemsRequired = cfg.craft_items_required || 5;
+    if (cfg.currency_rates) state.currencyRates = cfg.currency_rates;
     // Раньше загруженная цена VIP из конфига нигде не использовалась —
     // текст в UI оставался захардкоженным "150 ⭐" даже если бэкенд
     // отдавал другое значение. Теперь подставляем актуальную цену в лейбл.
