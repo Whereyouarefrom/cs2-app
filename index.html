@@ -83,6 +83,23 @@
         <div class="vip-pill" id="profile-vip-pill" style="display:none;">⭐ VIP</div>
       </div>
 
+      <!-- RANK CARD — лига/ранг игрока с прогресс-баром до следующего ранга.
+           Данные приходят с бэкенда в profile.rank (см. ranks.get_rank_progress
+           в ranks.py) и полностью перерисовываются в renderRankCard(). -->
+      <div class="rank-card" id="rank-card">
+        <div class="rank-card-top">
+          <div class="rank-icon" id="rank-icon">🔰</div>
+          <div class="rank-card-info">
+            <div class="rank-name" id="rank-name">Сильвер</div>
+            <div class="rank-xp-line" id="rank-xp-line">0 / 500 XP</div>
+          </div>
+        </div>
+        <div class="rank-progress-track">
+          <div class="rank-progress-fill" id="rank-progress-fill" style="width:0%;"></div>
+        </div>
+        <div class="rank-next-line" id="rank-next-line"></div>
+      </div>
+
       <div class="stats-grid">
         <div class="stat-box">
           <div class="stat-label" data-i18n="stat_cases">Открыто кейсов</div>
@@ -95,6 +112,14 @@
         <div class="stat-box">
           <div class="stat-label" data-i18n="stat_favorite">Любимый кейс</div>
           <div class="stat-value small" id="stat-favorite">—</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label" data-i18n="stat_ref_count">Приглашено друзей</div>
+          <div class="stat-value" id="stat-ref-count">0</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label" data-i18n="stat_ref_earnings">Начислено пассивно</div>
+          <div class="stat-value" id="stat-ref-earnings">0 💎</div>
         </div>
       </div>
 
@@ -152,7 +177,7 @@
           <input type="text" id="ref-link-input" readonly>
           <button id="copy-ref-btn" class="btn-secondary" data-i18n="copy_btn">Копировать</button>
         </div>
-        <div class="ref-hint" id="ref-hint">+2500 💎 тебе и +1000 💎 другу за каждого приглашённого</div>
+        <div class="ref-hint" id="ref-hint">+2500 💎 тебе и +1000 💎 другу за каждого приглашённого, плюс 5% с каждой траты друга — навсегда</div>
       </div>
 
       <div class="promo-block">
@@ -414,6 +439,27 @@
         <div class="daily-result-promo" id="daily-result-promo" style="display:none;"></div>
       </div>
       <button class="btn-primary full" id="daily-result-ok-btn" data-i18n="ok_btn">Отлично!</button>
+    </div>
+  </div>
+
+  <!-- ==================== RANK UP MODAL (Новый ранг!) ====================
+       Показывается при получении xp_info.rank_up с бэкенда (см. _award_xp
+       в main.py) — очередь событий обрабатывается в enqueueRankUps()/
+       showNextRankUp() в app.js, по одной карточке за раз. -->
+  <div class="modal-overlay" id="rankup-modal">
+    <div class="modal-sheet win-sheet rankup-sheet">
+      <div class="rankup-icon" id="rankup-icon">⭐</div>
+      <div class="win-title" data-i18n="rankup_title">Новый ранг!</div>
+      <div class="rankup-name" id="rankup-name">Голд Нова</div>
+      <div class="rankup-bonus" id="rankup-bonus">+800 💎</div>
+
+      <div class="win-item-card" id="rankup-item-card" style="display:none;">
+        <img id="rankup-item-image" src="" alt="">
+        <div class="win-item-name" id="rankup-item-name">—</div>
+        <div class="win-item-price" id="rankup-item-price">0 💎</div>
+      </div>
+
+      <button class="btn-primary full" id="rankup-ok-btn" data-i18n="ok_btn">Отлично!</button>
     </div>
   </div>
 

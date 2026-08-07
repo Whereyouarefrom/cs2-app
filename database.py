@@ -37,8 +37,26 @@ class User(Base):
     ref_code = Column(String, unique=True, nullable=False, default=lambda: secrets.token_hex(4))   # собственный реф. код
     referred_by = Column(BigInteger, nullable=True)          # telegram_id пригласившего
 
+    # ---- P2P-реферальная система: постоянный % от активности рефералов ----
+    # ref_earnings_total — накопительная сумма 💎, которую этот пользователь
+    # получил ПАССИВНО как отчисление (REF_COMMISSION_PERCENT) от трат
+    # своих рефералов (открытие кейсов, крафт, ставки в мини-играх и т.п.).
+    # Никогда не уменьшается — это лог заработка, а не "снимаемый" баланс
+    # (сами 💎 уже зачислены напрямую в user.balance в момент начисления).
+    ref_earnings_total = Column(Float, default=0.0)
+
     total_cases_opened = Column(Integer, default=0)
     favorite_case = Column(String, nullable=True)
+
+    # ---- Система опыта (XP) и лиг/рангов (см. ranks.py) ----
+    # xp — суммарный, никогда не уменьшающийся опыт за активность
+    # (открытие кейсов, ставки в мини-играх, крафт, ежедневки и т.п.).
+    # rank_level — индекс в ranks.RANKS последнего ДОСТИГНУТОГО ранга;
+    # хранится отдельно от xp, чтобы разовая награда за ранг (кристаллы
+    # + ранговый кейс) начислялась ровно один раз при пересечении порога,
+    # а не пересчитывалась каждый раз из xp.
+    xp = Column(Integer, default=0)
+    rank_level = Column(Integer, default=0)
 
     # ---- Пользовательское соглашение (Terms of Service) ----
     terms_accepted = Column(Boolean, default=False)

@@ -14,12 +14,13 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from database import async_session, init_db, close_db, User, Inventory, PromoCode
 from cases_data import CASES
 import items_data
 import currency
+import ranks
 from auth import parse_and_verify_init_data, InitDataError
 from format_utils import format_balance_with_icon
 import config
@@ -475,6 +476,7 @@ async def craft_item(req: CraftRequest):
         # эти 5 предметов, затем начисляем целевой — атомарно в одной
         # транзакции, без промежуточных состояний.
         user.balance -= fee
+        await _credit_referral_commission(session, user, fee)
         for item in source_items:
             await session.delete(item)
 
@@ -493,12 +495,15 @@ async def craft_item(req: CraftRequest):
         session.add(item_record)
         _maybe_update_top_drop(user, new_item)
 
+        xp_info = await _award_xp(session, user, XP_CRAFT)
+
         await session.commit()
         await session.refresh(item_record)
 
         return {
             "success": True,
             "new_balance": user.balance,
+            "xp": xp_info,
             "crafted_item": {
                 "id": item_record.id,
                 "name": new_item["name"],
@@ -513,6 +518,184 @@ async def craft_item(req: CraftRequest):
         }
 
 
+# ============================================
+# СИСТЕМА ОПЫТА (XP) И ЛИГ/РАНГОВ
+# ============================================
+# Правила начисления XP за активность. Все цифры — "сырое" значение опыта
+# за ОДНО действие; за пачечные операции (открытие сразу нескольких
+# кейсов) значение умножается на количество.
+XP_PER_CASE_MIN = 8
+XP_PER_CASE_MAX = 60
+XP_DIVISOR_CASE_PRICE = 25   # чем дороже кейс — тем больше XP (но не бесконечно)
+
+XP_MINIGAME_ROUND = 6        # участие в раунде любой мини-игры (ставка сделана)
+XP_CRAFT = 10                 # успешный крафт/трейд-ап
+XP_DAILY_CLAIM = 8            # забрал ежедневную награду
+XP_AD_REWARD = 4              # посмотрел рекламу за 💎
+XP_BONUS_CLAIM = 4            # нажал кнопку "Бонус"
+
+
+def _xp_for_case_open(case_price: float, count: int) -> int:
+    """XP за открытие кейса(ов): чем дороже кейс, тем больше опыта за одно
+    открытие, но в разумных пределах (XP_PER_CASE_MIN..XP_PER_CASE_MAX)."""
+    per_case = round(case_price / XP_DIVISOR_CASE_PRICE)
+    per_case = max(XP_PER_CASE_MIN, min(XP_PER_CASE_MAX, per_case))
+    return per_case * count
+
+
+def _roll_rank_case_item(case_key: str) -> Optional[dict]:
+    """Ролл предмета для рангового кейса — использует общий каталог
+    предметов (все кейсы сразу, реальные картинки/базовые цены Steam, см.
+    _craft_catalog_by_rarity), но с собственным набором весов редкости для
+    каждого ранга (ranks.RANK_CASE_WEIGHTS) — старшие ранги смещены в
+    сторону Covert/Gloves/Knife сильнее, чем обычные кейсы."""
+    case_def = ranks.RANK_CASE_WEIGHTS.get(case_key)
+    if not case_def:
+        return None
+
+    catalog = _craft_catalog_by_rarity()
+    weights = case_def["weights"]
+    available = [r for r in weights if catalog.get(r)]
+    if not available:
+        return None
+
+    total = sum(weights[r] for r in available)
+    roll = random.uniform(0, total)
+    cumulative = 0.0
+    chosen_rarity = available[-1]
+    for rarity in available:
+        cumulative += weights[rarity]
+        if roll <= cumulative:
+            chosen_rarity = rarity
+            break
+
+    chosen = random.choice(catalog[chosen_rarity])
+    return _roll_item_instance(chosen["name"], chosen_rarity, chosen["image"])
+
+
+async def _credit_referral_commission(session, spender: User, spent_amount: float) -> None:
+    """P2P-реферальная система: если у spender есть привязанный реферер
+    (spender.referred_by), начисляет ему REF_COMMISSION_PERCENT (например,
+    5%) от суммы spent_amount — постоянное пассивное отчисление рефереру
+    от КАЖДОЙ траты приглашённого им реферала (открытие кейса, крафт,
+    ставка в мини-игре и т.п.), а не только разовый бонус при регистрации.
+
+    Начисление идёт напрямую в balance реферера + в накопительную
+    статистику ref_earnings_total (используется в профиле, чтобы показать
+    "сколько кристаллов пассивно получено с активности друзей").
+
+    Ничего не коммитит сама — вызывается ВНУТРИ уже открытой транзакции,
+    рядом с _award_xp, чтобы списание у спендера и начисление рефереру
+    ушли в БД одной атомарной операцией вместе с остальным эндпоинтом.
+    """
+    if not spender.referred_by or spent_amount <= 0:
+        return
+
+    result = await session.execute(
+        select(User).where(User.telegram_id == spender.referred_by)
+    )
+    referrer = result.scalar_one_or_none()
+    if not referrer:
+        return  # реферер мог удалить аккаунт / привязка "осиротела" — не критично
+
+    commission = round(spent_amount * config.REF_COMMISSION_PERCENT, 2)
+    if commission <= 0:
+        return
+
+    referrer.balance += commission
+    referrer.ref_earnings_total = round((referrer.ref_earnings_total or 0.0) + commission, 2)
+
+
+async def _award_xp(session, user: User, amount: int) -> dict:
+    """Начисляет XP пользователю и, если пройден порог следующего ранга
+    (или сразу нескольких — на случай крупного разового начисления),
+    выдаёт разовую награду за КАЖДЫЙ вновь достигнутый ранг: бонус в
+    Кристалликах + (начиная с ранга «Калаш») один автоматический ролл
+    специального рангового кейса, сразу добавляемый в инвентарь.
+
+    Ничего не коммитит сама — вызывается ВНУТРИ уже открытой транзакции
+    (перед session.commit() в эндпоинте), чтобы списание/начисление XP,
+    крысталлов за ранг и сам предмет ушли в БД одной атомарной операцией.
+    """
+    if amount <= 0:
+        return {"gained": 0, "total_xp": user.xp or 0, "rank_level": user.rank_level or 0, "rank_up": []}
+
+    user.xp = (user.xp or 0) + amount
+    current_level = user.rank_level or 0
+    rank_up_events = []
+
+    while current_level < ranks.MAX_RANK_LEVEL and user.xp >= ranks.RANKS[current_level + 1]["min_xp"]:
+        current_level += 1
+        rank_def = ranks.RANKS[current_level]
+
+        user.balance += rank_def["bonus_crystals"]
+
+        reward_item = None
+        if rank_def["case_key"]:
+            drop = _roll_rank_case_item(rank_def["case_key"])
+            if drop:
+                session.add(Inventory(
+                    user_id=user.id,
+                    skin_name=drop["name"],
+                    skin_price=drop["price"],
+                    rarity=drop["rarity"],
+                    quality=drop["quality"],
+                    stattrak=drop["stattrak"],
+                    float_val=drop["float_val"],
+                    image_url=drop["image"],
+                    obtained_from_case=f"Ранговый кейс «{rank_def['name']}»",
+                ))
+                _maybe_update_top_drop(user, drop)
+                reward_item = {
+                    "name": drop["name"],
+                    "rarity": drop["rarity"],
+                    "image": drop["image"],
+                    "price": drop["price"],
+                    "quality_name": drop["quality_name"],
+                    "stattrak": drop["stattrak"],
+                }
+
+        rank_up_events.append({
+            "level": current_level,
+            "key": rank_def["key"],
+            "name": rank_def["name"],
+            "icon": rank_def["icon"],
+            "bonus_crystals": rank_def["bonus_crystals"],
+            "reward_item": reward_item,
+        })
+
+    user.rank_level = current_level
+
+    return {
+        "gained": amount,
+        "total_xp": user.xp,
+        "rank_level": user.rank_level,
+        "rank_up": rank_up_events,
+    }
+
+
+@app.get("/api/ranks")
+async def get_ranks(telegram_id: Optional[int] = None):
+    """Полная лестница рангов (для экрана "Лига"/прогрессии) + прогресс
+    конкретного игрока, если передан telegram_id."""
+    ladder = []
+    for rank_def in ranks.RANKS:
+        entry = dict(rank_def)
+        if rank_def["case_key"]:
+            case_meta = ranks.RANK_CASE_WEIGHTS.get(rank_def["case_key"], {})
+            entry["case_name"] = case_meta.get("name")
+        ladder.append(entry)
+
+    payload = {"ranks": ladder}
+
+    if telegram_id is not None:
+        async with async_session() as session:
+            result = await session.execute(select(User).where(User.telegram_id == telegram_id))
+            user = result.scalar_one_or_none()
+            if user:
+                payload["progress"] = ranks.get_rank_progress(user.xp or 0, user.rank_level or 0)
+
+    return payload
 
 
 # ============================================
@@ -653,6 +836,7 @@ async def app_config():
         "adsgram_block_id": config.ADSGRAM_BLOCK_ID,
         "ref_bonus_inviter": config.REF_BONUS_INVITER,
         "ref_bonus_invited": config.REF_BONUS_INVITED,
+        "ref_commission_percent": config.REF_COMMISSION_PERCENT,
         "vip_price_stars": config.VIP_PRICE_STARS,
         "bonus_reward_amount": BONUS_REWARD_AMOUNT,
         "bonus_cooldown_seconds": BONUS_COOLDOWN_SECONDS,
@@ -749,6 +933,7 @@ async def open_case(req: OpenCaseRequest):
             raise HTTPException(400, "Недостаточно Кристалликов 💎")
 
         user.balance -= total_price
+        await _credit_referral_commission(session, user, total_price)
         user.total_cases_opened += req.count
         user.favorite_case = CASES[req.case_key]["name"]
 
@@ -771,6 +956,8 @@ async def open_case(req: OpenCaseRequest):
             drops.append(drop)
             item_records.append(item_record)
             _maybe_update_top_drop(user, drop)
+
+        xp_info = await _award_xp(session, user, _xp_for_case_open(case_price, req.count))
 
         await session.commit()
         for item_record in item_records:
@@ -797,6 +984,7 @@ async def open_case(req: OpenCaseRequest):
             "drop": drop_results[0],  # для обратной совместимости с одиночным открытием
             "drops": drop_results,
             "new_balance": user.balance,
+            "xp": xp_info,
         }
 
 
@@ -977,6 +1165,17 @@ async def _build_profile_payload(session, user: User) -> dict:
 
     total_value = sum(i.skin_price for i in inventory) if inventory else 0
 
+    # ---- Статистика P2P-реферальной системы ----
+    # Считаем количество приглашённых друзей "на лету" (а не кэшируем в
+    # отдельной колонке), т.к. это простой COUNT по индексированному полю
+    # referred_by и не требует поддерживать счётчик в актуальном состоянии
+    # при каждой регистрации. Пассивный заработок, наоборот, накопительный
+    # и хранится в user.ref_earnings_total (см. _credit_referral_commission).
+    result_ref_count = await session.execute(
+        select(func.count(User.id)).where(User.referred_by == user.telegram_id)
+    )
+    referrals_count = result_ref_count.scalar() or 0
+
     return {
         "telegram_id": user.telegram_id,
         "username": user.username,
@@ -990,6 +1189,13 @@ async def _build_profile_payload(session, user: User) -> dict:
         "terms_accepted": bool(user.terms_accepted),
         "total_cases_opened": user.total_cases_opened,
         "favorite_case": user.favorite_case or "—",
+        # ---- P2P-реферальная система: сколько друзей приглашено и сколько
+        # 💎 пассивно получено с их активности (см. REF_COMMISSION_PERCENT) ----
+        "referrals_count": referrals_count,
+        "ref_earnings_total": round(user.ref_earnings_total or 0.0, 2),
+        # ---- Опыт (XP) и ранг/лига (см. ranks.py) ----
+        "xp": user.xp or 0,
+        "rank": ranks.get_rank_progress(user.xp or 0, user.rank_level or 0),
         "inventory_total_value": round(total_value, 0),
         "inventory_count": len(inventory),
         # "Топ дроп" — самый дорогой предмет за ВСЁ время, персистентный
@@ -1226,12 +1432,13 @@ async def _credit_ad_reward(telegram_id: int) -> dict:
             raise HTTPException(404, "Пользователь не найден")
 
         user.balance += AD_REWARD_AMOUNT
+        xp_info = await _award_xp(session, user, XP_AD_REWARD)
         await session.commit()
         await session.refresh(user)
 
         _last_ad_reward[telegram_id] = now
 
-        return {"success": True, "reward": AD_REWARD_AMOUNT, "new_balance": user.balance}
+        return {"success": True, "reward": AD_REWARD_AMOUNT, "new_balance": user.balance, "xp": xp_info}
 
 
 @app.post("/api/ad-reward")
@@ -1318,6 +1525,7 @@ async def bonus_claim(req: BonusClaimRequest):
             raise HTTPException(404, "Пользователь не найден")
 
         user.balance += BONUS_REWARD_AMOUNT
+        xp_info = await _award_xp(session, user, XP_BONUS_CLAIM)
         await session.commit()
         await session.refresh(user)
 
@@ -1328,6 +1536,7 @@ async def bonus_claim(req: BonusClaimRequest):
             "reward": BONUS_REWARD_AMOUNT,
             "new_balance": user.balance,
             "cooldown_seconds": BONUS_COOLDOWN_SECONDS,
+            "xp": xp_info,
         }
 
 
@@ -1497,6 +1706,8 @@ async def daily_claim(req: DailyClaimRequest):
         reward = _grant_daily_reward(session, user, day_index)
         user.last_daily_claim_at = now
 
+        xp_info = await _award_xp(session, user, XP_DAILY_CLAIM)
+
         await session.commit()
         await session.refresh(user)
 
@@ -1506,6 +1717,7 @@ async def daily_claim(req: DailyClaimRequest):
             "streak": user.daily_streak,
             "new_balance": user.balance,
             "reward": reward,
+            "xp": xp_info,
         }
 
 
@@ -1879,6 +2091,8 @@ async def crash_start(req: CrashStartRequest):
             raise HTTPException(400, "Недостаточно Кристалликов 💎")
 
         user.balance -= req.bet_amount
+        await _credit_referral_commission(session, user, req.bet_amount)
+        xp_info = await _award_xp(session, user, XP_MINIGAME_ROUND)
         await session.commit()
         await session.refresh(user)
 
@@ -1894,6 +2108,7 @@ async def crash_start(req: CrashStartRequest):
             "success": True,
             "bet_amount": req.bet_amount,
             "new_balance": user.balance,
+            "xp": xp_info,
         }
 
 
@@ -1990,6 +2205,7 @@ async def play_crash(req: CrashBetRequest):
             raise HTTPException(400, "Недостаточно Кристалликов 💎")
 
         user.balance -= req.bet_amount
+        await _credit_referral_commission(session, user, req.bet_amount)
         crash_point = generate_crash_point()
 
         if req.cashout_at <= crash_point:
@@ -1999,6 +2215,8 @@ async def play_crash(req: CrashBetRequest):
         else:
             winnings = 0
             result_status = "lose"
+
+        xp_info = await _award_xp(session, user, XP_MINIGAME_ROUND)
 
         await session.commit()
         await session.refresh(user)
@@ -2011,6 +2229,7 @@ async def play_crash(req: CrashBetRequest):
             "bet_amount": req.bet_amount,
             "winnings": winnings,
             "new_balance": user.balance,
+            "xp": xp_info,
         }
 
 
@@ -2041,10 +2260,13 @@ async def play_wheel(req: WheelBetRequest):
             raise HTTPException(400, "Недостаточно Кристалликов 💎")
 
         user.balance -= req.bet_amount
+        await _credit_referral_commission(session, user, req.bet_amount)
         segment_index = spin_wheel()
         multiplier = WHEEL_SEGMENTS[segment_index]
         winnings = round(req.bet_amount * multiplier, 2)
         user.balance += winnings
+
+        xp_info = await _award_xp(session, user, XP_MINIGAME_ROUND)
 
         await session.commit()
         await session.refresh(user)
@@ -2058,6 +2280,7 @@ async def play_wheel(req: WheelBetRequest):
             "winnings": winnings,
             "result": "win" if multiplier > 0 else "lose",
             "new_balance": user.balance,
+            "xp": xp_info,
         }
 
 
@@ -2102,6 +2325,8 @@ async def mines_start(req: MinesStartRequest):
             raise HTTPException(400, "Недостаточно Кристалликов 💎")
 
         user.balance -= req.bet_amount
+        await _credit_referral_commission(session, user, req.bet_amount)
+        xp_info = await _award_xp(session, user, XP_MINIGAME_ROUND)
         await session.commit()
         await session.refresh(user)
 
@@ -2120,6 +2345,7 @@ async def mines_start(req: MinesStartRequest):
             "mines_count": req.mines_count,
             "multiplier": 1.0,
             "new_balance": user.balance,
+            "xp": xp_info,
         }
 
 
@@ -2240,6 +2466,8 @@ async def _climb_start(game: str, req: ClimbStartRequest):
             raise HTTPException(400, "Недостаточно Кристалликов 💎")
 
         user.balance -= req.bet_amount
+        await _credit_referral_commission(session, user, req.bet_amount)
+        xp_info = await _award_xp(session, user, XP_MINIGAME_ROUND)
         await session.commit()
         await session.refresh(user)
 
@@ -2257,6 +2485,7 @@ async def _climb_start(game: str, req: ClimbStartRequest):
             "tiles_per_level": cfg["tiles_per_level"],
             "next_multiplier": _climb_multiplier_for_level(cfg, 1),
             "new_balance": user.balance,
+            "xp": xp_info,
         }
 
 

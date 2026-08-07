@@ -35,6 +35,9 @@ const state = {
   adsgramBlockId: null,
   refBonusInviter: 1000,
   refBonusInvited: 1000,
+  refCommissionPercent: 0.05, // фолбэк, перезаписывается из /app-config (config.REF_COMMISSION_PERCENT)
+  referralsCount: 0,          // сколько друзей приглашено (из профиля)
+  refEarningsTotal: 0,        // сколько 💎 пассивно получено с активности рефералов (из профиля)
   vipPriceStars: 25,
   openCount: 1,
   openSpeed: "slow",
@@ -43,6 +46,8 @@ const state = {
   inventorySortDir: "desc", // сортировка инвентаря по цене: desc (дорогие сначала) | asc (дешёвые сначала)
   dailyStatus: null,
   lastProfile: null, // последний полный профиль с бэкенда — для перерисовки при смене валюты без лишнего запроса
+  rankUpQueue: [],       // очередь событий повышения ранга, ждущих показа модалки
+  rankUpModalActive: false,
   // ---- Крафт / Trade-Up ----
   craftFeeByRarity: {},
   craftItemsRequired: 5,
@@ -62,6 +67,7 @@ const I18N = {
     terms_title: "📜 Пользовательское соглашение",
     terms_accept_btn: "Принять и продолжить",
     profile_title: "Профиль", stat_cases: "Открыто кейсов",
+    stat_ref_count: "Приглашено друзей", stat_ref_earnings: "Начислено пассивно",
     stat_inv_value: "Стоимость инвентаря", stat_favorite: "Любимый кейс",
     stat_top_drop: "🏆 Топ дроп", top_drop_empty: "Пока нет ни одного дропа — открой первый кейс!", settings_title: "⚙️ Настройки",
     craft_open_btn: "Крафт", craft_title: "🔧 Крафт", craft_progress_sub: "выбрано",
@@ -140,6 +146,9 @@ const I18N = {
     daily_reward_jackpot: "Джекпот 7-го дня!",
     daily_promo_hint: "Активируй его на вкладке «Заработать → Промокод»:",
     daily_already_claimed_toast: "Ежедневный бонус уже получен сегодня. Возвращайся завтра!",
+    rank_xp_line: "{xp} / {next} XP", rank_max_line: "{xp} XP · Максимальный ранг",
+    rank_next_line: "До ранга «{name}»: {xp} XP", rank_next_line_max: "Достигнут максимальный ранг!",
+    rankup_title: "🎉 Новый ранг!",
   },
   en: {
     cases_title: "Cases", inventory_title: "Inventory",
@@ -147,6 +156,7 @@ const I18N = {
     terms_title: "📜 Terms of Service",
     terms_accept_btn: "Accept and continue",
     profile_title: "Profile", stat_cases: "Cases opened",
+    stat_ref_count: "Friends invited", stat_ref_earnings: "Earned passively",
     stat_inv_value: "Inventory value", stat_favorite: "Favorite case",
     stat_top_drop: "🏆 Top drop", top_drop_empty: "No drops yet — open your first case!", settings_title: "⚙️ Settings",
     craft_open_btn: "Craft", craft_title: "🔧 Craft", craft_progress_sub: "selected",
@@ -225,6 +235,9 @@ const I18N = {
     daily_reward_jackpot: "Day 7 jackpot!",
     daily_promo_hint: "Activate it on the Earn → Promo code tab:",
     daily_already_claimed_toast: "Daily bonus already claimed today. Come back tomorrow!",
+    rank_xp_line: "{xp} / {next} XP", rank_max_line: "{xp} XP · Max rank",
+    rank_next_line: "To «{name}»: {xp} XP", rank_next_line_max: "Max rank reached!",
+    rankup_title: "🎉 New rank!",
   },
   uk: {
     cases_title: "Кейси", inventory_title: "Інвентар",
@@ -232,6 +245,7 @@ const I18N = {
     terms_title: "📜 Угода користувача",
     terms_accept_btn: "Прийняти і продовжити",
     profile_title: "Профіль", stat_cases: "Відкрито кейсів",
+    stat_ref_count: "Запрошено друзів", stat_ref_earnings: "Нараховано пасивно",
     stat_inv_value: "Вартість інвентаря", stat_favorite: "Улюблений кейс",
     stat_top_drop: "🏆 Топ дроп", top_drop_empty: "Ще немає жодного дропу — відкрий перший кейс!", settings_title: "⚙️ Налаштування",
     craft_open_btn: "Крафт", craft_title: "🔧 Крафт", craft_progress_sub: "вибрано",
@@ -310,6 +324,9 @@ const I18N = {
     daily_reward_jackpot: "Джекпот 7-го дня!",
     daily_promo_hint: "Активуй його на вкладці «Заробити → Промокод»:",
     daily_already_claimed_toast: "Щоденний бонус уже отримано сьогодні. Повертайся завтра!",
+    rank_xp_line: "{xp} / {next} XP", rank_max_line: "{xp} XP · Максимальний ранг",
+    rank_next_line: "До рангу «{name}»: {xp} XP", rank_next_line_max: "Досягнуто максимальний ранг!",
+    rankup_title: "🎉 Новий ранг!",
   },
 };
 
@@ -966,6 +983,12 @@ document.getElementById("open-case-btn").addEventListener("click", async () => {
     updateBalanceDisplay();
     const drops = result.drops || [result.drop];
     state.lastMultiDrops = drops;
+
+    // Показываем модалку нового ранга (если есть) с небольшой задержкой,
+    // чтобы она не перекрывала анимацию открытия/win-модалку сразу же.
+    if (result.xp && result.xp.rank_up && result.xp.rank_up.length) {
+      setTimeout(() => handleXpResult(result.xp), 900);
+    }
 
     state.casesOpenedSinceAd += state.openCount;
     maybeShowInterstitial();
@@ -1671,6 +1694,7 @@ document.getElementById("craft-submit-btn").addEventListener("click", async () =
     playSound(isRare ? "fanfare" : "win");
 
     showCraftResult(result.crafted_item);
+    handleXpResult(result.xp);
     closeCraftScreen();
     await loadInventory();
   } catch (e) {
@@ -1710,6 +1734,10 @@ function applyProfileData(profile) {
   state.isVip = profile.is_vip;
   state.vipExpiresAt = profile.vip_expires_at || null;
   if (Array.isArray(profile.inventory)) state.inventory = profile.inventory;
+  // P2P-реферальная система: сколько друзей приглашено и сколько 💎
+  // пассивно получено с их активности (см. main.py -> _build_profile_payload).
+  state.referralsCount = profile.referrals_count ?? 0;
+  state.refEarningsTotal = profile.ref_earnings_total ?? 0;
   state.lastProfile = profile; // сохраняем для перерисовки при смене валюты без лишнего запроса
 
   if (profile.lang) { state.lang = profile.lang; applyTranslations(); }
@@ -1749,6 +1777,8 @@ function renderProfileScreen(profile) {
   document.getElementById("stat-cases").textContent = profile.total_cases_opened ?? 0;
   document.getElementById("stat-inventory-value").textContent = fmt(profile.inventory_total_value ?? 0);
   document.getElementById("stat-favorite").textContent = profile.favorite_case || "—";
+  document.getElementById("stat-ref-count").textContent = state.referralsCount ?? 0;
+  document.getElementById("stat-ref-earnings").textContent = fmtWithIcon(state.refEarningsTotal ?? 0);
 
   // Топ дроп — берём ИМЕННО persisted-поле top_drop с бэкенда (не
   // most_expensive_item из текущего инвентаря), чтобы карточка не
@@ -1768,8 +1798,98 @@ function renderProfileScreen(profile) {
 
   document.getElementById("ref-link-input").value =
     `https://t.me/${state.botUsername}?start=ref_${state.telegramId}`;
-  document.getElementById("ref-hint").textContent =
-    `+${fmtWithIcon(state.refBonusInviter)} ${state.lang === "en" ? "for you and" : "тебе и"} +${fmtWithIcon(state.refBonusInvited)} ${state.lang === "en" ? "for a friend for every invite" : "другу за каждого приглашённого"}`;
+
+  // Текст под реф-ссылкой: разовый бонус тебе + другу, и отдельным
+  // предложением — постоянный % отчисления с каждой траты друга.
+  const commissionPct = Math.round((state.refCommissionPercent ?? 0.05) * 100);
+  const refHintBonus = state.lang === "en"
+    ? `+${fmtWithIcon(state.refBonusInviter)} for you and +${fmtWithIcon(state.refBonusInvited)} for a friend for every invite.`
+    : state.lang === "uk"
+      ? `+${fmtWithIcon(state.refBonusInviter)} тобі і +${fmtWithIcon(state.refBonusInvited)} другу за кожне запрошення.`
+      : `+${fmtWithIcon(state.refBonusInviter)} тебе и +${fmtWithIcon(state.refBonusInvited)} другу за каждого приглашённого.`;
+  const refHintCommission = state.lang === "en"
+    ? ` Plus ${commissionPct}% of everything your friend spends — forever.`
+    : state.lang === "uk"
+      ? ` Плюс ${commissionPct}% з кожної витрати друга — назавжди.`
+      : ` Плюс ${commissionPct}% с каждой траты друга — навсегда.`;
+  document.getElementById("ref-hint").textContent = refHintBonus + refHintCommission;
+
+  if (profile.rank) renderRankCard(profile.rank);
+}
+
+// ============================================
+// Карточка ранга (профиль) + модалка "Новый ранг!"
+// ============================================
+// rank — объект из ranks.get_rank_progress() (см. ranks.py): level, name(_en/_uk),
+// icon, xp, next_min_xp, next_name(_en/_uk), xp_to_next, progress_percent, is_max.
+function rankLocalizedName(rank, field) {
+  const suffix = state.lang === "en" ? "_en" : state.lang === "uk" ? "_uk" : "";
+  return rank[`${field}${suffix}`] || rank[field];
+}
+
+function renderRankCard(rank) {
+  const card = document.getElementById("rank-card");
+  document.getElementById("rank-icon").textContent = rank.icon || "🔰";
+  document.getElementById("rank-name").textContent = rankLocalizedName(rank, "name");
+  document.getElementById("rank-progress-fill").style.width = `${rank.progress_percent ?? 0}%`;
+  card.classList.toggle("rank-max", !!rank.is_max);
+
+  if (rank.is_max) {
+    document.getElementById("rank-xp-line").textContent = t("rank_max_line").replace("{xp}", rank.xp);
+    document.getElementById("rank-next-line").textContent = t("rank_next_line_max");
+  } else {
+    document.getElementById("rank-xp-line").textContent =
+      t("rank_xp_line").replace("{xp}", rank.xp).replace("{next}", rank.next_min_xp);
+    document.getElementById("rank-next-line").textContent =
+      t("rank_next_line").replace("{name}", rankLocalizedName(rank, "next_name")).replace("{xp}", rank.xp_to_next);
+  }
+}
+
+// Очередь событий повышения ранга — несколько уровней могут прийти за одно
+// крупное начисление XP, показываем модалки по одной, а не все разом.
+function enqueueRankUps(rankUpEvents) {
+  if (!Array.isArray(rankUpEvents) || !rankUpEvents.length) return;
+  state.rankUpQueue.push(...rankUpEvents);
+  if (!state.rankUpModalActive) showNextRankUp();
+}
+
+function showNextRankUp() {
+  const ev = state.rankUpQueue.shift();
+  if (!ev) {
+    state.rankUpModalActive = false;
+    loadProfile(); // подтягиваем актуальную карточку ранга после всей очереди
+    return;
+  }
+  state.rankUpModalActive = true;
+
+  document.getElementById("rankup-icon").textContent = ev.icon || "⭐";
+  document.getElementById("rankup-name").textContent = ev.name || "";
+  document.getElementById("rankup-bonus").textContent = `+${fmt(ev.bonus_crystals || 0)}`;
+
+  const itemCard = document.getElementById("rankup-item-card");
+  if (ev.reward_item) {
+    document.getElementById("rankup-item-image").src = ev.reward_item.image || "";
+    document.getElementById("rankup-item-name").textContent = ev.reward_item.name;
+    document.getElementById("rankup-item-price").textContent = fmt(ev.reward_item.price);
+    itemCard.style.display = "block";
+  } else {
+    itemCard.style.display = "none";
+  }
+
+  playSound("fanfare");
+  haptic("success");
+  document.getElementById("rankup-modal").classList.add("active");
+}
+
+document.getElementById("rankup-ok-btn").addEventListener("click", () => {
+  document.getElementById("rankup-modal").classList.remove("active");
+  setTimeout(showNextRankUp, 250);
+});
+
+// Вызывать после КАЖДОГО ответа бэкенда, содержащего поле xp (см. _award_xp
+// в main.py — открытие кейсов, крафт, мини-игры, бонус, ежедневная награда, реклама).
+function handleXpResult(xpInfo) {
+  if (xpInfo && xpInfo.rank_up) enqueueRankUps(xpInfo.rank_up);
 }
 
 // Реальный логин: один раз при старте приложения. Проверяет initData на
@@ -1899,6 +2019,7 @@ document.getElementById("watch-ad-btn").addEventListener("click", async () => {
     state.balance = result.new_balance;
     updateBalanceDisplay();
     tg?.showAlert?.(`+${fmtWithIcon(result.reward)} ${t("ad_reward_toast")}`);
+    handleXpResult(result.xp);
   } catch (e) {
     // Adsgram отклоняет промис, если реклама недоступна или пользователь пропустил ролик
     tg?.showAlert?.(e?.message || t("ads_unavailable"));
@@ -1989,6 +2110,7 @@ document.getElementById("claim-bonus-btn").addEventListener("click", async () =>
     updateBalanceDisplay();
     tg?.showAlert?.(`+${fmtWithIcon(result.reward)} ${t("bonus_claimed_toast")}`);
     startBonusCountdown(result.cooldown_seconds);
+    handleXpResult(result.xp);
   } catch (e) {
     tg?.showAlert?.(e?.message || t("ads_unavailable"));
   }
@@ -3597,6 +3719,7 @@ document.getElementById("open-giveaways").addEventListener("click", () => {
     state.adsgramBlockId = cfg.adsgram_block_id;
     state.refBonusInviter = cfg.ref_bonus_inviter;
     state.refBonusInvited = cfg.ref_bonus_invited;
+    state.refCommissionPercent = cfg.ref_commission_percent ?? state.refCommissionPercent;
     state.vipPriceStars = cfg.vip_price_stars || state.vipPriceStars;
     state.craftFeeByRarity = cfg.craft_fee_by_rarity || {};
     state.craftItemsRequired = cfg.craft_items_required || 5;

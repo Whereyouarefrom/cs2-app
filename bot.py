@@ -22,6 +22,7 @@ from sqlalchemy import select, func
 from config import (
     BOT_TOKEN, ADMIN_IDS, WEBAPP_URL, START_BALANCE,
     VIP_PRICE_STARS, REF_BONUS_INVITER, REF_BONUS_INVITED,
+    REF_COMMISSION_PERCENT,
 )
 from database import init_db, close_db, async_session, User, Inventory, PromoCode
 from format_utils import format_balance, format_balance_with_icon
@@ -82,10 +83,13 @@ async def get_or_create_user(
                     inviter.balance += REF_BONUS_INVITER
                     await session.commit()
                     try:
+                        commission_pct = round(REF_COMMISSION_PERCENT * 100)
                         await bot.send_message(
                             referred_by,
                             f"👥 По твоей реферальной ссылке зарегистрировался новый игрок!\n"
-                            f"Тебе начислено <b>+{REF_BONUS_INVITER} 💎</b>",
+                            f"Тебе начислено <b>+{REF_BONUS_INVITER} 💎</b>\n\n"
+                            f"💸 И теперь с каждой его траты в игре тебе будет пожизненно "
+                            f"капать <b>{commission_pct}%</b> — без каких-либо действий с твоей стороны.",
                             parse_mode="HTML",
                         )
                     except Exception:
@@ -139,12 +143,15 @@ async def cmd_start(message: Message):
             # Показываем юзеру, что реферальный бонус реально начислен
             bonus_note = f"\n🎁 Ты пришёл по реферальной ссылке — начислен бонус <b>+{REF_BONUS_INVITED} 💎</b>!\n"
 
+        commission_pct = round(REF_COMMISSION_PERCENT * 100)
         text = (
             f"👋 Привет, {message.from_user.first_name}!\n\n"
             f"Добро пожаловать в <b>CS2 Case Simulator</b> — фановый симулятор открытия кейсов "
             f"без реального вывода денег и скинов.\n"
             f"{bonus_note}\n"
             f"💰 Твой баланс: <b>{format_balance_with_icon(user.balance)}</b>\n\n"
+            f"👥 Приглашай друзей по своей реферальной ссылке — получишь разовый бонус "
+            f"<b>+{REF_BONUS_INVITER} 💎</b> и пожизненно <b>{commission_pct}%</b> с каждой их траты в игре.\n\n"
             f"Жми кнопку ниже, чтобы начать открывать кейсы 👇"
         )
 
@@ -186,10 +193,14 @@ async def send_ref_link(callback):
     bot_username = (await bot.get_me()).username
     link = f"https://t.me/{bot_username}?start=ref_{callback.from_user.id}"
 
+    commission_pct = round(REF_COMMISSION_PERCENT * 100)
     await callback.message.answer(
         f"👥 Твоя реферальная ссылка:\n<code>{link}</code>\n\n"
         f"За каждого друга, который зайдёт по ссылке, ты автоматически получишь "
-        f"<b>+{REF_BONUS_INVITER} 💎</b>, а друг стартует с бонусом <b>+{REF_BONUS_INVITED} 💎</b>!",
+        f"<b>+{REF_BONUS_INVITER} 💎</b>, а друг стартует с бонусом <b>+{REF_BONUS_INVITED} 💎</b>!\n\n"
+        f"💸 И это не разовая история: с каждой траты твоего друга (открытие кейсов, "
+        f"крафт, ставки в мини-играх) тебе будет пожизненно капать <b>{commission_pct}%</b> "
+        f"— пока он играет, ты пассивно зарабатываешь вместе с ним.",
         parse_mode="HTML"
     )
     await callback.answer()
