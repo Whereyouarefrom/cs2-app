@@ -43,11 +43,16 @@
       </div>
 
       <div class="inventory-toolbar" id="inventory-toolbar" style="display:none;">
-        <label class="select-all-row">
-          <input type="checkbox" id="inventory-select-all">
-          <span data-i18n="select_all_label">Выделить все</span>
-        </label>
-        <span class="selected-count" id="inventory-selected-count"></span>
+        <div class="inventory-toolbar-left">
+          <label class="select-all-row">
+            <input type="checkbox" id="inventory-select-all">
+            <span data-i18n="select_all_label">Выделить все</span>
+          </label>
+          <span class="selected-count" id="inventory-selected-count"></span>
+        </div>
+        <button type="button" class="inventory-sort-btn" id="inventory-sort-btn" data-dir="desc">
+          <span id="inventory-sort-label">↓ Сначала дорогие</span>
+        </button>
       </div>
 
       <div class="inventory-grid" id="inventory-grid"><!-- items injected by JS --></div>

@@ -40,6 +40,7 @@ const state = {
   openSpeed: "slow",
   lastMultiDrops: [],
   selectedInventoryIds: new Set(),
+  inventorySortDir: "desc", // сортировка инвентаря по цене: desc (дорогие сначала) | asc (дешёвые сначала)
   dailyStatus: null,
   lastProfile: null, // последний полный профиль с бэкенда — для перерисовки при смене валюты без лишнего запроса
   // ---- Крафт / Trade-Up ----
@@ -111,6 +112,7 @@ const I18N = {
     back_btn: "Назад", open_count_label: "Количество открытий", open_speed_label: "Режим скорости",
     speed_slow: "Медленно", speed_fast: "Быстро", sell_all_btn: "Продать всё",
     select_all_label: "Выделить все", disintegrate_btn: "Продать выбранное",
+    sort_expensive_first: "Сначала дорогие", sort_cheap_first: "Сначала дешёвые",
     disintegrate_success: "Предметы проданы!", nothing_selected: "Выбери хотя бы один предмет",
     open_case_for_btn: "Открыть за",
     games_hub_hint: "Выбери игру", game_rocket: "Ракета", game_upgrader: "Улучшитель",
@@ -195,6 +197,7 @@ const I18N = {
     back_btn: "Back", open_count_label: "Number of openings", open_speed_label: "Speed mode",
     speed_slow: "Slow", speed_fast: "Fast", sell_all_btn: "Sell all",
     select_all_label: "Select all", disintegrate_btn: "Sell selected",
+    sort_expensive_first: "Highest price", sort_cheap_first: "Lowest price",
     disintegrate_success: "Items sold!", nothing_selected: "Select at least one item",
     open_case_for_btn: "Open for",
     games_hub_hint: "Pick a game", game_rocket: "Rocket", game_upgrader: "Upgrader",
@@ -279,6 +282,7 @@ const I18N = {
     back_btn: "Назад", open_count_label: "Кількість відкриттів", open_speed_label: "Режим швидкості",
     speed_slow: "Повільно", speed_fast: "Швидко", sell_all_btn: "Продати все",
     select_all_label: "Виділити все", disintegrate_btn: "Продати вибране",
+    sort_expensive_first: "Спочатку дорогі", sort_cheap_first: "Спочатку дешеві",
     disintegrate_success: "Предмети продано!", nothing_selected: "Обери хоча б один предмет",
     open_case_for_btn: "Відкрити за",
     games_hub_hint: "Обери гру", game_rocket: "Ракета", game_upgrader: "Покращувач",
@@ -1316,11 +1320,36 @@ async function loadInventory() {
   }
 }
 
+function getSortedInventory() {
+  // Сортировка только по цене (по возрастанию/убыванию) — сам массив
+  // state.inventory не мутируется, чтобы порядок из API не терялся.
+  return [...state.inventory].sort((a, b) =>
+    state.inventorySortDir === "asc" ? a.price - b.price : b.price - a.price
+  );
+}
+
+function updateInventorySortButton() {
+  const label = document.getElementById("inventory-sort-label");
+  if (!label) return;
+  label.textContent = state.inventorySortDir === "asc"
+    ? `↑ ${t("sort_cheap_first")}`
+    : `↓ ${t("sort_expensive_first")}`;
+}
+
+document.getElementById("inventory-sort-btn").addEventListener("click", () => {
+  state.inventorySortDir = state.inventorySortDir === "asc" ? "desc" : "asc";
+  document.getElementById("inventory-sort-btn").dataset.dir = state.inventorySortDir;
+  updateInventorySortButton();
+  renderInventory();
+});
+
 function renderInventory() {
   const grid = document.getElementById("inventory-grid");
   const empty = document.getElementById("inventory-empty");
   const toolbar = document.getElementById("inventory-toolbar");
   const disintegrateBar = document.getElementById("disintegrate-bar");
+
+  updateInventorySortButton();
 
   // предметы, которых больше нет в инвентаре, снимаем с выделения
   const currentIds = new Set(state.inventory.map(i => i.id));
@@ -1342,7 +1371,7 @@ function renderInventory() {
   // (см. updateInventorySelectionUI ниже, вызывается в конце этой функции).
 
   grid.innerHTML = "";
-  state.inventory.forEach(item => {
+  getSortedInventory().forEach(item => {
     const isSelected = state.selectedInventoryIds.has(item.id);
     const card = document.createElement("div");
     card.className = `inventory-card${isSelected ? " selected" : ""}`;
@@ -2179,6 +2208,10 @@ const RocketGame = {
 
   init() {
     this.playing = false;
+    this.starting = false;
+    this.pollTimer = null;
+    this.autoCashoutTimer = null;
+    this.cashedOut = false;
     this.canvas = document.getElementById("rocket-canvas");
     this.ctx = this.canvas.getContext("2d");
     this.resize();
@@ -2191,31 +2224,74 @@ const RocketGame = {
       document.getElementById("rocket-target-value").textContent = parseFloat(slider.value).toFixed(1) + "x";
     });
 
-    document.getElementById("rocket-play-btn").addEventListener("click", async () => {
-      if (this.playing) return;
-      const betAmount = parseFloat(document.getElementById("rocket-bet-input").value);
-      const cashoutAt = parseFloat(slider.value);
-
-      if (!betAmount || betAmount <= 0) { tg?.showAlert?.(t("bet_invalid")); return; }
-      if (betAmount > state.balance) { tg?.showAlert?.(t("balance_low")); return; }
-
-      const playBtn = document.getElementById("rocket-play-btn");
-      playBtn.disabled = true;
-      document.getElementById("rocket-result").classList.remove("show");
-      haptic("light");
-
-      try {
-        const result = await apiPost("/minigames/crash", {
-          telegram_id: state.telegramId,
-          bet_amount: betAmount,
-          cashout_at: cashoutAt,
-        });
-        this.playFlight(result);
-      } catch (e) {
-        tg?.showAlert?.(e.message);
-        playBtn.disabled = false;
-      }
+    document.getElementById("rocket-play-btn").addEventListener("click", () => {
+      // Одна и та же кнопка: "Играть" пока полёта нет, "Забрать" в любой
+      // момент полёта — ручной вывод работает даже если задан авто-вывод.
+      if (this.playing) this.manualCashout();
+      else this.startFlight();
     });
+  },
+
+  setPlayButton({ label, mode, disabled }) {
+    const btn = document.getElementById("rocket-play-btn");
+    if (!btn) return;
+    btn.textContent = label;
+    btn.className = mode === "cashout" ? "btn-primary full rocket-cashout-active" : "btn-primary full";
+    btn.disabled = !!disabled;
+  },
+
+  async startFlight() {
+    // Синхронная блокировка немедленно — не даёт двойному клику отправить
+    // два /start подряд, пока первый ответ ещё не пришёл.
+    if (this.playing || this.starting) return;
+    this.starting = true;
+    this.setPlayButton({ label: t("upgrade_spinning") || "…", mode: "play", disabled: true });
+
+    const betAmount = parseFloat(document.getElementById("rocket-bet-input").value);
+    const autoCashoutAt = parseFloat(document.getElementById("rocket-target-slider").value);
+
+    if (!betAmount || betAmount <= 0) {
+      tg?.showAlert?.(t("bet_invalid"));
+      this.starting = false;
+      this.setPlayButton({ label: t("play_btn"), mode: "play", disabled: false });
+      return;
+    }
+    if (betAmount > state.balance) {
+      tg?.showAlert?.(t("balance_low"));
+      this.starting = false;
+      this.setPlayButton({ label: t("play_btn"), mode: "play", disabled: false });
+      return;
+    }
+
+    document.getElementById("rocket-result").classList.remove("show");
+    haptic("light");
+
+    try {
+      const result = await apiPost("/minigames/crash/start", {
+        telegram_id: state.telegramId,
+        bet_amount: betAmount,
+        auto_cashout_at: autoCashoutAt || null,
+      });
+
+      state.balance = result.new_balance;
+      updateGameScreenBalance();
+
+      this.starting = false;
+      this.betAmount = betAmount;
+      this.autoCashoutAt = autoCashoutAt;
+      this.cashedOut = false;
+      document.getElementById("rocket-bet-input").disabled = true;
+      document.getElementById("rocket-target-slider").disabled = true;
+      // Единственная активная кнопка на время полёта — "Забрать": можно
+      // нажать на любом X, вне зависимости от заданного авто-вывода.
+      this.setPlayButton({ label: `${t("cashout_btn") || "Забрать"} (1.00x)`, mode: "cashout", disabled: false });
+      activeSessionCashout = () => this.manualCashout(true);
+      this.playFlight();
+    } catch (e) {
+      this.starting = false;
+      this.setPlayButton({ label: t("play_btn"), mode: "play", disabled: false });
+      tg?.showAlert?.(e.message);
+    }
   },
 
   resize() {
@@ -2238,17 +2314,12 @@ const RocketGame = {
     return (-b + Math.sqrt(Math.max(0, disc))) / (2 * a);
   },
 
-  // Уже известный от бэкенда исход разыгрываем как анимацию полёта до этой точки.
-  playFlight(result) {
+  // Живой полёт: множитель считается в реальном времени по той же формуле,
+  // что и на бэкенде (growthCurve), а ракета летит, пока её либо не заберут
+  // вручную ("Забрать" — доступна на ЛЮБОМ X всё время полёта), либо пока
+  // сервер не сообщит через /poll, что она уже лопнула.
+  playFlight() {
     this.playing = true;
-    const crashPoint = parseFloat(result.crash_point);
-    const cashoutAt = parseFloat(result.cashout_at);
-    const isWin = result.result === "win";
-    // Финальная точка полёта на графике — момент взрыва (для проигрыша) или
-    // момент фиксации (для победы, дальше рисуем "успешный" кадр).
-    const stopMultiplier = isWin ? cashoutAt : crashPoint;
-    const stopTime = this.timeForMultiplier(stopMultiplier);
-
     const statusEl = document.getElementById("rocket-canvas-status");
     const multEl = document.getElementById("rocket-canvas-mult");
     statusEl.textContent = "🚀 " + t("play_btn");
@@ -2256,47 +2327,113 @@ const RocketGame = {
 
     const flightLog = [];
     const startTs = performance.now();
-    // Полёт всегда идёт вживую ~2.5–4.5с, независимо от итогового множителя —
-    // так короткие и длинные раунды выглядят одинаково динамично.
-    const durationMs = Math.min(4500, Math.max(2200, stopTime * 380));
 
     const tick = (now) => {
-      const progress = Math.min(1, (now - startTs) / durationMs);
-      const elapsed = progress * stopTime;
+      if (!this.playing) return;
+      const elapsed = (now - startTs) / 1000;
       const mult = this.growthCurve(elapsed);
       flightLog.push({ t: elapsed, m: mult });
       multEl.textContent = mult.toFixed(2) + "x";
+      if (!this.cashedOut) {
+        this.setPlayButton({ label: `${t("cashout_btn") || "Забрать"} (${mult.toFixed(2)}x)`, mode: "cashout", disabled: false });
+      }
 
       this.drawFrame(mult, false, false, flightLog, elapsed);
 
-      if (progress < 1) {
-        this.rafId = requestAnimationFrame(tick);
-      } else {
-        this.finishFlight(isWin, result, flightLog, elapsed);
+      // Локальный "автовывод": как только клиентская анимация долетает до
+      // выбранного игроком множителя, автоматически шлём тот же /cashout,
+      // что и ручная кнопка — но игрок мог успеть нажать "Забрать" раньше.
+      if (this.autoCashoutAt && !this.cashedOut && mult >= this.autoCashoutAt) {
+        this.manualCashout();
       }
+
+      this.flightLog = flightLog;
+      this.elapsed = elapsed;
+      this.rafId = requestAnimationFrame(tick);
     };
     this.rafId = requestAnimationFrame(tick);
+
+    // Параллельно опрашиваем бэкенд — он единственный, кто знает истинную
+    // точку краха, и может сообщить, что ракета лопнула, даже если игрок
+    // ничего не нажимал.
+    this.pollTimer = setInterval(() => this.pollStatus(), 250);
   },
 
-  finishFlight(isWin, result, flightLog, elapsed) {
-    this.playing = false;
+  async pollStatus() {
+    if (!this.playing || this.cashedOut) return;
+    try {
+      const status = await apiGet(`/minigames/crash/poll?telegram_id=${state.telegramId}`);
+      if (status.active === false && status.busted) {
+        this.onBust(status.crash_point);
+      }
+    } catch (e) {
+      // Сеть моргнула — не рушим раунд, просто попробуем на следующем тике.
+    }
+  },
+
+  async manualCashout(silent = false) {
+    if (!this.playing || this.cashedOut) return;
+    this.cashedOut = true;
+    this.setPlayButton({ label: t("cashout_btn") || "Забрать", mode: "cashout", disabled: true });
+    try {
+      const result = await apiPost("/minigames/crash/cashout", { telegram_id: state.telegramId });
+      if (!silent) this.finishFlight(result);
+      else { this.playing = false; this.stopTimers(); }
+    } catch (e) {
+      this.cashedOut = false;
+      if (!silent) {
+        this.setPlayButton({ label: t("cashout_btn") || "Забрать", mode: "cashout", disabled: false });
+        tg?.showAlert?.(e.message);
+      }
+    }
+  },
+
+  onBust(crashPoint) {
+    if (this.cashedOut) return; // уже успели забрать чуть раньше
+    this.finishFlight({
+      success: true,
+      result: "lose",
+      crash_point: crashPoint,
+      cashout_at: null,
+      winnings: 0,
+      new_balance: state.balance,
+    });
+  },
+
+  stopTimers() {
+    if (this.rafId) cancelAnimationFrame(this.rafId);
     this.rafId = null;
+    if (this.pollTimer) clearInterval(this.pollTimer);
+    this.pollTimer = null;
+  },
+
+  finishFlight(result) {
+    this.playing = false;
+    this.stopTimers();
+    const isWin = result.result === "win";
     const statusEl = document.getElementById("rocket-canvas-status");
     const resultBox = document.getElementById("rocket-result");
-    document.getElementById("rocket-play-btn").disabled = false;
+
+    document.getElementById("rocket-bet-input").disabled = false;
+    document.getElementById("rocket-target-slider").disabled = false;
+    this.setPlayButton({ label: t("play_btn"), mode: "play", disabled: false });
+    activeSessionCashout = null;
 
     state.balance = result.new_balance;
     updateGameScreenBalance();
+
+    const flightLog = this.flightLog || [];
+    const elapsed = this.elapsed || 0;
 
     if (isWin) {
       this.drawFrame(result.cashout_at, false, true, flightLog, elapsed);
       statusEl.textContent = "✅ " + t("win_toast_prefix");
       statusEl.className = "rocket-canvas-status win";
-      showGameResult(resultBox, `🚀 ${result.crash_point}x — ${result.cashout_at}x! +${fmt(result.winnings)}`, true);
+      showGameResult(resultBox, `🚀 ${result.cashout_at}x! +${fmt(result.winnings)}`, true);
       playSound("win");
       haptic("success");
     } else {
-      this.drawFrame(result.crash_point, true, false, flightLog, elapsed);
+      this.drawFrame(result.crash_point || this.growthCurve(elapsed), true, false, flightLog, elapsed);
       statusEl.textContent = "💥 " + t("lose_toast");
       statusEl.className = "rocket-canvas-status lose";
       showGameResult(resultBox, `💥 ${result.crash_point}x`, false);
@@ -2388,8 +2525,7 @@ const RocketGame = {
   },
 
   destroy() {
-    if (this.rafId) cancelAnimationFrame(this.rafId);
-    this.rafId = null;
+    this.stopTimers();
     this.playing = false;
     if (this._onResize) window.removeEventListener("resize", this._onResize);
     this.canvas = null;
@@ -2846,8 +2982,12 @@ const UpgraderGame = {
 
     if (result.result === "win") {
       showUpgradeResult(true, result.item);
-    } else {
+    } else if (result.compensation) {
       showUpgradeResult(false, result.compensation);
+    } else {
+      // Ставка была меньше порога компенсации — скин не выдаётся,
+      // вместо этого утешительные крохи 💎 зачислены прямо на баланс.
+      showUpgradeResult(false, null, result.compensation_crystals);
     }
 
     state.inventory = state.inventory.filter(i => !this.selectedItemIds.some(id => String(id) === String(i.id)));
@@ -2874,12 +3014,26 @@ const UpgraderGame = {
 
 // Модалка результата Апгрейдера — используется и для победы (выданный
 // целевой скин), и для поражения (утешительный компенсационный скин).
-function showUpgradeResult(isWin, item) {
+function showUpgradeResult(isWin, item, compensationCrystals) {
   const modal = document.getElementById("upgrade-result-modal");
   const sheet = modal.querySelector(".modal-sheet");
   sheet.classList.toggle("upgrade-lose-sheet", !isWin);
   document.getElementById("upgrade-result-title").textContent = isWin ? t("upgrade_success_title") : t("upgrade_fail_title");
   document.getElementById("upgrade-result-subtitle").style.display = isWin ? "none" : "block";
+
+  if (!isWin && !item) {
+    // Ставка была ниже порога компенсации скином — вместо предмета
+    // на баланс капнули утешительные крохи 💎.
+    document.getElementById("upgrade-result-subtitle").textContent =
+      `${t("upgrade_fail_desc")} +${fmt(compensationCrystals ?? 0.01)} ${currencyIcon()}`;
+    document.getElementById("upgrade-result-image").src = "";
+    document.getElementById("upgrade-result-name").textContent = `+${fmt(compensationCrystals ?? 0.01)} ${currencyIcon()}`;
+    document.getElementById("upgrade-result-quality").textContent = "";
+    document.getElementById("upgrade-result-price").textContent = fmt(compensationCrystals ?? 0.01);
+    modal.classList.add("active");
+    return;
+  }
+
   document.getElementById("upgrade-result-subtitle").textContent = t("upgrade_fail_desc");
   document.getElementById("upgrade-result-image").src = item.image || "";
   document.getElementById("upgrade-result-name").textContent = item.name;
@@ -3018,8 +3172,7 @@ const MinerGame = {
       <div class="game-multiplier-readout" id="miner-multiplier">1.00x</div>
       <div class="mines-grid" id="miner-grid">${tiles}</div>
       <div class="game-btn-row">
-        <button class="btn-secondary" id="miner-start-btn">${t("start_round_btn")}</button>
-        <button class="btn-primary" id="miner-cashout-btn" disabled>${t("cashout_btn")}</button>
+        <button class="btn-secondary full" id="miner-action-btn">${t("start_round_btn")}</button>
       </div>
       <div class="game-result-box" id="miner-result"></div>
     `;
@@ -3028,15 +3181,30 @@ const MinerGame = {
   init() {
     this.active = false;
     this.revealedCount = 0;
+    this.starting = false;
     activeSessionCashout = null;
 
-    document.getElementById("miner-start-btn").addEventListener("click", () => this.startRound());
-    document.getElementById("miner-cashout-btn").addEventListener("click", () => this.cashout());
+    // Единая кнопка: "Начать игру" пока раунда нет, и превращается в
+    // "Забрать выигрыш" (единственно активную) на всё время раунда — так
+    // физически невозможно повторно нажать "старт" и задублировать ставку.
+    document.getElementById("miner-action-btn").addEventListener("click", () => {
+      if (this.active) this.cashout();
+      else this.startRound();
+    });
     document.getElementById("miner-grid").addEventListener("click", (e) => {
       const tile = e.target.closest(".mine-tile");
       if (!tile || !this.active) return;
       this.reveal(Number(tile.dataset.index));
     });
+  },
+
+  setActionButton({ label, mode, disabled }) {
+    const btn = document.getElementById("miner-action-btn");
+    if (!btn) return;
+    btn.textContent = label;
+    btn.className = mode === "cashout" ? "btn-primary full" : "btn-secondary full";
+    btn.disabled = !!disabled;
+    btn.dataset.mode = mode;
   },
 
   resetGridUI() {
@@ -3047,11 +3215,28 @@ const MinerGame = {
   },
 
   async startRound() {
+    // Синхронная защита от двойного тапа: блокируем кнопку СРАЗУ, до
+    // всякого await — иначе два быстрых клика успевают уйти на бэкенд как
+    // два отдельных /start до того, как придёт первый ответ.
+    if (this.active || this.starting) return;
+    this.starting = true;
+    this.setActionButton({ label: t("upgrade_spinning") || "…", mode: "start", disabled: true });
+
     const betAmount = parseFloat(document.getElementById("miner-bet-input").value);
     const minesCount = Number(document.getElementById("miner-mines-select").value);
 
-    if (!betAmount || betAmount <= 0) { tg?.showAlert?.(t("bet_invalid")); return; }
-    if (betAmount > state.balance) { tg?.showAlert?.(t("balance_low")); return; }
+    if (!betAmount || betAmount <= 0) {
+      tg?.showAlert?.(t("bet_invalid"));
+      this.starting = false;
+      this.setActionButton({ label: t("start_round_btn"), mode: "start", disabled: false });
+      return;
+    }
+    if (betAmount > state.balance) {
+      tg?.showAlert?.(t("balance_low"));
+      this.starting = false;
+      this.setActionButton({ label: t("start_round_btn"), mode: "start", disabled: false });
+      return;
+    }
 
     try {
       const result = await apiPost("/minigames/mines/start", {
@@ -3064,18 +3249,22 @@ const MinerGame = {
       updateGameScreenBalance();
 
       this.active = true;
+      this.starting = false;
       this.revealedCount = 0;
       this.betAmount = betAmount;
       this.resetGridUI();
       document.getElementById("miner-multiplier").textContent = "1.00x";
-      document.getElementById("miner-cashout-btn").disabled = true;
       document.getElementById("miner-result").classList.remove("show");
-      document.getElementById("miner-start-btn").disabled = true;
       document.getElementById("miner-bet-input").disabled = true;
       document.getElementById("miner-mines-select").disabled = true;
+      // Раунд активен: единственная активная кнопка теперь — "Забрать
+      // выигрыш" (отключена, пока не открыта хотя бы одна безопасная клетка).
+      this.setActionButton({ label: t("cashout_btn"), mode: "cashout", disabled: true });
       activeSessionCashout = () => this.cashout(true);
       haptic("medium");
     } catch (e) {
+      this.starting = false;
+      this.setActionButton({ label: t("start_round_btn"), mode: "start", disabled: false });
       tg?.showAlert?.(e.message);
     }
   },
@@ -3110,7 +3299,7 @@ const MinerGame = {
       tile.className = "mine-tile safe opened";
       this.revealedCount = result.revealed_count || (this.revealedCount + 1);
       document.getElementById("miner-multiplier").textContent = `${result.multiplier.toFixed(2)}x`;
-      document.getElementById("miner-cashout-btn").disabled = false;
+      this.setActionButton({ label: t("cashout_btn"), mode: "cashout", disabled: false });
       haptic("light");
 
       if (result.result === "cleared") {
@@ -3125,6 +3314,9 @@ const MinerGame = {
 
   async cashout(silent = false) {
     if (!this.active) return;
+    // Блокируем кнопку немедленно — не даём повторному клику на "Забрать
+    // выигрыш" уйти вторым запросом, пока первый ещё не ответил.
+    this.setActionButton({ label: t("cashout_btn"), mode: "cashout", disabled: true });
     try {
       const result = await apiPost("/minigames/mines/cashout", { telegram_id: state.telegramId });
       state.balance = result.new_balance;
@@ -3132,15 +3324,17 @@ const MinerGame = {
       if (!silent) this.endRound(result.winnings > 0, result.winnings);
       else this.active = false;
     } catch (e) {
-      if (!silent) tg?.showAlert?.(e.message);
+      if (!silent) {
+        tg?.showAlert?.(e.message);
+        this.setActionButton({ label: t("cashout_btn"), mode: "cashout", disabled: false });
+      }
     }
   },
 
   endRound(isWin, winnings) {
     this.active = false;
     activeSessionCashout = null;
-    document.getElementById("miner-cashout-btn").disabled = true;
-    document.getElementById("miner-start-btn").disabled = false;
+    this.setActionButton({ label: t("start_round_btn"), mode: "start", disabled: false });
     document.getElementById("miner-bet-input").disabled = false;
     document.getElementById("miner-mines-select").disabled = false;
     document.querySelectorAll("#miner-grid .mine-tile").forEach(t => t.classList.add("disabled"));

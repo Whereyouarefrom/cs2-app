@@ -6,6 +6,7 @@ import random
 import secrets
 import math
 import asyncio
+import time
 import datetime
 from typing import Optional, List
 
@@ -580,6 +581,22 @@ class CrashBetRequest(BaseModel):
     telegram_id: int
     bet_amount: float
     cashout_at: float
+
+
+class CrashStartRequest(BaseModel):
+    telegram_id: int
+    bet_amount: float
+    # Необязательный "автовывод" — если задан, фронтенд сам вызовет
+    # /minigames/crash/cashout, когда его локальная анимация долетит до этого
+    # множителя. Игрок в любой момент может нажать "Забрать" раньше и
+    # вручную зафиксировать текущий (более низкий) множитель — ручной вывод
+    # всегда имеет приоритет, потому что оба пути ведут в один и тот же
+    # /cashout, а выигрывает тот запрос, что придёт первым.
+    auto_cashout_at: Optional[float] = None
+
+
+class CrashCashoutRequest(BaseModel):
+    telegram_id: int
 
 
 class UpdateSettingsRequest(BaseModel):
@@ -1518,8 +1535,14 @@ UPGRADE_MAX_CHANCE = 0.80   # 80%
 UPGRADE_MIN_MULTIPLIER = 1.05
 UPGRADE_MAX_MULTIPLIER = 100.0
 
-COMPENSATION_RATIO = 0.10       # 10% от стоимости сгоревшего предмета
+COMPENSATION_RATIO = 0.10       # 10% от СУММАРНОЙ стоимости всех сгоревших предметов
 COMPENSATION_TOLERANCE = 0.01   # допустимая погрешность ±1%
+# Если суммарная ставка (стоимость всех выбранных предметов) меньше этого
+# порога, выдавать компенсационный скин не имеет смысла (сам предмет стоил
+# бы копейки и захламлял бы инвентарь) — вместо этого начисляем утешительные
+# 0.01 💎 прямо на баланс.
+COMPENSATION_MIN_BET = 11.0
+COMPENSATION_FALLBACK_CRYSTALS = 0.01
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -1720,15 +1743,32 @@ async def upgrade_skin(req: UpgradeRequest):
                 },
             }
         else:
-            # Проигрыш: все выбранные предметы сгорают, но игрок гарантированно
-            # получает утешительный скин ровно на 10% (±1%) от их суммарной стоимости.
+            # Проигрыш: все выбранные предметы сгорают. Компенсация считается
+            # от СУММАРНОЙ стоимости всей ставки (old_price = сумма цен всех
+            # выбранных предметов, уже посчитана выше).
             for i in items:
                 await session.delete(i)
 
             comp_price = round(old_price * COMPENSATION_RATIO, 2)
-            # На случай экстремально дешёвых предметов (comp_price -> 0)
-            # не даём компенсации уйти в ноль — минимум 1 💎.
-            comp_price = max(comp_price, 1.0)
+
+            if old_price < COMPENSATION_MIN_BET:
+                # Ставка слишком маленькая — скин-компенсация не выдаётся,
+                # вместо этого утешительные 0.01 💎 сразу на баланс.
+                user.balance = round(user.balance + COMPENSATION_FALLBACK_CRYSTALS, 2)
+                await session.commit()
+                await session.refresh(user)
+
+                return {
+                    "success": True,
+                    "result": "lose",
+                    "chance_used": round(success_chance * 100, 2),
+                    "old_price": old_price,
+                    "target_price": round(target_price, 2),
+                    "compensation": None,
+                    "compensation_crystals": COMPENSATION_FALLBACK_CRYSTALS,
+                    "new_balance": user.balance,
+                }
+
             comp_entry = _pick_item_for_price(comp_price)
             comp_instance = _instance_from_registry_item(comp_entry, comp_price)
 
@@ -1764,6 +1804,7 @@ async def upgrade_skin(req: UpgradeRequest):
                     "stattrak": comp_instance["stattrak"],
                     "float_val": comp_instance["float_val"],
                 },
+                "compensation_crystals": None,
             }
 
 
@@ -1776,17 +1817,162 @@ async def upgrade_skin_legacy_alias(req: UpgradeRequest):
 
 
 # ============================================
-# 11. CRASH
+# 11. CRASH / РАКЕТА
 # ============================================
+# Раунд теперь ЖИВОЙ (сессионный, как Минёр), а не "мгновенно решённый":
+#   1) /minigames/crash/start — списывает ставку, тайно генерирует crash_point
+#      и запоминает server-side время старта раунда. Клиенту crash_point НЕ
+#      возвращается — иначе можно было бы читер-кодом заранее узнать точку
+#      краха и подгадать вывод.
+#   2) Пока раунд активен, фронтенд рисует полёт ракеты в реальном времени по
+#      той же формуле роста, что и бэкенд (growth curve), и может опрашивать
+#      /minigames/crash/poll, чтобы узнать текущий множитель/не лопнула ли
+#      ракета уже.
+#   3) Игрок жмёт "Забрать" (кнопка ручного вывода) В ЛЮБОЙ момент полёта —
+#      /minigames/crash/cashout всегда принимает вывод по РЕАЛЬНОМУ,
+#      посчитанному на сервере (не присланному клиентом) множителю на момент
+#      запроса. Это работает, даже если изначально был задан авто-вывод на
+#      каком-то X: авто-вывод — это просто тот же самый вызов /cashout,
+#      сделанный клиентским таймером автоматически по достижении X, поэтому
+#      ручной клик "Забрать" всегда может сработать раньше и выигрывает.
+
+CRASH_HOUSE_EDGE = 0.97
+
+
 def generate_crash_point() -> float:
-    house_edge = 0.97
     r = random.random()
     if r == 0:
         r = 0.0001
-    crash_point = house_edge / r
+    crash_point = CRASH_HOUSE_EDGE / r
     return max(1.00, round(crash_point, 2))
 
 
+# Та же кривая роста множителя от времени (в секундах), что и в анимации
+# фронтенда (см. RocketGame.growthCurve в app.js) — держим их синхронными,
+# иначе визуальный множитель на экране разойдётся с тем, что реально
+# посчитает /cashout.
+def _crash_multiplier_at(elapsed_seconds: float) -> float:
+    t = max(0.0, elapsed_seconds)
+    return 1 + 0.06 * t + 0.015 * t * t
+
+
+_crash_sessions: dict[int, dict] = {}
+
+
+@app.post("/api/minigames/crash/start")
+async def crash_start(req: CrashStartRequest):
+    if req.bet_amount <= 0:
+        raise HTTPException(400, "Некорректная ставка")
+
+    # Защита от двойной ставки — тот же принцип, что и в Минёре: пока
+    # предыдущий раунд активен, повторный /start не спишет баланс ещё раз.
+    existing = _crash_sessions.get(req.telegram_id)
+    if existing and existing.get("active"):
+        raise HTTPException(409, "Раунд уже идёт. Заверши текущий полёт, прежде чем начать новый.")
+
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id == req.telegram_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(404, "Пользователь не найден")
+        if user.balance < req.bet_amount:
+            raise HTTPException(400, "Недостаточно Кристалликов 💎")
+
+        user.balance -= req.bet_amount
+        await session.commit()
+        await session.refresh(user)
+
+        _crash_sessions[req.telegram_id] = {
+            "bet_amount": req.bet_amount,
+            "crash_point": generate_crash_point(),
+            "start_ts": time.time(),
+            "auto_cashout_at": req.auto_cashout_at,
+            "active": True,
+        }
+
+        return {
+            "success": True,
+            "bet_amount": req.bet_amount,
+            "new_balance": user.balance,
+        }
+
+
+@app.get("/api/minigames/crash/poll")
+async def crash_poll(telegram_id: int):
+    """Ненавязчивый опрос состояния текущего полёта (без списаний/начислений):
+    возвращает живой множитель или сообщает, что ракета уже лопнула (если
+    игрок не успел/не стал нажимать "Забрать")."""
+    session_state = _crash_sessions.get(telegram_id)
+    if not session_state or not session_state.get("active"):
+        return {"success": True, "active": False}
+
+    elapsed = time.time() - session_state["start_ts"]
+    crash_point = session_state["crash_point"]
+    current_mult = round(_crash_multiplier_at(elapsed), 4)
+
+    if current_mult >= crash_point:
+        # Ракета лопнула, а игрок не успел забрать — раунд закрывается,
+        # ставка (уже списанная при /start) сгорает.
+        session_state["active"] = False
+        del _crash_sessions[telegram_id]
+        return {"success": True, "active": False, "busted": True, "crash_point": crash_point}
+
+    return {"success": True, "active": True, "busted": False, "multiplier": current_mult}
+
+
+@app.post("/api/minigames/crash/cashout")
+async def crash_cashout(req: CrashCashoutRequest):
+    """Ручной (или авто-триггернутый клиентским таймером) вывод — платит
+    РОВНО по множителю, посчитанному на сервере в момент этого запроса, а не
+    по тому, что игрок/фронтенд мог бы подставить в теле запроса."""
+    session_state = _crash_sessions.get(req.telegram_id)
+    if not session_state or not session_state.get("active"):
+        raise HTTPException(400, "Нет активного полёта")
+
+    elapsed = time.time() - session_state["start_ts"]
+    crash_point = session_state["crash_point"]
+    current_mult = round(_crash_multiplier_at(elapsed), 4)
+    bet_amount = session_state["bet_amount"]
+
+    session_state["active"] = False
+    del _crash_sessions[req.telegram_id]
+
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id == req.telegram_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(404, "Пользователь не найден")
+
+        if current_mult >= crash_point:
+            # Ракета успела лопнуть до того, как запрос дошёл до сервера.
+            await session.commit()
+            return {
+                "success": True,
+                "result": "lose",
+                "crash_point": crash_point,
+                "cashout_at": None,
+                "winnings": 0,
+                "new_balance": user.balance,
+            }
+
+        winnings = round(bet_amount * current_mult, 2)
+        user.balance += winnings
+        await session.commit()
+        await session.refresh(user)
+
+        return {
+            "success": True,
+            "result": "win",
+            "crash_point": crash_point,
+            "cashout_at": current_mult,
+            "winnings": winnings,
+            "new_balance": user.balance,
+        }
+
+
+# Старый мгновенный эндпоинт оставлен для обратной совместимости (вдруг
+# где-то на клиенте закэширован старый билд фронтенда, который шлёт заранее
+# выбранный cashout_at одним запросом без живого полёта).
 @app.post("/api/minigames/crash")
 async def play_crash(req: CrashBetRequest):
     if req.bet_amount <= 0:
@@ -1899,6 +2085,13 @@ async def mines_start(req: MinesStartRequest):
         raise HTTPException(400, "Некорректная ставка")
     if req.mines_count < 1 or req.mines_count > 24:
         raise HTTPException(400, "Количество мин должно быть от 1 до 24")
+
+    # Защита от двойной ставки: если игрок случайно (двойной тап/двойной
+    # запрос с фронта) уже начал раунд, который ещё активен, повторный
+    # /start не должен списывать баланс ещё раз поверх уже идущего раунда.
+    existing = _mines_sessions.get(req.telegram_id)
+    if existing and existing.get("active"):
+        raise HTTPException(409, "Раунд уже идёт. Заверши текущий раунд, прежде чем начать новый.")
 
     async with async_session() as session:
         result = await session.execute(select(User).where(User.telegram_id == req.telegram_id))
