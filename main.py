@@ -1883,7 +1883,21 @@ MAX_UPGRADE_ITEMS = 6
 @app.post("/api/upgrade")
 async def upgrade_skin(req: UpgradeRequest):
     async with async_session() as session:
-        result = await session.execute(select(User).where(User.telegram_id == req.telegram_id))
+        # with_for_update() блокирует строку юзера до конца транзакции —
+        # защита от гонки, когда два параллельных запроса с одним и тем же
+        # telegram_id читают один и тот же старый баланс/инвентарь и оба
+        # проходят проверки. НО: на SQLite (DATABASE_URL по умолчанию в
+        # config.py) этот clause по факту не поддерживается движком и
+        # SQLAlchemy молча его игнорирует — реальной блокировки строк там
+        # нет. Для полноценной защиты от дублей на SQLite нужен либо
+        # переход на Postgres/MySQL (там with_for_update реально работает),
+        # либо доп. механизм на уровне приложения (напр. asyncio.Lock per
+        # telegram_id вокруг всего блока). Оставляю with_for_update(), т.к.
+        # это правильный путь и он "бесплатно" заработает при миграции на
+        # Postgres, но это не серебряная пуля прямо сейчас на SQLite.
+        result = await session.execute(
+            select(User).where(User.telegram_id == req.telegram_id).with_for_update()
+        )
         user = result.scalar_one_or_none()
         if not user:
             raise HTTPException(404, "Пользователь не найден")
@@ -1897,10 +1911,12 @@ async def upgrade_skin(req: UpgradeRequest):
             raise HTTPException(400, f"Максимум {MAX_UPGRADE_ITEMS} предметов за раз")
 
         result_items = await session.execute(
-            select(Inventory).where(
+            select(Inventory)
+            .where(
                 Inventory.id.in_(ids),
                 Inventory.user_id == user.id,
             )
+            .with_for_update()
         )
         items = result_items.scalars().all()
         if len(items) != len(ids):
