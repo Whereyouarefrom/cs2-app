@@ -34,6 +34,16 @@ class User(Base):
     lang = Column(String, default="ru")               # ru / en / uk
     sound_enabled = Column(Boolean, default=True)      # звук вкл/выкл
 
+    # ---- Спринт 12: кастомизация фона симулятора (Профиль → Настройки) ----
+    # Ключ выбранного фона из BACKGROUND_OPTIONS (main.py) — "dark" (обычная
+    # тёмная тема, значение по умолчанию), "map_mirage" / "map_dust2" /
+    # "map_inferno" (статичные HD-картинки карт) или "video_mirage" /
+    # "video_dust2" (зацикленные WebM/MP4 видео-локации). Хранится строкой,
+    # а не отдельным bool на каждый вариант — новые фоны добавляются без
+    # миграции схемы. Валидность значения проверяется на бэкенде в момент
+    # записи (см. update_settings), поэтому здесь принимаем что угодно.
+    background = Column(String, default="dark")
+
     ref_code = Column(String, unique=True, nullable=False, default=lambda: secrets.token_hex(4))   # собственный реф. код
     referred_by = Column(BigInteger, nullable=True)          # telegram_id пригласившего
 
@@ -57,6 +67,33 @@ class User(Base):
     # а не пересчитывалась каждый раз из xp.
     xp = Column(Integer, default=0)
     rank_level = Column(Integer, default=0)
+
+    # ---- Уровень аккаунта (Спринт 10, см. levels.py) ----
+    # ВАЖНО: сам уровень НЕ хранится — он всегда выводится из xp чистой
+    # функцией levels.level_from_xp() по формуле 100 * 1.15^(N-1), поэтому
+    # у любого существующего игрока появляется сам, без миграции данных.
+    # Здесь лежит только last_seen_level — СНИМОК уровня на момент
+    # последнего начисления опыта. Он нужен исключительно для того, чтобы
+    # поймать МОМЕНТ повышения (level_from_xp(xp) > last_seen_level) и
+    # показать игроку модалку «Новый уровень!» ровно один раз, а не при
+    # каждой перезагрузке профиля.
+    last_seen_level = Column(Integer, default=1)
+
+    # ---- Накопительная статистика для авто-разблокировки титулов
+    # (Спринт 10, см. cosmetics.py). Счётчики инкрементит
+    # main._maybe_update_top_drop — единая воронка всех полученных
+    # предметов. peak_inventory_value — ПИКОВАЯ стоимость инвентаря
+    # (а не текущая), чтобы титул «Магнат» не отбирался при распродаже. ----
+    knife_drops_count = Column(Integer, default=0)    # выбито ножей/перчаток → «Ножеман»
+    covert_drops_count = Column(Integer, default=0)   # выбито Covert и выше → «Счастливчик»
+    peak_inventory_value = Column(Float, default=0.0)  # рекорд стоимости инвентаря → «Магнат»
+
+    # unlocked_titles / unlocked_frames — JSON-массивы ключей ОТКРЫТОЙ
+    # косметики профиля (напр. "[\"knifeman\", \"lucky\"]"), накопительные.
+    # Дополняют selected_title / selected_frame ниже: те хранят только
+    # текущий ВЫБОР, а эти — из чего игроку разрешено выбирать.
+    unlocked_titles = Column(String, default="[]")
+    unlocked_frames = Column(String, default="[]")
 
     # ---- Пользовательское соглашение (Terms of Service) ----
     terms_accepted = Column(Boolean, default=False)
@@ -86,11 +123,34 @@ class User(Base):
     selected_title = Column(String, nullable=True)
     selected_frame = Column(String, nullable=True)
 
+    # ---- Косметика, выдаваемая ИСКЛЮЧИТЕЛЬНО Боевым пропуском (Спринт 8,
+    # см. routers/pass.py) — рамки профиля и цвета ника. Хранится отдельно
+    # от selected_frame/selected_title (общая косметика профиля из других
+    # источников), т.к. эти награды имеют собственный ключ формата и
+    # собственный "выбранный" слот (цвет ника нигде раньше не хранился).
+    # unlocked_pass_frames / unlocked_pass_nick_colors — JSON-массивы
+    # строковых ключей (напр. "[\"neon_rookie\", \"fire_burst\"]"),
+    # накопительные — уровень пройден, награда открыта навсегда, даже если
+    # игрок сменит выбор. Рамки Пропуска дополнительно копируются в
+    # selected_frame при выборе (та же колонка, что использует остальной
+    # профиль) — а вот для цвета ника отдельного общего поля в проекте нет,
+    # поэтому selected_pass_nick_color — новое поле. ----
+    unlocked_pass_frames = Column(String, default="[]")
+    unlocked_pass_nick_colors = Column(String, default="[]")
+    selected_pass_nick_color = Column(String, nullable=True)
+
     # ---- Модерация чата/сообщества ----
     is_muted = Column(Boolean, default=False)
     mute_until = Column(DateTime, nullable=True)     # None при is_muted=True = мут навсегда
     mute_reason = Column(String, nullable=True)
     is_chat_banned = Column(Boolean, default=False)  # полный бан написания в чат (жёстче мута)
+
+    # ---- Глобальный чат (Спринт 11, см. routers/chat.py) ----
+    # last_chat_message_at — время ПОСЛЕДНЕГО успешно отправленного
+    # сообщения в глобальный чат. Используется для rate-limit (1 сообщение
+    # в 3-5 сек) — хранится в БД (а не in-memory), т.к. процесс бэкенда
+    # может перезапускаться/масштабироваться на несколько воркеров.
+    last_chat_message_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
@@ -116,7 +176,9 @@ class Inventory(Base):
     float_val = Column(Float, nullable=True)        # Float value (0.00 - 1.00)
     image_url = Column(String, nullable=True)       # прямая ссылка на Steam CDN
 
-    is_on_market = Column(Boolean, default=False)   # выставлен на P2P-маркет (когда появится)
+    is_on_market = Column(Boolean, default=False)   # выставлен на P2P-маркет
+    market_price = Column(Float, nullable=True)     # цена в 💎, назначенная ПРОДАВЦОМ (см. Спринт 5)
+    market_listed_at = Column(DateTime, nullable=True)  # когда предмет выставлен на продажу
     is_in_showcase = Column(Boolean, default=False)  # закреплён в публичной витрине профиля
 
     obtained_from_case = Column(String, nullable=True)
@@ -134,7 +196,7 @@ class PromoCode(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     code = Column(String, unique=True, nullable=False, index=True)
 
-    reward_type = Column(String, nullable=False)   # "balance" | "case" | "skin"
+    reward_type = Column(String, nullable=False)   # "balance" | "gold" | "case" | "skin"
     reward_value = Column(String, nullable=False)  # сумма баланса, ID кейса или имя скина
 
     max_activations = Column(Integer, default=1)
@@ -206,6 +268,21 @@ class TournamentScore(Base):
     activity_points = Column(Integer, default=0)
     best_upgrade_mult = Column(Float, default=0.0)  # лучший достигнутый множитель в Upgrade за неделю
 
+    # ---- Спринт 9.5: подведение итогов (routers/tournament.py) ----
+    # reward_claimed_activity / reward_claimed_upgraders — эта строка недели
+    # уже обработана скриптом подведения итогов (см. run_weekly_payout) для
+    # ДАННОГО топа, награда выдана. Разделены на 2 флага (а не 1 общий),
+    # т.к. один и тот же игрок может одновременно занять призовое место
+    # И в "Топ Активности", И в "Топ Апгрейдеров" — это ОДНА строка
+    # TournamentScore на пользователя за неделю (activity_points и
+    # best_upgrade_mult живут в одной записи), так что общий флаг после
+    # награждения по первому топу ошибочно заблокировал бы награду по
+    # второму. Флаги нужны для идемпотентности: фоновая задача проверяет
+    # условие "уже воскресенье 23:59 UTC" раз в минуту, и без них повторный
+    # тик того же окна выдал бы награду повторно.
+    reward_claimed_activity = Column(Boolean, default=False)
+    reward_claimed_upgraders = Column(Boolean, default=False)
+
 
 # ---------------------------------------------------
 # Задания (подписка на канал/чат, рефералы, заполнение профиля...)
@@ -263,6 +340,27 @@ class UserAchievement(Base):
 
 
 # ---------------------------------------------------
+# Глобальный чат (Спринт 11)
+# ---------------------------------------------------
+# Одна таблица на ОБЫЧНЫЕ сообщения игроков И на СИСТЕМНЫЕ сообщения
+# (авто-лента дорогих дропов, is_system=True, user_id — владелец дропа,
+# от чьего "имени" публикуется лента). is_hidden — сообщение скрыто
+# (авто-фильтром при отправке ИЛИ через 3+ жалобы, см. hide_reason),
+# скрытые сообщения не отдаются в GET /chat/messages, но остаются в БД
+# для истории/модерации (админ видит причину скрытия в уведомлении).
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    text = Column(String, nullable=False)
+    is_system = Column(Boolean, default=False)   # системное сообщение (авто-лента дропов)
+    is_hidden = Column(Boolean, default=False)    # скрыто авто-фильтром/жалобами
+    hide_reason = Column(String, nullable=True)   # "auto_filter" | "reports" | None
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+
+
+# ---------------------------------------------------
 # Жалобы на сообщения в чате
 # ---------------------------------------------------
 class ChatReport(Base):
@@ -288,9 +386,54 @@ class BattlePassProgress(Base):
     level = Column(Integer, default=1)
     xp = Column(Integer, default=0)
     claimed_free_levels = Column(String, default="[]")   # JSON-массив int, напр. "[1,2,3]"
-    claimed_vip_levels = Column(String, default="[]")    # JSON-массив int
+    claimed_vip_levels = Column(String, default="[]")    # JSON-массив int (50 = финальный сундук VIP-ветки)
     daily_tasks_completed = Column(Integer, default=0)
+
+    # ---- Ежедневные задания Пропуска (Спринт 8, см. routers/pass.py) ----
+    # claimed_daily_tasks — JSON-массив КЛЮЧЕЙ заданий, уже забранных
+    # СЕГОДНЯ (сбрасывается вместе с daily_baseline_* при смене UTC-дня).
+    # daily_baseline_cases / daily_baseline_xp — снимок User.total_cases_opened
+    # / User.xp на момент последнего сброса (полночь UTC) — задания вида
+    # "открой N кейсов сегодня" считают прогресс как разницу ТЕКУЩЕГО
+    # значения счётчика и этого снимка, а не absolute count, иначе
+    # активность ДО сброса задания засчитывалась бы за сегодня.
+    claimed_daily_tasks = Column(String, default="[]")
+    daily_baseline_cases = Column(Integer, default=0)
+    daily_baseline_xp = Column(Integer, default=0)
     last_task_reset = Column(Date, nullable=True)
+
+
+# ---------------------------------------------------
+# Друзья (Спринт 10) — заявки и сама дружба в ОДНОЙ таблице
+# ---------------------------------------------------
+# Осознанно одна таблица вместо двух ("заявки" + "дружбы"): заявка и дружба
+# — это одна и та же связь на разных стадиях, а сама заявка после принятия
+# остаётся полезной историей (кто кого добавил и когда). Поэтому:
+#
+#   status = "pending"   — заявка отправлена, ждёт ответа получателя
+#   status = "accepted"  — заявка принята, ЭТО И ЕСТЬ запись о дружбе
+#   status = "declined"  — заявка отклонена
+#
+# Дружба НЕнаправленная, а запись — направленная (from_user_id всегда
+# инициатор). Поэтому список друзей строится запросом «status='accepted' И
+# (from_user_id = me ИЛИ to_user_id = me)», а "второй стороной" считается
+# тот из двух id, который не равен нашему (см. routers/friends.py).
+#
+# UniqueConstraint(from_user_id, to_user_id) не даёт спамить одинаковыми
+# заявками. Обратную пару (B→A при существующей A→B) уникальный индекс
+# поймать не может, поэтому встречная заявка отдельно обрабатывается в
+# коде роутера: она не создаёт вторую строку, а сразу принимает первую.
+class Friendship(Base):
+    __tablename__ = "friendships"
+    __table_args__ = (UniqueConstraint("from_user_id", "to_user_id", name="uq_friendship_pair"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    from_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)  # инициатор заявки
+    to_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)    # получатель заявки
+    status = Column(String, default="pending", index=True)   # pending | accepted | declined
+
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    responded_at = Column(DateTime, nullable=True)   # когда заявку приняли/отклонили
 
 
 # ---------------------------------------------------
@@ -392,7 +535,7 @@ async def init_db():
 
 def _inspect_existing(sync_conn) -> dict[str, set[str]]:
     """Синхронная функция (вызывается через conn.run_sync) — возвращает
-    {имя_таблицы: {имена существующих колонок}} для таблиц, которые уже
+    {имя_таблицы: {имена существующих коло��ок}} для таблиц, которые уже
     реально есть в базе."""
     inspector = inspect(sync_conn)
     existing = {}

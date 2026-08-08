@@ -44,6 +44,115 @@ html, body {
   max-width: 480px;
   margin: 0 auto;
   position: relative;
+  z-index: 1;
+  background: var(--bg-primary);
+}
+
+/* ==================== СПРИНТ 12: ФОН СИМУЛЯТОРА ====================
+   #bg-layer — фиксированный слой позади #app с картинкой/видео карты.
+   Скрыт (display:none через отсутствие .active) для дефолтной тёмной
+   темы — тогда обычный var(--bg-primary) на #app работает как раньше. */
+#bg-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background: var(--bg-primary);
+  display: none;
+}
+#bg-layer.active { display: block; }
+
+.bg-media {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  display: none;
+}
+.bg-media.active { display: block; }
+
+/* Защита читаемости интерфейса: затемнение + blur ПОВЕРХ картинки/видео,
+   но ПОД контентом (#app имеет z-index:1, этот слой — z-index:0, внутри
+   #bg-layer идёт последним в разметке, поэтому визуально он выше media). */
+#bg-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+/* Когда активен кастомный фон — делаем #app и его основные панели
+   полупрозрачными со своим лёгким blur, чтобы картинка/видео были видны
+   не только в промежутках, но и просвечивали сквозь карточки, при этом
+   текст остаётся читаемым за счёт того же backdrop-filter. */
+#app.custom-bg {
+  background: transparent;
+}
+#app.custom-bg .topbar,
+#app.custom-bg .screen,
+#app.custom-bg .bottom-nav,
+#app.custom-bg .settings-block,
+#app.custom-bg .ref-block,
+#app.custom-bg .promo-block {
+  background: rgba(21, 26, 33, 0.72);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+/* ---- Сетка выбора фона в Настройках ---- */
+.settings-row-column {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+.bg-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  width: 100%;
+}
+.bg-picker-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  background: var(--bg-card);
+  border: 2px solid var(--border-color);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.1s ease;
+}
+.bg-picker-item:active { transform: scale(0.97); }
+.bg-picker-item.active {
+  border-color: var(--accent-orange);
+}
+.bg-picker-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  border-radius: 6px;
+  background-color: var(--bg-secondary);
+  background-size: cover;
+  background-position: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+}
+.bg-picker-thumb-theme {
+  background: linear-gradient(135deg, var(--bg-secondary), var(--bg-primary));
+}
+.bg-picker-name {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-align: center;
+  line-height: 1.2;
+}
+.bg-picker-item.active .bg-picker-name {
+  color: var(--text-primary);
 }
 
 /* ==================== TOPBAR ==================== */
@@ -80,6 +189,8 @@ html, body {
 }
 
 .topbar-right { display: flex; align-items: center; gap: 8px; }
+.topbar-left { display: flex; align-items: center; gap: 8px; }
+.gold-pill { color: #ffd15c; }
 
 .sound-toggle-btn {
   background: var(--bg-card);
@@ -539,6 +650,24 @@ html, body {
 .earn-info { flex: 1; }
 .earn-title { font-weight: 700; font-size: 14px; }
 .earn-desc { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+
+/* ==================== SOCIAL TASKS (Спринт 7) ==================== */
+.tasks-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.task-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 12px 14px;
+}
+.task-card.completed { opacity: 0.6; }
+.task-icon { font-size: 22px; }
+.task-info { flex: 1; }
+.task-title { font-weight: 700; font-size: 13px; }
+.task-desc { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+.task-reward { font-size: 11px; color: var(--accent-orange); font-weight: 700; margin-top: 2px; }
 
 /* ==================== BUTTONS ==================== */
 .btn-primary, .btn-secondary {
@@ -1101,6 +1230,119 @@ html, body {
   0% { transform: rotateY(0deg); }
   50% { transform: rotateY(90deg); }
   100% { transform: rotateY(0deg); }
+}
+
+/* ==================== VERTICAL MULTI-SPIN ====================
+   N параллельных вертикальных лент (одна на каждый открываемый кейс,
+   count > 1). Каждая лента крутится СВЕРХУ ВНИЗ и тормозит по
+   cubic-bezier; каждая следующая лента получает +150мс к длительности
+   transition, поэтому они останавливаются каскадом одна за другой. */
+.vertical-spin-wrapper {
+  margin: 14px 0;
+}
+
+.vertical-spin-lanes {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 2px 8px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.vertical-spin-lane {
+  position: relative;
+  width: 76px;
+  min-width: 76px;
+  height: 260px;
+  overflow: hidden;
+  background: var(--bg-card);
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.vertical-spin-pointer-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 3px;
+  background: var(--accent-orange);
+  transform: translateY(-50%);
+  z-index: 5;
+  box-shadow: 0 0 10px var(--accent-orange);
+  pointer-events: none;
+}
+
+.vertical-spin-track {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  will-change: transform;
+}
+
+.vertical-spin-item {
+  width: 64px;
+  height: 64px;
+  min-height: 64px;
+  margin: 9px 0;
+  background: var(--bg-secondary);
+  border-radius: 10px;
+  border-left: 3px solid var(--rarity-consumer);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+}
+
+.vertical-spin-item img { width: 42px; height: 42px; object-fit: contain; }
+
+/* Момент "тайны" для ножей/перчаток в вертикальной ленте — та же логика,
+   что и у горизонтальной рулетки (.mystery-reveal / .mystery-flip). */
+.vertical-spin-item.mystery-reveal {
+  border-left-color: var(--rarity-knife);
+  animation: mysteryPulse 0.7s ease-in-out infinite;
+}
+.vertical-spin-item.mystery-reveal img { display: none; }
+.vertical-spin-item.mystery-reveal .mystery-glyph {
+  display: flex;
+  width: 42px;
+  height: 42px;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 800;
+  color: var(--rarity-knife);
+  text-shadow: 0 0 12px var(--rarity-knife);
+}
+.vertical-spin-item.mystery-flip {
+  animation: mysteryFlip 0.5s ease-in-out;
+}
+
+/* ==================== MULTI RESULT — PER-ITEM SELL ==================== */
+.multi-result-sell-btn {
+  width: 100%;
+  margin-top: 6px;
+  border: none;
+  background: var(--accent-orange);
+  color: #1a1300;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 6px 4px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.multi-result-sell-btn:disabled { opacity: 0.55; cursor: default; }
+.multi-result-card.sold-out { opacity: 0.5; }
+.multi-result-card.sold-out .multi-result-sell-btn {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
 }
 
 /* ==================== WIN MODAL ==================== */
@@ -2134,3 +2376,1098 @@ html, body {
 }
 .upgrade-lose-sheet .win-item-card { border-color: #ff3b30; }
 .upgrade-lose-sheet .win-title { color: #ff3b30; }
+
+/* ==================== СИНТЕЗАТОР (Item Crafter, Спринт 4) ====================
+   Переиспользует .upg-wheel-*, .upg-item-card, .upg-search-item и .mg-* из
+   блока УЛУЧШИТЕЛЯ выше (общая визуальная система "мини-игр"), добавляет
+   только то, чего не было: карточку выбранной цели, ряд быстрых кнопок
+   ценности и блок поиска/диапазона цен над каталогом целевых предметов. */
+.crf-target-section { margin-top: 18px; }
+
+.crf-target-card {
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--accent-blue);
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+.crf-target-card img {
+  display: block;
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.crf-quick-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.crf-quick-row .upg-preset-btn { width: 100%; }
+
+.crf-price-range-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.crf-price-range-row .mg-input { margin-bottom: 10px; }
+
+.crf-catalog-grid {
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.upg-search-item.selected {
+  border-color: var(--accent-orange);
+  background: rgba(248, 156, 28, 0.08);
+}
+
+/* ==================== СПРИНТ 6: ЕЖЕДНЕВНОЕ КОЛЕСО УДАЧИ ==================== */
+.wheel-sheet { text-align: center; padding-top: 34px; }
+
+.wheel-container {
+  position: relative;
+  width: 260px;
+  height: 260px;
+  margin: 8px auto 18px;
+}
+
+.wheel-pointer {
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 13px solid transparent;
+  border-right: 13px solid transparent;
+  border-top: 22px solid var(--accent-orange);
+  z-index: 5;
+  filter: drop-shadow(0 2px 3px rgba(0,0,0,0.4));
+}
+
+.wheel-disc {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  position: relative;
+  border: 6px solid var(--bg-card);
+  box-shadow: 0 0 0 2px var(--accent-orange), 0 8px 24px rgba(0,0,0,0.5);
+  background: conic-gradient(
+    from 0deg,
+    var(--rarity-consumer) 0deg 45deg,
+    var(--rarity-milspec) 45deg 90deg,
+    var(--rarity-classified) 90deg 135deg,
+    var(--stattrak-color) 135deg 180deg,
+    var(--rarity-gloves) 180deg 225deg,
+    var(--rarity-knife) 225deg 270deg,
+    var(--accent-orange) 270deg 315deg,
+    var(--rarity-covert) 315deg 360deg
+  );
+  transition: transform 5s cubic-bezier(0.12, 0.72, 0.1, 1);
+}
+
+.wheel-labels {
+  position: absolute;
+  inset: 0;
+}
+
+.wheel-sector-label {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+}
+
+.wheel-sector-label-inner {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  color: #1a1a1a;
+  text-shadow: 0 1px 1px rgba(255,255,255,0.25);
+}
+
+.wheel-sector-label-inner .wheel-sector-icon { font-size: 18px; line-height: 1; }
+.wheel-sector-label-inner .wheel-sector-amount { font-size: 10px; font-weight: 800; line-height: 1.1; white-space: nowrap; }
+
+.wheel-hub {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  border: 3px solid var(--accent-orange);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+}
+
+.wheel-hint {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 14px;
+  min-height: 16px;
+}
+.wheel-hint b { color: var(--accent-orange); }
+.wheel-hint.wheel-hint-ready b { color: var(--rarity-knife); }
+
+#wheel-spin-btn:disabled { opacity: 0.45; pointer-events: none; }
+
+.wheel-result-gold { color: #ffd15c; }
+
+/* ==================== BATTLE PASS (Спринт 8) ==================== */
+.pass-widget {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: linear-gradient(135deg, #1b222c 0%, #24160f 100%);
+  border: 1px solid var(--accent-orange);
+  border-radius: 16px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+
+.pass-widget-icon { font-size: 30px; line-height: 1; }
+.pass-widget-info { flex: 1; min-width: 0; }
+
+.pass-widget-toprow { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.pass-widget-title { font-weight: 700; font-size: 13px; color: var(--text-primary); }
+
+.pass-widget-vip-chip {
+  background: var(--accent-orange);
+  color: #1b1206;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 8px;
+  letter-spacing: 0.5px;
+}
+
+.pass-widget-level { font-size: 12px; color: var(--text-secondary); margin-bottom: 5px; }
+
+.pass-widget-bar {
+  height: 7px;
+  background: var(--bg-primary);
+  border-radius: 5px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.pass-widget-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-orange), #ffd15c);
+  border-radius: 5px;
+  transition: width 0.3s ease;
+}
+
+.pass-widget-xp { font-size: 11px; color: var(--text-secondary); }
+
+.pass-widget .btn-primary.small,
+.pass-widget-open-btn { white-space: nowrap; }
+
+/* ---- Модалка Pass ---- */
+.pass-sheet { max-height: 92vh; }
+
+.pass-header { margin: 6px 0 14px; }
+.pass-header-toprow { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 6px; }
+.pass-header-level { font-weight: 700; font-size: 15px; }
+
+.pass-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.pass-actions .btn-primary.small,
+.pass-actions .btn-secondary.small { flex: 1; }
+
+.pass-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+  background: var(--bg-primary);
+  border-radius: 10px;
+  padding: 4px;
+}
+
+.pass-tab-btn {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 13px;
+  padding: 8px 4px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.pass-tab-btn.active { background: var(--bg-card); color: var(--text-primary); }
+
+/* ---- Дерево наград ---- */
+.pass-tree-list { display: flex; flex-direction: column; gap: 6px; }
+
+.pass-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 1fr;
+  gap: 6px;
+  align-items: stretch;
+  opacity: 0.55;
+}
+.pass-row.unlocked { opacity: 1; }
+
+.pass-row-level {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+  border-radius: 8px;
+}
+
+.pass-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 8px 8px;
+  font-size: 11px;
+  position: relative;
+  min-width: 0;
+}
+
+.pass-cell.vip { border-color: rgba(248,156,28,0.35); }
+.pass-cell-icon { font-size: 15px; flex-shrink: 0; }
+.pass-cell-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.pass-cell.locked { opacity: 0.4; }
+.pass-cell.claimable {
+  cursor: pointer;
+  border-color: var(--accent-orange);
+  box-shadow: 0 0 0 1px var(--accent-orange) inset;
+}
+.pass-cell.claimable:active { transform: scale(0.97); }
+.pass-cell.claimed { border-color: #2ecc71; }
+.pass-cell-check {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  background: #2ecc71;
+  color: #06210f;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+}
+
+/* ---- Ежедневные задания Pass ---- */
+.pass-tasks-list { display: flex; flex-direction: column; gap: 8px; }
+
+.pass-task-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.pass-task-card.claimed { opacity: 0.55; }
+
+.pass-task-info { flex: 1; min-width: 0; }
+.pass-task-title { font-weight: 700; font-size: 13px; margin-bottom: 2px; }
+.pass-task-desc { font-size: 11px; color: var(--text-secondary); margin-bottom: 6px; }
+
+.pass-task-bar { height: 5px; background: var(--bg-primary); border-radius: 4px; overflow: hidden; }
+.pass-task-bar-fill { height: 100%; background: var(--accent-blue); border-radius: 4px; }
+
+/* ---- Финальный сундук 50-го уровня ---- */
+.pass-final-chest {
+  background: linear-gradient(135deg, #24160f 0%, #1b222c 100%);
+  border: 1px solid var(--accent-orange);
+  border-radius: 14px;
+  padding: 12px;
+  margin-bottom: 14px;
+}
+
+.pass-final-track { margin-bottom: 10px; }
+.pass-final-track:last-child { margin-bottom: 0; }
+.pass-final-track-title { font-weight: 700; font-size: 13px; margin-bottom: 8px; text-align: center; }
+.pass-final-claimed-hint { font-size: 12px; color: var(--text-secondary); text-align: center; }
+
+.pass-final-cards { display: flex; justify-content: center; gap: 10px; }
+
+.pass-final-card {
+  position: relative;
+  width: 90px;
+  height: 90px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+}
+
+.pass-final-card-underlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  background: radial-gradient(circle, #3a2a12 0%, #1b222c 100%);
+}
+
+.pass-scratch-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: grab;
+}
+
+.pass-final-hint { text-align: center; font-size: 11px; color: var(--text-secondary); margin-top: 8px; }
+
+.pass-result-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin: 14px 0; }
+.pass-result-list .win-item-card { width: 130px; }
+
+/* ---- Косметика Battle Pass (экран Профиль) ---- */
+.pass-cosmetics-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+
+.pass-cosmetics-group { margin-top: 10px; }
+.pass-cosmetics-group:first-child { margin-top: 12px; }
+.pass-cosmetics-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+
+.pass-cosmetics-row { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.pass-cosmetic-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.pass-cosmetic-chip.active {
+  border-color: var(--accent-orange);
+  background: rgba(248,156,28,0.12);
+  font-weight: 700;
+}
+
+.pass-nick-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+/* ============================================================
+   СПРИНТ 10: УРОВЕНЬ, ТИТУЛЫ/РАМКИ, ВИТРИНА, FLOAT, ДРУЗЬЯ
+   ============================================================ */
+
+/* ---------- Рамка аватара + бейдж уровня ----------
+   Обёртка нужна, чтобы рамка (box-shadow) и бейдж уровня позиционировались
+   относительно аватара, а не прыгали при подмене src изображения. */
+.profile-avatar-wrap {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+
+/* Рамки задаются инлайново из JS (цвет приходит с бэкенда в frame.color),
+   здесь только базовая геометрия и служебные модификаторы. */
+.profile-avatar-wrap.has-frame { box-shadow: 0 0 0 2px var(--frame-color, var(--accent-orange)); }
+.profile-avatar-wrap.frame-glow { box-shadow: 0 0 0 2px var(--frame-color), 0 0 14px var(--frame-color); }
+/* Анимированная рамка — только для топовой косметики, чтобы вращение не
+   превращало профиль в дискотеку. */
+.profile-avatar-wrap.frame-animated::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: conic-gradient(var(--frame-color), transparent 45%, var(--frame-color));
+  animation: frame-spin 3s linear infinite;
+  z-index: -1;
+}
+@keyframes frame-spin { to { transform: rotate(360deg); } }
+
+.level-badge {
+  position: absolute;
+  bottom: -3px;
+  right: -3px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 4px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--accent-orange), #d97706);
+  color: #1a1a1a;
+  font-size: 11px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--bg-card);
+}
+
+/* ---------- Активный титул ---------- */
+.profile-title-pill {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(248,156,28,0.14);
+  border: 1px solid var(--title-color, var(--accent-orange));
+  color: var(--title-color, var(--accent-orange));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Карточка уровня аккаунта ---------- */
+.level-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 16px;
+}
+.level-card-top { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.level-card-num {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--accent-orange), #d97706);
+  color: #1a1a1a;
+  font-size: 18px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.level-card-info { flex: 1; min-width: 0; }
+.level-card-label { font-size: 13px; font-weight: 600; }
+.level-xp-line { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+.level-info-btn {
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.level-progress-track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+.level-progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--accent-orange), var(--rarity-knife));
+  transition: width .45s ease;
+}
+.level-slots-line { font-size: 11px; color: var(--text-secondary); margin-top: 8px; }
+.level-card.level-max .level-progress-fill { width: 100% !important; }
+
+/* ---------- Таблица уровней ---------- */
+.level-table-sheet { max-height: 88vh; }
+.level-table-formula {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.level-table-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+.level-table-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  font-size: 12px;
+}
+.level-table-row.current { border-color: var(--accent-orange); background: rgba(248,156,28,0.10); }
+.level-table-row.reached { opacity: .55; }
+.level-table-lvl { font-weight: 800; min-width: 34px; }
+.level-table-xp { flex: 1; color: var(--text-secondary); }
+.level-table-slot { color: var(--rarity-knife); font-weight: 700; }
+
+/* ---------- Витрина лучших скинов ---------- */
+.showcase-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 16px;
+}
+.showcase-head { display: flex; align-items: center; justify-content: space-between; }
+.showcase-head .ref-title { margin-bottom: 0; }
+.showcase-counter { font-size: 12px; color: var(--text-secondary); font-weight: 600; }
+.showcase-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.showcase-slot {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  overflow: hidden;
+  cursor: pointer;
+}
+.showcase-slot img { width: 100%; height: 40px; object-fit: contain; }
+.showcase-slot-name {
+  font-size: 9px;
+  line-height: 1.2;
+  text-align: center;
+  margin-top: 2px;
+  max-height: 22px;
+  overflow: hidden;
+  color: var(--text-secondary);
+}
+.showcase-slot-price { font-size: 10px; font-weight: 700; color: var(--accent-orange); }
+/* Пустой слот — доступен, но не занят */
+.showcase-slot.empty { border-style: dashed; color: var(--text-secondary); font-size: 20px; cursor: default; }
+/* Заблокированный слот — откроется на следующем пороге уровня */
+.showcase-slot.locked {
+  border-style: dashed;
+  opacity: .4;
+  cursor: default;
+  font-size: 10px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+.showcase-slot .st-mini {
+  position: absolute;
+  top: 3px; left: 3px;
+  background: var(--stattrak-color);
+  color: #fff;
+  font-size: 7px;
+  font-weight: 800;
+  padding: 1px 3px;
+  border-radius: 3px;
+}
+.showcase-hint { font-size: 11px; color: var(--text-secondary); margin-top: 10px; }
+
+/* ---------- Титулы и рамки (селекторы) ---------- */
+.cosmetics-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.cosmetics-label { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.cosmetics-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.cosmetic-chip {
+  padding: 6px 12px;
+  border-radius: 20px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: border-color .15s, background .15s;
+}
+.cosmetic-chip.active {
+  border-color: var(--chip-color, var(--accent-orange));
+  background: color-mix(in srgb, var(--chip-color, var(--accent-orange)) 14%, transparent);
+  color: var(--chip-color, var(--accent-orange));
+  font-weight: 700;
+}
+/* Закрытая косметика: видна, но приглушена — по тапу показываем условие */
+.cosmetic-chip.locked { opacity: .45; }
+.cosmetic-chip-swatch { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+.cosmetic-chip-progress { font-size: 10px; color: var(--text-secondary); }
+
+/* ---------- Кнопка "Друзья" в профиле ---------- */
+.friends-open-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.friends-open-icon { font-size: 18px; }
+.friends-open-text { flex: 1; text-align: left; }
+.friends-open-arrow { color: var(--text-secondary); font-size: 20px; }
+.friends-badge, .friends-tab-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--rarity-covert);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------- Модалка "Друзья" ---------- */
+.friends-sheet { max-height: 92vh; display: flex; flex-direction: column; }
+.friends-tabs { display: flex; gap: 6px; margin: 12px 0; }
+.friends-tab-btn {
+  flex: 1;
+  padding: 8px 4px;
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+.friends-tab-btn.active {
+  background: rgba(248,156,28,0.12);
+  border-color: var(--accent-orange);
+  color: var(--accent-orange);
+}
+.friends-tab-content { overflow-y: auto; flex: 1; }
+.friends-subtitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 10px 0 6px;
+}
+.friends-list { display: flex; flex-direction: column; gap: 8px; }
+.friend-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 10px;
+}
+.friend-row-avatar {
+  width: 38px; height: 38px;
+  border-radius: 50%;
+  background: var(--bg-card);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.friend-row-info { flex: 1; min-width: 0; cursor: pointer; }
+.friend-row-name {
+  font-size: 13px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.friend-row-sub { font-size: 11px; color: var(--text-secondary); }
+.friend-row-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.friend-mini-btn {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.friend-mini-btn.accept { background: #16a34a; border-color: #16a34a; color: #fff; }
+.friend-mini-btn.danger { background: transparent; border-color: var(--rarity-covert); color: var(--rarity-covert); }
+.friend-mini-btn:disabled { opacity: .5; cursor: default; }
+
+.friends-search-row { display: flex; gap: 8px; }
+.friends-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.friends-search-input:focus { outline: none; border-color: var(--accent-orange); }
+.friends-search-hint { font-size: 11px; color: var(--text-secondary); margin: 8px 0 12px; }
+
+/* ---------- Публичная карточка друга ---------- */
+.friend-profile-sheet { max-height: 92vh; overflow-y: auto; }
+.friend-prof-head { display: flex; align-items: center; gap: 12px; margin: 8px 0 14px; }
+.friend-prof-names { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.friend-prof-rank { font-size: 11px; color: var(--text-secondary); }
+.friend-prof-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.friend-prof-stat {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+.friend-prof-stat-label { font-size: 10px; color: var(--text-secondary); }
+.friend-prof-stat-value { font-size: 14px; font-weight: 700; margin-top: 2px; }
+.friend-prof-section-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.friend-prof-actions { display: flex; gap: 8px; margin-top: 14px; }
+
+/* ---------- Карточка предмета: Float + StatTrak ---------- */
+.item-detail-sheet { max-height: 92vh; overflow-y: auto; text-align: center; }
+.item-detail-imgwrap {
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  padding: 12px;
+  margin: 8px 0 10px;
+}
+.item-detail-imgwrap img { width: 100%; height: 110px; object-fit: contain; display: block; }
+/* Оранжевая плашка StatTrak™ — обязательный элемент ТЗ Спринта 10 */
+.item-detail-st {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--stattrak-color);
+  color: #fff;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+.item-detail-st .st-count {
+  background: rgba(0,0,0,0.28);
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-variant-numeric: tabular-nums;
+}
+.item-detail-name { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+.item-detail-rarity { font-size: 11px; font-weight: 700; margin-bottom: 12px; }
+.item-detail-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.item-detail-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 8px 10px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+}
+.item-detail-row > span:first-child { color: var(--text-secondary); }
+/* Точное значение Float — монospace, чтобы цифры не «плясали» */
+.item-detail-float {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 700;
+  color: var(--accent-blue);
+}
+
+.float-bar-wrap { margin-bottom: 14px; }
+.float-bar { position: relative; display: flex; height: 8px; border-radius: 4px; overflow: hidden; }
+/* Ширины сегментов = реальные диапазоны Float категорий качества:
+   FN 0-0.07, MW 0.07-0.15, FT 0.15-0.38, WW 0.38-0.45, BS 0.45-1.0 */
+.float-seg.fn { width: 7%;  background: #4ade80; }
+.float-seg.mw { width: 8%;  background: #86efac; }
+.float-seg.ft { width: 23%; background: #fbbf24; }
+.float-seg.ww { width: 7%;  background: #fb923c; }
+.float-seg.bs { width: 55%; background: #ef4444; }
+.float-marker {
+  position: absolute;
+  top: -3px;
+  width: 3px;
+  height: 14px;
+  background: var(--text-primary);
+  border-radius: 2px;
+  transform: translateX(-50%);
+  box-shadow: 0 0 4px rgba(0,0,0,0.6);
+  transition: left .3s ease;
+}
+.float-bar-legend {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* ---------- Карточка скина в инвентаре: плашки Float/StatTrak ---------- */
+.inv-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  justify-content: center;
+  margin-bottom: 4px;
+}
+.inv-st-tag {
+  background: var(--stattrak-color);
+  color: #fff;
+  font-size: 8px;
+  font-weight: 800;
+  padding: 1px 4px;
+  border-radius: 3px;
+  display: inline-flex;
+  gap: 3px;
+}
+.inv-quality-tag {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 8px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.inv-float-line {
+  font-size: 9px;
+  color: var(--accent-blue);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin-bottom: 4px;
+}
+/* Значок «в витрине» на карточке инвентаря */
+.inv-showcase-mark {
+  position: absolute;
+  top: 4px; right: 4px;
+  font-size: 11px;
+}
+
+/* ---------- Модалка повышения уровня ---------- */
+.levelup-sheet { text-align: center; }
+.levelup-num {
+  font-size: 54px;
+  font-weight: 900;
+  color: var(--accent-orange);
+  text-shadow: 0 0 24px rgba(248,156,28,0.5);
+  line-height: 1.1;
+}
+.levelup-slot-line {
+  background: rgba(255,215,0,0.12);
+  border: 1px solid var(--rarity-knife);
+  color: var(--rarity-knife);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  margin: 12px 0;
+}
+.levelup-unlock-line { font-size: 12px; color: var(--text-secondary); margin-bottom: 12px; }
+
+/* ==================== ГЛОБАЛЬНЫЙ ЧАТ (Спринт 11) ==================== */
+#screen-chat.active { display: flex; flex-direction: column; }
+
+.chat-wrap {
+  display: flex;
+  flex-direction: column;
+  /* высота = вьюпорт − шапка(~118px) − title(~52px) − таббар(~62px) */
+  height: calc(100vh - 250px);
+  min-height: 320px;
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 2px 8px;
+}
+
+.chat-empty {
+  margin: auto;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+  padding: 24px 12px;
+}
+
+.chat-msg {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 85%;
+  animation: fadeIn 0.2s ease;
+}
+.chat-msg.mine { align-self: flex-end; flex-direction: row-reverse; }
+
+.chat-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 1px solid var(--border-color);
+}
+.chat-avatar-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-card);
+  color: var(--accent-blue);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.chat-bubble {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  border-bottom-left-radius: 4px;
+  padding: 7px 11px;
+  min-width: 0;
+}
+.chat-msg.mine .chat-bubble {
+  background: rgba(74,158,255,0.14);
+  border-color: rgba(74,158,255,0.35);
+  border-bottom-left-radius: 14px;
+  border-bottom-right-radius: 4px;
+}
+
+.chat-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.chat-name {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-blue);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
+.chat-msg.mine .chat-name { color: var(--accent-orange); }
+.chat-time { font-size: 10px; color: var(--text-secondary); flex-shrink: 0; }
+
+.chat-text {
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--text-primary);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.chat-msg.reportable { cursor: pointer; }
+.chat-msg.reportable:active .chat-bubble { transform: scale(0.98); }
+
+/* Системное сообщение авто-ленты дорогих дропов (>100k 💎). */
+.chat-msg.system {
+  align-self: center;
+  max-width: 92%;
+}
+.chat-sys-text {
+  display: block;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--rarity-knife);
+  background: rgba(255,215,0,0.10);
+  border: 1px solid rgba(255,215,0,0.28);
+  border-radius: 10px;
+  padding: 6px 12px;
+  line-height: 1.35;
+}
+
+.chat-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+  padding: 6px 10px;
+}
+.chat-status.blocked {
+  color: var(--rarity-covert);
+  background: rgba(235,75,75,0.10);
+  border: 1px solid rgba(235,75,75,0.30);
+  border-radius: 10px;
+  margin-bottom: 8px;
+}
+
+.chat-inputbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+}
+.chat-input {
+  flex: 1;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 11px 14px;
+  color: var(--text-primary);
+  font-size: 14px;
+  outline: none;
+}
+.chat-input:focus { border-color: var(--accent-blue); }
+.chat-input:disabled { opacity: 0.55; cursor: not-allowed; }
+.chat-send-btn { flex-shrink: 0; margin-top: 0 !important; }
+.chat-send-btn:disabled { opacity: 0.5; cursor: not-allowed; }

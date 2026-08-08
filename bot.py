@@ -20,9 +20,10 @@ from aiogram.types import (
 from sqlalchemy import select, func
 
 from config import (
-    BOT_TOKEN, ADMIN_IDS, WEBAPP_URL, START_BALANCE,
+    BOT_TOKEN, ADMIN_IDS, ADMIN_TG_ID, WEBAPP_URL, START_BALANCE,
     VIP_PRICE_STARS, REF_BONUS_INVITER, REF_BONUS_INVITED,
-    REF_COMMISSION_PERCENT,
+    REF_COMMISSION_PERCENT, REF_UPGRADER_LOSS_COMMISSION_PERCENT,
+    REF_UPGRADER_WIN_COMMISSION_PERCENT,
 )
 from database import init_db, close_db, async_session, User, Inventory, PromoCode
 from format_utils import format_balance, format_balance_with_icon
@@ -52,8 +53,10 @@ async def get_or_create_user(
         user = result.scalar_one_or_none()
 
         if user is None:
-            # Новый юзер, зашедший по реф-ссылке, получает старт + бонус приглашённого
-            starting_balance = START_BALANCE + (REF_BONUS_INVITED if referred_by else 0)
+            # Новый юзер: без реф-ссылки — старт config.START_BALANCE (5,000 💎),
+            # по реф-ссылке — REF_BONUS_INVITED (25,000 💎) ВМЕСТО обычного
+            # старта (Спринт 9.5), а не поверх него.
+            starting_balance = REF_BONUS_INVITED if referred_by else START_BALANCE
 
             user = User(
                 telegram_id=telegram_id,
@@ -66,14 +69,12 @@ async def get_or_create_user(
             session.add(user)
             await session.commit()
             await session.refresh(user)
-        elif first_name and user.first_name != first_name:
-            # Освежаем имя, если юзер его сменил в Telegram
-            user.first_name = first_name
-            await session.commit()
-            await session.refresh(user)
 
-            # Бонус пригласившему — начисляется автоматически, ровно один раз,
-            # в момент первой регистрации приглашённого (а не при каждом /start)
+            # ---- Бонус пригласившему — начисляется автоматически, РОВНО
+            # ОДИН РАЗ, в момент первой регистрации приглашённого (сразу
+            # при создании юзера, а не задним числом при смене имени —
+            # раньше это было забаговано и почти никогда не срабатывало). ----
+            inviter = None
             if referred_by:
                 result_inviter = await session.execute(
                     select(User).where(User.telegram_id == referred_by)
@@ -81,19 +82,53 @@ async def get_or_create_user(
                 inviter = result_inviter.scalar_one_or_none()
                 if inviter:
                     inviter.balance += REF_BONUS_INVITER
+                    inviter.ref_earnings_total = round(
+                        (inviter.ref_earnings_total or 0.0) + REF_BONUS_INVITER, 2
+                    )
                     await session.commit()
                     try:
-                        commission_pct = round(REF_COMMISSION_PERCENT * 100)
+                        loss_pct = round(REF_UPGRADER_LOSS_COMMISSION_PERCENT * 100)
+                        win_pct = round(REF_UPGRADER_WIN_COMMISSION_PERCENT * 100)
                         await bot.send_message(
                             referred_by,
                             f"👥 По твоей реферальной ссылке зарегистрировался новый игрок!\n"
                             f"Тебе начислено <b>+{REF_BONUS_INVITER} 💎</b>\n\n"
-                            f"💸 И теперь с каждой его траты в игре тебе будет пожизненно "
-                            f"капать <b>{commission_pct}%</b> — без каких-либо действий с твоей стороны.",
+                            f"💸 А ещё теперь тебе будет пожизненно капать <b>{loss_pct}%</b> "
+                            f"с каждой проигранной им ставки в Апгрейдере и <b>{win_pct}%</b> "
+                            f"с его чистого выигрыша там — без каких-либо действий с твоей стороны.",
                             parse_mode="HTML",
                         )
                     except Exception:
                         pass  # юзер мог заблокировать бота — не критично
+
+            # ---- Уведомление админу о КАЖДОЙ новой регистрации (Спринт 9.5) ----
+            if ADMIN_TG_ID:
+                try:
+                    new_user_label = f"{telegram_id} (@{username})" if username else str(telegram_id)
+                    if inviter:
+                        inviter_label = (
+                            f"{referred_by} (@{inviter.username})" if inviter.username else str(referred_by)
+                        )
+                        ref_line = f"👤 Реферер: <b>{inviter_label}</b>"
+                    elif referred_by:
+                        ref_line = f"👤 Реферер: <b>{referred_by}</b> (не найден в базе)"
+                    else:
+                        ref_line = "👤 Реферер: — (органическая регистрация)"
+
+                    await bot.send_message(
+                        ADMIN_TG_ID,
+                        f"🆕 Новая регистрация\n"
+                        f"🧑 Новичок: <b>{new_user_label}</b>\n"
+                        f"{ref_line}",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass  # админ мог заблокировать бота — не критично
+        elif first_name and user.first_name != first_name:
+            # Освежаем имя, если юзер его сменил в Telegram
+            user.first_name = first_name
+            await session.commit()
+            await session.refresh(user)
 
         return user
 
@@ -143,7 +178,8 @@ async def cmd_start(message: Message):
             # Показываем юзеру, что реферальный бонус реально начислен
             bonus_note = f"\n🎁 Ты пришёл по реферальной ссылке — начислен бонус <b>+{REF_BONUS_INVITED} 💎</b>!\n"
 
-        commission_pct = round(REF_COMMISSION_PERCENT * 100)
+        loss_pct = round(REF_UPGRADER_LOSS_COMMISSION_PERCENT * 100)
+        win_pct = round(REF_UPGRADER_WIN_COMMISSION_PERCENT * 100)
         text = (
             f"👋 Привет, {message.from_user.first_name}!\n\n"
             f"Добро пожаловать в <b>CS2 Case Simulator</b> — фановый симулятор открытия кейсов "
@@ -151,7 +187,8 @@ async def cmd_start(message: Message):
             f"{bonus_note}\n"
             f"💰 Твой баланс: <b>{format_balance_with_icon(user.balance)}</b>\n\n"
             f"👥 Приглашай друзей по своей реферальной ссылке — получишь разовый бонус "
-            f"<b>+{REF_BONUS_INVITER} 💎</b> и пожизненно <b>{commission_pct}%</b> с каждой их траты в игре.\n\n"
+            f"<b>+{REF_BONUS_INVITER} 💎</b>, а пожизненно — <b>{loss_pct}%</b> с их проигранных "
+            f"ставок в Апгрейдере и <b>{win_pct}%</b> с их чистого выигрыша там.\n\n"
             f"Жми кнопку ниже, чтобы начать открывать кейсы 👇"
         )
 
@@ -193,14 +230,15 @@ async def send_ref_link(callback):
     bot_username = (await bot.get_me()).username
     link = f"https://t.me/{bot_username}?start=ref_{callback.from_user.id}"
 
-    commission_pct = round(REF_COMMISSION_PERCENT * 100)
+    loss_pct = round(REF_UPGRADER_LOSS_COMMISSION_PERCENT * 100)
+    win_pct = round(REF_UPGRADER_WIN_COMMISSION_PERCENT * 100)
     await callback.message.answer(
         f"👥 Твоя реферальная ссылка:\n<code>{link}</code>\n\n"
         f"За каждого друга, который зайдёт по ссылке, ты автоматически получишь "
         f"<b>+{REF_BONUS_INVITER} 💎</b>, а друг стартует с бонусом <b>+{REF_BONUS_INVITED} 💎</b>!\n\n"
-        f"💸 И это не разовая история: с каждой траты твоего друга (открытие кейсов, "
-        f"крафт, ставки в мини-играх) тебе будет пожизненно капать <b>{commission_pct}%</b> "
-        f"— пока он играет, ты пассивно зарабатываешь вместе с ним.",
+        f"💸 И это не разовая история: в Апгрейдере тебе будет пожизненно капать "
+        f"<b>{loss_pct}%</b> с каждой проигранной другом ставки и <b>{win_pct}%</b> "
+        f"с его чистого выигрыша — пока он играет, ты пассивно зарабатываешь вместе с ним.",
         parse_mode="HTML"
     )
     await callback.answer()
@@ -278,7 +316,48 @@ ADMIN_MENU_TEXT = (
     "/give_vip &lt;user_id&gt; — выдать VIP-статус навсегда по TG ID\n"
     "/create_promo &lt;code&gt; &lt;reward_crystals&gt; &lt;activations&gt; — создать промокод на 💎\n"
     "/addpromo &lt;code&gt; &lt;type:value&gt; &lt;max_activations&gt; — создать промокод (case/skin)\n"
-    "/user_info &lt;user_id&gt; — подробная информация о пользователе"
+    "/user_info &lt;tg_id&gt; — статистика, балансы и статус мута игрока\n\n"
+    "<b>Модерация чата (Спринт 11):</b>\n"
+    "/mute &lt;tg_id&gt; &lt;минуты&gt; &lt;причина&gt; — замутить игрока\n"
+    "/unmute &lt;tg_id&gt; — снять мут\n"
+    "/ban_chat &lt;tg_id&gt; — забанить игрока в чате\n"
+    "/unban_chat &lt;tg_id&gt; — разбанить игрока в чате\n\n"
+    "/help или /admin_help — подробная справка по всем командам"
+)
+
+# Подробная справка со синтаксисом и примерами (ТЗ Спринта 11: /help / /admin_help).
+ADMIN_HELP_TEXT = (
+    "📖 <b>Справка по командам бота</b>\n\n"
+    "<b>📊 Статистика и выдача</b>\n"
+    "<code>/stats</code>\n"
+    "└ общая статистика проекта (юзеры, VIP, кейсы, балансы).\n\n"
+    "<code>/give_crystals &lt;tg_id&gt; &lt;amount&gt;</code>\n"
+    "└ начислить/списать 💎 Кристаллы (amount может быть отрицательным).\n"
+    "└ пример: <code>/give_crystals 123456789 5000</code>\n\n"
+    "<code>/give_vip &lt;tg_id&gt;</code>\n"
+    "└ выдать VIP-статус навсегда.\n"
+    "└ пример: <code>/give_vip 123456789</code>\n\n"
+    "<code>/user_info &lt;tg_id&gt;</code>\n"
+    "└ полная карточка игрока: балансы, VIP, статистика, статус мута/бана.\n"
+    "└ пример: <code>/user_info 123456789</code>\n\n"
+    "<b>🎟 Промокоды</b>\n"
+    "<code>/create_promo &lt;code&gt; &lt;reward_crystals&gt; &lt;activations&gt;</code>\n"
+    "└ промокод на 💎. Пример: <code>/create_promo WELCOME 1000 500</code>\n\n"
+    "<code>/addpromo &lt;code&gt; &lt;type:value&gt; &lt;max_activations&gt;</code>\n"
+    "└ промокод с типом (balance/case/skin).\n"
+    "└ пример: <code>/addpromo FREECASE case:kilowatt_case 100</code>\n\n"
+    "<b>🛡 Модерация чата</b>\n"
+    "<code>/mute &lt;tg_id&gt; &lt;минуты&gt; &lt;причина&gt;</code>\n"
+    "└ замутить игрока на N минут (0 = навсегда). Причина обязательна.\n"
+    "└ пример: <code>/mute 123456789 60 спам в чате</code>\n\n"
+    "<code>/unmute &lt;tg_id&gt;</code>\n"
+    "└ снять мут. Пример: <code>/unmute 123456789</code>\n\n"
+    "<code>/ban_chat &lt;tg_id&gt;</code>\n"
+    "└ полный бан написания в чат (жёстче мута).\n"
+    "└ пример: <code>/ban_chat 123456789</code>\n\n"
+    "<code>/unban_chat &lt;tg_id&gt;</code>\n"
+    "└ снять бан чата. Пример: <code>/unban_chat 123456789</code>\n\n"
+    "<i>Все админ-команды доступны только Telegram ID из config.ADMIN_IDS.</i>"
 )
 
 
@@ -287,6 +366,19 @@ async def admin_panel(message: Message):
     if not is_admin(message.from_user.id):
         return
     await message.answer(ADMIN_MENU_TEXT, parse_mode="HTML")
+
+
+@dp.message(Command("help"))
+@dp.message(Command("admin_help"))
+async def cmd_help(message: Message):
+    if not is_admin(message.from_user.id):
+        # Обычным игрокам — короткая подсказка вместо админ-справки.
+        await message.answer(
+            "🎮 Жми синюю кнопку «Играть» слева от поля ввода или /start, "
+            "чтобы открыть приложение."
+        )
+        return
+    await message.answer(ADMIN_HELP_TEXT, parse_mode="HTML")
 
 
 @dp.message(Command("stats"))
@@ -540,17 +632,216 @@ async def cmd_user_info(message: Message):
         inv_result = await session.execute(select(func.count(Inventory.id)).where(Inventory.user_id == user.id))
         inv_count = inv_result.scalar()
 
+        # ---- Статус мута/бана чата (Спринт 11) ----
+        now = datetime.datetime.utcnow()
+        if user.is_chat_banned:
+            mute_line = "🚫 <b>ЗАБАНЕН в чате</b>"
+        elif user.is_muted and (user.mute_until is None or user.mute_until > now):
+            if user.mute_until is None:
+                until = "навсегда"
+            else:
+                until = f"до {user.mute_until.strftime('%d.%m.%Y %H:%M')} UTC"
+            mute_line = f"🔇 <b>В МУТЕ</b> ({until})\n   Причина: {user.mute_reason or '—'}"
+        else:
+            mute_line = "✅ Не в муте / не забанен"
+
+        vip_status = (
+            "✅ навсегда" if (user.is_vip and not user.vip_expires_at)
+            else ("✅ до " + user.vip_expires_at.strftime('%d.%m.%Y') if user.is_vip else "❌")
+        )
+
         await message.answer(
             f"👤 <b>Пользователь {target_id}</b>\n\n"
             f"Username: @{user.username or '—'}\n"
-            f"Баланс: {format_balance_with_icon(user.balance)}\n"
-            f"VIP: {'✅ навсегда' if (user.is_vip and not user.vip_expires_at) else ('✅ до ' + user.vip_expires_at.strftime('%d.%m.%Y') if user.is_vip else '❌')}\n"
-            f"Кейсов открыто: {user.total_cases_opened}\n"
-            f"Предметов в инвентаре: {inv_count}\n"
-            f"Реф. код: {user.ref_code}\n"
-            f"Приглашён: {user.referred_by or '—'}",
+            f"Имя: {user.first_name or '—'}\n\n"
+            f"💎 Кристаллы: {format_balance_with_icon(user.balance)}\n"
+            f"💰 Золото: {round(user.gold_balance or 0, 2)}\n"
+            f"⭐ VIP: {vip_status}\n\n"
+            f"📦 Кейсов открыто: {user.total_cases_opened}\n"
+            f"🎒 Предметов в инвентаре: {inv_count}\n"
+            f"🏆 Топ-дроп: {user.top_drop_name or '—'}\n"
+            f"⭐ XP: {user.xp or 0} | Уровень: {user.last_seen_level or 1}\n\n"
+            f"👥 Реф. код: {user.ref_code}\n"
+            f"👤 Приглашён: {user.referred_by or '—'}\n\n"
+            f"<b>Модерация чата:</b>\n{mute_line}",
             parse_mode="HTML"
         )
+
+
+# ============================================
+# Модерация чата (Спринт 11)
+# ============================================
+@dp.message(Command("mute"))
+async def cmd_mute(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    # /mute <tg_id> <минуты> <причина...> — причина может состоять из
+    # нескольких слов, поэтому split с maxsplit=3.
+    args = message.text.split(maxsplit=3)
+    if len(args) < 4:
+        await message.answer(
+            "Использование: /mute <tg_id> <минуты> <причина>\n\n"
+            "Пример: /mute 123456789 60 спам в чате\n"
+            "(минуты = 0 — мут навсегда)"
+        )
+        return
+
+    try:
+        target_id = int(args[1])
+        minutes = int(args[2])
+    except ValueError:
+        await message.answer("❌ tg_id и минуты должны быть числами")
+        return
+
+    if minutes < 0:
+        await message.answer("❌ Минуты не могут быть отрицательными (0 = навсегда)")
+        return
+
+    reason = args[3].strip()
+
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id == target_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            await message.answer(f"❌ Пользователь <code>{target_id}</code> не найден", parse_mode="HTML")
+            return
+
+        user.is_muted = True
+        if minutes == 0:
+            user.mute_until = None  # навсегда
+            until_label = "навсегда"
+        else:
+            user.mute_until = datetime.datetime.utcnow() + datetime.timedelta(minutes=minutes)
+            until_label = f"на {minutes} мин (до {user.mute_until.strftime('%d.%m.%Y %H:%M')} UTC)"
+        user.mute_reason = reason
+        await session.commit()
+
+    await message.answer(
+        f"🔇 Пользователь <code>{target_id}</code> замучен {until_label}\n"
+        f"Причина: {reason}",
+        parse_mode="HTML"
+    )
+    try:
+        await bot.send_message(
+            target_id,
+            f"🔇 Вы получили мут в чате {until_label}.\nПричина: {reason}",
+        )
+    except Exception:
+        pass
+
+
+@dp.message(Command("unmute"))
+async def cmd_unmute(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Использование: /unmute <tg_id>\n\nПример: /unmute 123456789")
+        return
+
+    try:
+        target_id = int(args[1])
+    except ValueError:
+        await message.answer("❌ Некорректный tg_id")
+        return
+
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id == target_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            await message.answer(f"❌ Пользователь <code>{target_id}</code> не найден", parse_mode="HTML")
+            return
+
+        if not user.is_muted:
+            await message.answer(f"ℹ️ Пользователь <code>{target_id}</code> и так не в муте", parse_mode="HTML")
+            return
+
+        user.is_muted = False
+        user.mute_until = None
+        user.mute_reason = None
+        await session.commit()
+
+    await message.answer(f"✅ Мут с пользователя <code>{target_id}</code> снят", parse_mode="HTML")
+    try:
+        await bot.send_message(target_id, "✅ С вас снят мут в чате. Пишите аккуратнее 🙂")
+    except Exception:
+        pass
+
+
+@dp.message(Command("ban_chat"))
+async def cmd_ban_chat(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Использование: /ban_chat <tg_id>\n\nПример: /ban_chat 123456789")
+        return
+
+    try:
+        target_id = int(args[1])
+    except ValueError:
+        await message.answer("❌ Некорректный tg_id")
+        return
+
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id == target_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            await message.answer(f"❌ Пользователь <code>{target_id}</code> не найден", parse_mode="HTML")
+            return
+
+        if user.is_chat_banned:
+            await message.answer(f"ℹ️ Пользователь <code>{target_id}</code> уже забанен в чате", parse_mode="HTML")
+            return
+
+        user.is_chat_banned = True
+        await session.commit()
+
+    await message.answer(f"🚫 Пользователь <code>{target_id}</code> забанен в чате", parse_mode="HTML")
+    try:
+        await bot.send_message(target_id, "🚫 Вы заблокированы в глобальном чате.")
+    except Exception:
+        pass
+
+
+@dp.message(Command("unban_chat"))
+async def cmd_unban_chat(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Использование: /unban_chat <tg_id>\n\nПример: /unban_chat 123456789")
+        return
+
+    try:
+        target_id = int(args[1])
+    except ValueError:
+        await message.answer("❌ Некорректный tg_id")
+        return
+
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id == target_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            await message.answer(f"❌ Пользователь <code>{target_id}</code> не найден", parse_mode="HTML")
+            return
+
+        if not user.is_chat_banned:
+            await message.answer(f"ℹ️ Пользователь <code>{target_id}</code> и так не забанен в чате", parse_mode="HTML")
+            return
+
+        user.is_chat_banned = False
+        await session.commit()
+
+    await message.answer(f"✅ Бан чата с пользователя <code>{target_id}</code> снят", parse_mode="HTML")
+    try:
+        await bot.send_message(target_id, "✅ Вас разбанили в глобальном чате.")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------
@@ -579,6 +870,7 @@ async def setup_bot():
     # 3) Список команд — подсказки при вводе "/" в чате с ботом
     await bot.set_my_commands([
         BotCommand(command="start", description="🎮 Запустить бота / открыть игру"),
+        BotCommand(command="help", description="📖 Справка по командам"),
     ])
 
     logging.info("Бот настроен: webhook сброшен, menu button и команды установлены.")

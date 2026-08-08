@@ -19,12 +19,15 @@ const state = {
   photoUrl: tgUserUnsafe?.photo_url || null,
   authenticated: false,
   balance: 0,
+  goldBalance: 0,
   isVip: false,
   vipExpiresAt: null,
   lang: "ru",
   soundEnabled: true,
   currency: "RUB",
   currencyRates: { RUB: 1, USD: 1 / 90, UAH: 1 / 2.2 }, // фолбэк, перезаписывается из /app-config при старте
+  background: "dark",       // Спринт 12: активный фон симулятора, см. BACKGROUND_OPTIONS
+  backgroundOptions: [],    // каталог фонов, приходит из /app-config
   cases: [],
   inventory: [],
   casesOpenedSinceAd: 0,
@@ -46,8 +49,18 @@ const state = {
   inventorySortDir: "desc", // сортировка инвентаря по цене: desc (дорогие сначала) | asc (дешёвые сначала)
   dailyStatus: null,
   lastProfile: null, // последний полный профиль с бэкенда — для перерисовки при смене валюты без лишнего запроса
+  // ---- Ежедневное колесо удачи (Спринт 6) ----
+  wheelStatus: null,
+  wheelSectorsRendered: false,
+  wheelSpinning: false,
+  wheelCountdownInterval: null,
+  wheelCurrentRotation: 0, // накопительный угол диска — не даёт колесу "крутиться назад" между спинами
   rankUpQueue: [],       // очередь событий повышения ранга, ждущих показа модалки
   rankUpModalActive: false,
+  // ---- Уровень аккаунта / витрина (Спринт 10) ----
+  levelUpQueue: [],        // очередь повышений уровня аккаунта (формула 100*1.15^(N-1))
+  levelUpModalActive: false,
+  itemDetailId: null,      // id предмета, открытого в карточке Float/StatTrak
   // ---- Крафт / Trade-Up ----
   craftFeeByRarity: {},
   craftItemsRequired: 5,
@@ -80,7 +93,7 @@ const I18N = {
     craft_max_rarity: "Эта редкость уже максимальная — крафтить дальше некуда",
     craft_success: "Готово! Новый предмет уже в инвентаре",
     craft_not_enough_balance: "Не хватает 💎 на оплату рецепта",
-    settings_lang: "🌐 Язык", settings_sound: "🔊 Звук", settings_currency: "💱 Валюта",
+    settings_lang: "🌐 Язык", settings_sound: "🔊 Звук", settings_currency: "💱 Валюта", settings_background: "🖼️ Фон симулятора",
     sound_on: "Вкл", sound_off: "Выкл",
     ref_title: "👥 Реферальная ссылка", copy_btn: "Копировать",
     promo_title: "🎁 Промокод", promo_placeholder: "Введите промокод",
@@ -105,7 +118,11 @@ const I18N = {
     earn_giveaway_title: "Розыгрыши", earn_giveaway_desc: "Участвуй и выигрывай редкие скины",
     earn_vip_title: "VIP-статус", earn_vip_desc: "Без рекламы + косметические бонусы",
     buy_btn: "Купить", tab_cases: "Кейсы", tab_inventory: "Инвентарь",
-    tab_profile: "Профиль", tab_minigames: "Мини-игры", tab_earn: "Заработать",
+    tab_profile: "Профиль", tab_minigames: "Мини-игры", tab_earn: "Заработать", tab_chat: "Чат",
+    chat_title: "Глобальный чат", chat_input_ph: "Написать сообщение…", chat_send: "Отправить",
+    chat_empty: "Сообщений пока нет. Будь первым!", chat_report: "Пожаловаться",
+    chat_report_done: "Жалоба отправлена", chat_muted: "Вы в муте и не можете писать",
+    chat_banned: "Вы заблокированы в чате", chat_you: "Вы",
     open_case_btn: "Открыть кейс", contents_title: "📋 Содержимое кейса",
     win_title: "🎉 Выпало!", keep_btn: "В коллекцию", sell_btn: "Продать", open_again_btn: "Открыть ещё",
     insufficient_balance: "Недостаточно Кристалликов 💎. Посмотри рекламу на вкладке «Заработать»!",
@@ -117,6 +134,9 @@ const I18N = {
     giveaways_soon: "Раздел розыгрышей скоро появится здесь!",
     back_btn: "Назад", open_count_label: "Количество открытий", open_speed_label: "Режим скорости",
     speed_slow: "Медленно", speed_fast: "Быстро", sell_all_btn: "Продать всё",
+    sell_all_for_btn: "Продать все за", keep_all_btn: "Забрать все в инвентарь",
+    sell_for_btn: "Продать за", sold_label: "Продано",
+    multi_results_total_label: "Получено предметов на сумму:",
     select_all_label: "Выделить все", disintegrate_btn: "Продать выбранное",
     sort_expensive_first: "Сначала дорогие", sort_cheap_first: "Сначала дешёвые",
     disintegrate_success: "Предметы проданы!", nothing_selected: "Выбери хотя бы один предмет",
@@ -142,13 +162,80 @@ const I18N = {
     daily_hint: "Заходи каждый день, чтобы не потерять серию! Пропустишь день — серия сбросится.",
     daily_streak_label: "Серия: {n} дн. подряд", daily_day_label: "День {n}",
     daily_result_title: "🎉 Награда получена!",
-    daily_reward_skin: "Редкий скин!", daily_reward_promo: "Промокод",
-    daily_reward_jackpot: "Джекпот 7-го дня!",
-    daily_promo_hint: "Активируй его на вкладке «Заработать → Промокод»:",
+    daily_reward_case: "Кейс «Revolution»", daily_reward_gold: "Золото",
+    daily_reward_vip: "VIP на {h} ч.", daily_reward_vip_already: "У тебя уже постоянный VIP",
+    daily_mega_hint: "Ещё {n} дн. подряд — и получишь мега-бонус +{gold} 💰",
+    daily_mega_bonus_toast: "🔥 Мега-бонус за 30 дней подряд!",
     daily_already_claimed_toast: "Ежедневный бонус уже получен сегодня. Возвращайся завтра!",
+    tasks_earn_title: "Задания", tasks_earn_desc: "Подписки и рефералы — бесплатное 💰 Золото",
+    tasks_title: "✅ Задания",
+    task_open_btn: "Перейти", task_check_btn: "Проверить", task_done_btn: "Выполнено ✓",
+    task_completed_toast: "Задание выполнено! +{gold} 💰 Золота",
+    task_not_verified_toast: "Условие ещё не выполнено — попробуй ещё раз чуть позже",
+    task_check_error_toast: "Не удалось проверить задание",
     rank_xp_line: "{xp} / {next} XP", rank_max_line: "{xp} XP · Максимальный ранг",
     rank_next_line: "До ранга «{name}»: {xp} XP", rank_next_line_max: "Достигнут максимальный ранг!",
     rankup_title: "🎉 Новый ранг!",
+    game_crafter: "Синтезатор",
+    crafter_desc: "Заложи предметы из инвентаря и/или добавь Кристаллы, выбери целевой предмет — при успехе получишь его, при неудаче вся ставка сгорает без остатка.",
+    crafter_components_label: "Исходные предметы",
+    crafter_add_crystals_label: "Добавить Кристаллы",
+    crafter_input_value_label: "Стоимость ставки",
+    crafter_target_label: "Целевой предмет",
+    crafter_synthesize_btn: "Синтезировать",
+    crafter_synthesizing: "Синтез…",
+    crafter_price_from: "Цена от",
+    crafter_price_to: "Цена до",
+    crafter_success_title: "✨ Синтез удался!",
+    crafter_fail_title: "💥 Синтез не удался",
+    crafter_fail_desc: "Ставка сгорела без остатка.",
+    crafter_pick_component_first: "Добавь хотя бы о��ин предмет из инвентаря или Кристаллы",
+    crafter_pick_target_first: "Выбери целевой предмет из каталога",
+    crafter_catalog_empty: "Ничег�� не найдено",
+    crafter_catalog_hint: "Найди целевой предмет по названию или диапазону цен",
+    wheel_earn_title: "Колесо удачи", wheel_earn_desc: "Крути раз в день бесплатно — или за 💰 Золото",
+    wheel_title: "🎡 Колесо удачи", wheel_spin_btn: "Крутить", wheel_spinning: "Крутится…",
+    wheel_free_hint: "Бесплатный спин доступен!", wheel_free_in: "Бесплатный спин через",
+    wheel_paid_hint: "Платный спин — 💰 5 Золота", wheel_paid_left: "Осталось платных спинов сегодня",
+    wheel_no_spins_left: "Спины на сегодня закончились",
+    wheel_no_gold: "Не хватает 💰 Золота для платного спина",
+    wheel_result_title: "🎉 Приз колеса!", wheel_ok_btn: "Отлично!",
+    wheel_sector_crystals: "Кристаллы", wheel_sector_gold: "Золото",
+    wheel_sector_vip: "VIP-статус на 3 часа", wheel_sector_case: "Кейс «Revolution»",
+    gold_label: "Золото",
+    // ---- Спринт 10: уровень, титулы/рамки, витрина, друзья ----
+    level_label: "Уровень аккаунта", level_short: "ур.",
+    level_max_line: "{xp} XP · Максимальный уровень",
+    level_next_slot: "🏅 Слотов витрины: {slots} · +1 на {level} уровне",
+    level_slots_max: "🏅 Все {slots} слотов витрины открыты",
+    level_table_title: "📈 Уровни аккаунта",
+    levelup_title: "🎉 Новый уровень!",
+    levelup_slot_gained: "🏅 +1 слот Витрины! Теперь их {slots}",
+    showcase_title: "🏅 Витрина лучших скинов",
+    showcase_hint: "Закрепи лучшие скины из инвентаря. +1 слот на {level} уровне.",
+    showcase_hint_max: "Все слоты витрины открыты — максимум 10.",
+    showcase_add: "В витрину", showcase_remove: "Убрать из витрины",
+    showcase_empty_friend: "Витрина пуста",
+    titles_label: "🎖️ Титул", frames_label: "🖼️ Рамка аватара",
+    cosmetic_none: "Без", cosmetic_locked: "Ещё не открыто",
+    cosmetic_unlocked: "🎉 Открыто:",
+    item_quality: "Качество", item_price: "Цена",
+    friends_title: "👥 Друзья",
+    friends_tab_list: "Друзья", friends_tab_requests: "Заявки", friends_tab_search: "Поиск",
+    friends_incoming: "Входящие", friends_outgoing: "Исходящие",
+    friends_search_btn: "Найти",
+    friends_search_hint: "Введи Telegram ID (например 123456789) или username (@nick)",
+    friends_loading: "Загрузка…", friends_empty: "Друзей пока нет — найди их в поиске!",
+    friends_no_incoming: "Нет входящих заявок", friends_no_outgoing: "Нет исходящих заявок",
+    friends_not_found: "Никого не найдено",
+    friends_add: "Добавить", friends_accept: "Принять", friends_decline: "Отклонить",
+    friends_cancel: "Отменить", friends_remove: "Удалить",
+    friends_remove_confirm: "Удалить из друзей?",
+    friends_request_sent: "Заявка отправлена!", friends_accepted: "Теперь вы друзья!",
+    friends_already: "Уже друзья", friends_pending: "Заявка отправлена",
+    friends_you: "Это ты", friends_level_short: "ур.",
+    friends_stat_items: "Предметов", friends_stat_knives: "Ножей выбито",
+    friends_profile_error: "Профиль недоступен",
   },
   en: {
     cases_title: "Cases", inventory_title: "Inventory",
@@ -169,7 +256,7 @@ const I18N = {
     craft_max_rarity: "This rarity is already the highest — nothing to craft up to",
     craft_success: "Done! New item is in your inventory",
     craft_not_enough_balance: "Not enough 💎 to pay the recipe fee",
-    settings_lang: "🌐 Language", settings_sound: "🔊 Sound", settings_currency: "💱 Currency",
+    settings_lang: "🌐 Language", settings_sound: "🔊 Sound", settings_currency: "💱 Currency", settings_background: "🖼️ Simulator background",
     sound_on: "On", sound_off: "Off",
     ref_title: "👥 Referral link", copy_btn: "Copy",
     promo_title: "🎁 Promo code", promo_placeholder: "Enter promo code",
@@ -190,11 +277,15 @@ const I18N = {
     upgrade_pick_target_first: "Set an upgrade target",
     bet_label: "Bet (💎)", cashout_label: "Cash out at", play_btn: "Play",
     earn_title: "Earn", earn_ad_title: "Watch a video",
-    earn_ad_desc: "Get +2000 💎 virtual balance", watch_btn: "Watch",
+    earn_ad_desc: "Get +2000 �� virtual balance", watch_btn: "Watch",
     earn_giveaway_title: "Giveaways", earn_giveaway_desc: "Join and win rare skins",
     earn_vip_title: "VIP status", earn_vip_desc: "No ads + cosmetic perks",
     buy_btn: "Buy", tab_cases: "Cases", tab_inventory: "Inventory",
-    tab_profile: "Profile", tab_minigames: "Games", tab_earn: "Earn",
+    tab_profile: "Profile", tab_minigames: "Games", tab_earn: "Earn", tab_chat: "Chat",
+    chat_title: "Global chat", chat_input_ph: "Type a message…", chat_send: "Send",
+    chat_empty: "No messages yet. Be the first!", chat_report: "Report",
+    chat_report_done: "Report sent", chat_muted: "You are muted and can't post",
+    chat_banned: "You are banned from the chat", chat_you: "You",
     open_case_btn: "Open case", contents_title: "📋 Case contents",
     win_title: "🎉 You got!", keep_btn: "To collection", sell_btn: "Sell", open_again_btn: "Open again",
     insufficient_balance: "Not enough 💎 Crystals. Watch an ad on the Earn tab!",
@@ -206,6 +297,9 @@ const I18N = {
     giveaways_soon: "Giveaways are coming soon!",
     back_btn: "Back", open_count_label: "Number of openings", open_speed_label: "Speed mode",
     speed_slow: "Slow", speed_fast: "Fast", sell_all_btn: "Sell all",
+    sell_all_for_btn: "Sell all for", keep_all_btn: "Keep all in inventory",
+    sell_for_btn: "Sell for", sold_label: "Sold",
+    multi_results_total_label: "Items received worth:",
     select_all_label: "Select all", disintegrate_btn: "Sell selected",
     sort_expensive_first: "Highest price", sort_cheap_first: "Lowest price",
     disintegrate_success: "Items sold!", nothing_selected: "Select at least one item",
@@ -231,13 +325,80 @@ const I18N = {
     daily_hint: "Come back every day to keep your streak! Miss a day and it resets.",
     daily_streak_label: "Streak: {n} days in a row", daily_day_label: "Day {n}",
     daily_result_title: "🎉 Reward claimed!",
-    daily_reward_skin: "Rare skin!", daily_reward_promo: "Promo code",
-    daily_reward_jackpot: "Day 7 jackpot!",
-    daily_promo_hint: "Activate it on the Earn → Promo code tab:",
+    daily_reward_case: "Revolution Case", daily_reward_gold: "Gold",
+    daily_reward_vip: "VIP for {h}h", daily_reward_vip_already: "You already have permanent VIP",
+    daily_mega_hint: "{n} more days in a row for a mega bonus of +{gold} 💰",
+    daily_mega_bonus_toast: "🔥 30-day streak mega bonus!",
     daily_already_claimed_toast: "Daily bonus already claimed today. Come back tomorrow!",
+    tasks_earn_title: "Tasks", tasks_earn_desc: "Subscriptions and referrals — free 💰 Gold",
+    tasks_title: "✅ Tasks",
+    task_open_btn: "Open", task_check_btn: "Check", task_done_btn: "Done ✓",
+    task_completed_toast: "Task completed! +{gold} 💰 Gold",
+    task_not_verified_toast: "Not completed yet — try again in a moment",
+    task_check_error_toast: "Couldn't check the task",
     rank_xp_line: "{xp} / {next} XP", rank_max_line: "{xp} XP · Max rank",
     rank_next_line: "To «{name}»: {xp} XP", rank_next_line_max: "Max rank reached!",
     rankup_title: "🎉 New rank!",
+    game_crafter: "Crafter",
+    crafter_desc: "Stake items from your inventory and/or add Crystals, pick a target item — succeed and you get it, fail and the whole stake burns with nothing back.",
+    crafter_components_label: "Source items",
+    crafter_add_crystals_label: "Add Crystals",
+    crafter_input_value_label: "Stake value",
+    crafter_target_label: "Target item",
+    crafter_synthesize_btn: "Synthesize",
+    crafter_synthesizing: "Synthesizing…",
+    crafter_price_from: "Price from",
+    crafter_price_to: "Price to",
+    crafter_success_title: "✨ Synthesis succeeded!",
+    crafter_fail_title: "💥 Synthesis failed",
+    crafter_fail_desc: "The stake burned with nothing back.",
+    crafter_pick_component_first: "Add at least one inventory item or Crystals",
+    crafter_pick_target_first: "Pick a target item from the catalog",
+    crafter_catalog_empty: "Nothing found",
+    crafter_catalog_hint: "Find a target item by name or price range",
+    wheel_earn_title: "Wheel of Luck", wheel_earn_desc: "Spin free once a day — or pay 💰 Gold",
+    wheel_title: "🎡 Wheel of Luck", wheel_spin_btn: "Spin", wheel_spinning: "Spinning…",
+    wheel_free_hint: "Free spin available!", wheel_free_in: "Free spin in",
+    wheel_paid_hint: "Paid spin — 💰 5 Gold", wheel_paid_left: "Paid spins left today",
+    wheel_no_spins_left: "No spins left for today",
+    wheel_no_gold: "Not enough 💰 Gold for a paid spin",
+    wheel_result_title: "🎉 Wheel prize!", wheel_ok_btn: "Awesome!",
+    wheel_sector_crystals: "Crystals", wheel_sector_gold: "Gold",
+    wheel_sector_vip: "VIP status for 3 hours", wheel_sector_case: "\"Revolution\" case",
+    gold_label: "Gold",
+    // ---- Sprint 10: level, titles/frames, showcase, friends ----
+    level_label: "Account level", level_short: "lvl",
+    level_max_line: "{xp} XP · Max level",
+    level_next_slot: "🏅 Showcase slots: {slots} · +1 at level {level}",
+    level_slots_max: "🏅 All {slots} showcase slots unlocked",
+    level_table_title: "📈 Account levels",
+    levelup_title: "🎉 Level up!",
+    levelup_slot_gained: "🏅 +1 Showcase slot! Now {slots}",
+    showcase_title: "🏅 Best skins showcase",
+    showcase_hint: "Pin your best skins from inventory. +1 slot at level {level}.",
+    showcase_hint_max: "All showcase slots unlocked — 10 max.",
+    showcase_add: "Add to showcase", showcase_remove: "Remove from showcase",
+    showcase_empty_friend: "Showcase is empty",
+    titles_label: "🎖️ Title", frames_label: "🖼️ Avatar frame",
+    cosmetic_none: "None", cosmetic_locked: "Not unlocked yet",
+    cosmetic_unlocked: "🎉 Unlocked:",
+    item_quality: "Quality", item_price: "Price",
+    friends_title: "👥 Friends",
+    friends_tab_list: "Friends", friends_tab_requests: "Requests", friends_tab_search: "Search",
+    friends_incoming: "Incoming", friends_outgoing: "Outgoing",
+    friends_search_btn: "Search",
+    friends_search_hint: "Enter Telegram ID (e.g. 123456789) or username (@nick)",
+    friends_loading: "Loading…", friends_empty: "No friends yet — find them in search!",
+    friends_no_incoming: "No incoming requests", friends_no_outgoing: "No outgoing requests",
+    friends_not_found: "Nobody found",
+    friends_add: "Add", friends_accept: "Accept", friends_decline: "Decline",
+    friends_cancel: "Cancel", friends_remove: "Remove",
+    friends_remove_confirm: "Remove from friends?",
+    friends_request_sent: "Request sent!", friends_accepted: "You are friends now!",
+    friends_already: "Already friends", friends_pending: "Request sent",
+    friends_you: "That's you", friends_level_short: "lvl",
+    friends_stat_items: "Items", friends_stat_knives: "Knives dropped",
+    friends_profile_error: "Profile unavailable",
   },
   uk: {
     cases_title: "Кейси", inventory_title: "Інвентар",
@@ -258,7 +419,7 @@ const I18N = {
     craft_max_rarity: "Ця рідкість вже максимальна — крафтити далі нікуди",
     craft_success: "Готово! Новий предмет вже в інвентарі",
     craft_not_enough_balance: "Не вистачає 💎 на оплату рецепта",
-    settings_lang: "🌐 Мова", settings_sound: "🔊 Звук", settings_currency: "💱 Валюта",
+    settings_lang: "🌐 Мова", settings_sound: "🔊 Звук", settings_currency: "💱 Валюта", settings_background: "🖼️ Фон симулятора",
     sound_on: "Увім.", sound_off: "Вимк.",
     ref_title: "👥 Реферальне посилання", copy_btn: "Копіювати",
     promo_title: "🎁 Промокод", promo_placeholder: "Введіть промокод",
@@ -283,7 +444,11 @@ const I18N = {
     earn_giveaway_title: "Розіграші", earn_giveaway_desc: "Бери участь і вигравай рідкісні скіни",
     earn_vip_title: "VIP-статус", earn_vip_desc: "Без реклами + косметичні бонуси",
     buy_btn: "Купити", tab_cases: "Кейси", tab_inventory: "Інвентар",
-    tab_profile: "Профіль", tab_minigames: "Міні-ігри", tab_earn: "Заробити",
+    tab_profile: "Профіль", tab_minigames: "Міні-ігри", tab_earn: "Заробити", tab_chat: "Чат",
+    chat_title: "Глобальний чат", chat_input_ph: "Написати повідомлення…", chat_send: "Надіслати",
+    chat_empty: "Повідомлень ще немає. Будь першим!", chat_report: "Поскаржитися",
+    chat_report_done: "Скаргу надіслано", chat_muted: "Ви в муті й не можете писати",
+    chat_banned: "Вас заблоковано в чаті", chat_you: "Ви",
     open_case_btn: "Відкрити кейс", contents_title: "📋 Вміст кейса",
     win_title: "🎉 Випало!", keep_btn: "У колекцію", sell_btn: "Продати", open_again_btn: "Відкрити ще",
     insufficient_balance: "Недостатньо Кристаликів 💎. Подивись рекламу на вкладці «Заробити»!",
@@ -295,6 +460,9 @@ const I18N = {
     giveaways_soon: "Розділ розіграшів скоро зʼявиться тут!",
     back_btn: "Назад", open_count_label: "Кількість відкриттів", open_speed_label: "Режим швидкості",
     speed_slow: "Повільно", speed_fast: "Швидко", sell_all_btn: "Продати все",
+    sell_all_for_btn: "Продати все за", keep_all_btn: "Забрати все в інвентар",
+    sell_for_btn: "Продати за", sold_label: "Продано",
+    multi_results_total_label: "Отримано предметів на суму:",
     select_all_label: "Виділити все", disintegrate_btn: "Продати вибране",
     sort_expensive_first: "Спочатку дорогі", sort_cheap_first: "Спочатку дешеві",
     disintegrate_success: "Предмети продано!", nothing_selected: "Обери хоча б один предмет",
@@ -320,13 +488,80 @@ const I18N = {
     daily_hint: "Заходь щодня, щоб не втратити серію! Пропустиш день — серія скинеться.",
     daily_streak_label: "Серія: {n} дн. поспіль", daily_day_label: "День {n}",
     daily_result_title: "🎉 Нагороду отримано!",
-    daily_reward_skin: "Рідкісний скін!", daily_reward_promo: "Промокод",
-    daily_reward_jackpot: "Джекпот 7-го дня!",
-    daily_promo_hint: "Активуй його на вкладці «Заробити → Промокод»:",
+    daily_reward_case: "Кейс «Revolution»", daily_reward_gold: "Золото",
+    daily_reward_vip: "VIP на {h} год.", daily_reward_vip_already: "У тебе вже постійний VIP",
+    daily_mega_hint: "Ще {n} дн. поспіль — і отримаєш мега-бонус +{gold} 💰",
+    daily_mega_bonus_toast: "🔥 Мега-бонус за 30 днів поспіль!",
     daily_already_claimed_toast: "Щоденний бонус уже отримано сьогодні. Повертайся завтра!",
-    rank_xp_line: "{xp} / {next} XP", rank_max_line: "{xp} XP · Максимальний ранг",
+    tasks_earn_title: "Завдання", tasks_earn_desc: "Підписки та реферали — безкоштовне 💰 Золото",
+    tasks_title: "✅ Завдання",
+    task_open_btn: "Перейти", task_check_btn: "Перевірити", task_done_btn: "Виконано ✓",
+    task_completed_toast: "Завдання виконано! +{gold} 💰 Золота",
+    task_not_verified_toast: "Умову ще не виконано — спробуй ще раз трохи пізніше",
+    task_check_error_toast: "Не вдалося перевірити завдання",
+    rank_xp_line: "{xp} / {next} XP", rank_max_line: "{xp} XP · Максимальний ран��",
     rank_next_line: "До рангу «{name}»: {xp} XP", rank_next_line_max: "Досягнуто максимальний ранг!",
     rankup_title: "🎉 Новий ранг!",
+    game_crafter: "Синтезатор",
+    crafter_desc: "Заклади предмети з інвентаря та/або додай Кристали, обери цільовий предмет — при успіху отримаєш його, при невдачі вся ставка згорає без залишку.",
+    crafter_components_label: "Вихідні предмети",
+    crafter_add_crystals_label: "Додати Кристали",
+    crafter_input_value_label: "Вартість ставки",
+    crafter_target_label: "Цільовий предмет",
+    crafter_synthesize_btn: "Синтезувати",
+    crafter_synthesizing: "Синтез…",
+    crafter_price_from: "Ціна від",
+    crafter_price_to: "Ціна до",
+    crafter_success_title: "✨ Синтез вдався!",
+    crafter_fail_title: "💥 Синтез не вдався",
+    crafter_fail_desc: "Ставка згоріла без залишку.",
+    crafter_pick_component_first: "Додай хоча б один предмет з інвентаря або Кристали",
+    crafter_pick_target_first: "Обери цільовий предмет із каталогу",
+    crafter_catalog_empty: "Нічого не знайдено",
+    crafter_catalog_hint: "Знайди цільовий предмет за назвою або діапазоном цін",
+    wheel_earn_title: "Колесо удачі", wheel_earn_desc: "Крути раз на день безкоштовно — або за 💰 Золото",
+    wheel_title: "🎡 Колесо удачі", wheel_spin_btn: "Крутити", wheel_spinning: "Крутиться…",
+    wheel_free_hint: "Безкоштовний спін доступний!", wheel_free_in: "Безкоштовний спін через",
+    wheel_paid_hint: "Платний спін — 💰 5 Золота", wheel_paid_left: "Залишилось платних спінів сьогодні",
+    wheel_no_spins_left: "Спіни на сьогодні закінчились",
+    wheel_no_gold: "Не вистачає 💰 Золота для платного спіна",
+    wheel_result_title: "🎉 Приз колеса!", wheel_ok_btn: "Чудово!",
+    wheel_sector_crystals: "Кристали", wheel_sector_gold: "Золото",
+    wheel_sector_vip: "VIP-статус на 3 години", wheel_sector_case: "Кейс «Revolution»",
+    gold_label: "Золото",
+    // ---- Спринт 10: рівень, титули/рамки, вітрина, друзі ----
+    level_label: "Рівень акаунту", level_short: "рів.",
+    level_max_line: "{xp} XP · Максимальний рівень",
+    level_next_slot: "🏅 Слотів вітрини: {slots} · +1 на {level} рівні",
+    level_slots_max: "🏅 Усі {slots} слотів вітрини відкриті",
+    level_table_title: "📈 Рівні акаунту",
+    levelup_title: "🎉 Новий рівень!",
+    levelup_slot_gained: "🏅 +1 слот Вітрини! Тепер їх {slots}",
+    showcase_title: "🏅 Вітрина найкращих скінів",
+    showcase_hint: "Закріпи найкращі скіни з інвентарю. +1 слот на {level} рівні.",
+    showcase_hint_max: "Усі слоти вітрини відкриті — максимум 10.",
+    showcase_add: "У вітрину", showcase_remove: "Пр��брати з вітрини",
+    showcase_empty_friend: "Вітрина порожня",
+    titles_label: "🎖️ Титул", frames_label: "🖼️ Рамка аватара",
+    cosmetic_none: "Без", cosmetic_locked: "Ще не відкрито",
+    cosmetic_unlocked: "🎉 Відкрито:",
+    item_quality: "Якість", item_price: "Ціна",
+    friends_title: "👥 Друзі",
+    friends_tab_list: "Друзі", friends_tab_requests: "Заявки", friends_tab_search: "Пошук",
+    friends_incoming: "Вхідні", friends_outgoing: "Вихідні",
+    friends_search_btn: "Знайти",
+    friends_search_hint: "Введи Telegram ID (наприклад 123456789) або username (@nick)",
+    friends_loading: "Завантаження…", friends_empty: "Друзів поки немає — знайди їх у пошуку!",
+    friends_no_incoming: "Немає вхідних заявок", friends_no_outgoing: "Немає вихідних заявок",
+    friends_not_found: "Нікого не знайдено",
+    friends_add: "Додати", friends_accept: "Прийняти", friends_decline: "Відхилити",
+    friends_cancel: "Скасувати", friends_remove: "Видалити",
+    friends_remove_confirm: "Видалити з друзів?",
+    friends_request_sent: "Заявку надіслано!", friends_accepted: "Тепер ви друзі!",
+    friends_already: "Вже друзі", friends_pending: "Заявку надіслано",
+    friends_you: "Це ти", friends_level_short: "рів.",
+    friends_stat_items: "Предметів", friends_stat_knives: "Ножів вибито",
+    friends_profile_error: "Профіль недоступний",
   },
 };
 
@@ -597,7 +832,7 @@ const sfx = {
   // Проигрыш / неудачный исход
   lose: () => { tone(220, 0.25, "sawtooth", 0.12); tone(140, 0.3, "sawtooth", 0.12, 0.08); },
 
-  // Победные фанфары — для редких/особо редких предметов (Тайное/Нож/Перчатки)
+  // Победные фа��фары — для редких/особо редких предметов (Тайное/Нож/Перчатки)
   fanfare: () => {
     [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, 0.35, "triangle", 0.18, i * 0.09));
     noiseBurst(0.4, 0.08, 0.05, 1500); // лёгкий "сияющий" шум поверх нот
@@ -743,6 +978,93 @@ document.getElementById("currency-switch").addEventListener("click", (e) => {
   if (btn) setCurrency(btn.dataset.currency);
 });
 
+// ============================================
+// Спринт 12: Кастомизация фона симулятора
+// ============================================
+// Каталог фонов приходит с бэкенда через /app-config (state.backgroundOptions)
+// — единый источник истины, см. main.py::BACKGROUND_OPTIONS. Локально
+// держим только ключ дефолта на случай, если конфиг ещё не успел
+// загрузиться к моменту первой отрисовки.
+const DEFAULT_BACKGROUND = "dark";
+
+// Применяет фон к DOM: переключает #bg-layer/#bg-image/#bg-video и класс
+// "custom-bg" на #app (даёт панелям полупрозрачность + blur, см. style.css).
+// Вызывается и оптимистично (из localStorage, до ответа сервера — для
+// мгновенной отрисовки без "мигания" темы), и после подтверждения с бэка.
+function applyBackground(key) {
+  const options = state.backgroundOptions || [];
+  const option = options.find(o => o.key === key) || { key: DEFAULT_BACKGROUND, type: "theme" };
+
+  state.background = option.key;
+  localStorage.setItem("cs2_background", option.key);
+
+  const layer = document.getElementById("bg-layer");
+  const img = document.getElementById("bg-image");
+  const video = document.getElementById("bg-video");
+  const appEl = document.getElementById("app");
+  if (!layer || !img || !video || !appEl) return;
+
+  const isCustom = option.type === "image" || option.type === "video";
+  layer.classList.toggle("active", isCustom);
+  appEl.classList.toggle("custom-bg", isCustom);
+
+  if (option.type === "image") {
+    img.src = option.src;
+    img.classList.add("active");
+    video.classList.remove("active");
+    video.pause();
+    video.removeAttribute("src");
+  } else if (option.type === "video") {
+    video.classList.add("active");
+    img.classList.remove("active");
+    if (video.getAttribute("src") !== option.src) {
+      video.src = option.src;
+    }
+    video.play().catch(() => {}); // автоплей может блокироваться до первого тача — не критично, muted облегчает разрешение
+  } else {
+    // "dark" / любой неизвестный ключ — просто откатываемся к обычной теме
+    img.classList.remove("active");
+    video.classList.remove("active");
+    video.pause();
+  }
+
+  renderBackgroundPicker(); // перерисовать активную рамку в сетке выбора
+}
+
+// Отрисовывает сетку превью в Настройках. Идемпотентна — можно дёргать
+// повторно (при смене языка/после загрузки конфига), просто перерисует DOM.
+function renderBackgroundPicker() {
+  const grid = document.getElementById("bg-picker-grid");
+  if (!grid) return;
+  const options = state.backgroundOptions || [];
+  if (!options.length) return;
+
+  grid.innerHTML = options.map(opt => {
+    const active = opt.key === (state.background || DEFAULT_BACKGROUND);
+    const thumbStyle = opt.thumb ? ` style="background-image:url('${opt.thumb}')"` : "";
+    const icon = opt.type === "theme" ? "🌑" : (opt.type === "video" ? "🎬" : "");
+    return `
+      <button class="bg-picker-item${active ? " active" : ""}" data-bg="${opt.key}">
+        <span class="bg-picker-thumb${opt.type === "theme" ? " bg-picker-thumb-theme" : ""}"${thumbStyle}>${icon}</span>
+        <span class="bg-picker-name">${opt.label}</span>
+      </button>`;
+  }).join("");
+}
+
+document.getElementById("bg-picker-grid").addEventListener("click", (e) => {
+  const btn = e.target.closest(".bg-picker-item");
+  if (!btn) return;
+  const key = btn.dataset.bg;
+  if (key === state.background) return;
+
+  applyBackground(key); // мгновенно, до ответа сервера
+  apiPost("/user/settings", { telegram_id: state.telegramId, background: key }).catch(() => {
+    // Сервер недоступен/отклонил — держим локальный выбор как есть, он
+    // синхронизируется сам собой при следующем успешном /user/settings
+    // или переопределится значением с сервера при следующем логине.
+  });
+});
+
 function fmtNumber(n) {
   const converted = convertCrystals(n);
   const truncated = truncateTo2(converted);
@@ -813,6 +1135,13 @@ function switchScreen(name) {
 
   if (name === "inventory") loadInventory();
   if (name === "profile") loadProfile();
+
+  // Чат (Спринт 11): при входе — загрузка + запуск опроса, при уходе — стоп.
+  if (name === "chat") {
+    openChat();
+  } else {
+    stopChatPolling();
+  }
 }
 
 // ============================================
@@ -913,7 +1242,7 @@ function openCaseScreen(caseData) {
         }
       </div>
     `;
-    // Тап по карточке (без закрытия просмотра кейса) показывает
+    // Тап по карточке (��ез закрытия просмотра кейса) показывает
     // полупрозрачный блюр с шансом/ценой — цена по умолчанию скрыта,
     // повторный тап скрывает overlay обратно.
     el.addEventListener("click", () => el.classList.toggle("revealed"));
@@ -921,6 +1250,7 @@ function openCaseScreen(caseData) {
   });
 
   document.getElementById("roulette-wrapper").style.display = "none";
+  document.getElementById("vertical-spin-wrapper").style.display = "none";
   document.getElementById("multi-results-grid").style.display = "none";
   document.getElementById("multi-results-actions").style.display = "none";
   document.getElementById("open-case-btn").style.display = "block";
@@ -929,6 +1259,7 @@ function openCaseScreen(caseData) {
 
 document.getElementById("case-open-back-btn").addEventListener("click", () => {
   document.getElementById("case-open-screen").classList.remove("active");
+  document.getElementById("vertical-spin-wrapper").style.display = "none";
   state.currentCase = null;
 });
 
@@ -993,7 +1324,11 @@ document.getElementById("open-case-btn").addEventListener("click", async () => {
     state.casesOpenedSinceAd += state.openCount;
     maybeShowInterstitial();
 
-    if (state.openSpeed === "slow" && state.openCount === 1) {
+    if (state.openCount > 1) {
+      // Несколько кейсов за раз — N параллельных вертикальных лент,
+      // каскадная остановка, затем экран результатов с продажей.
+      runVerticalMultiSpin(state.currentCase, drops);
+    } else if (state.openSpeed === "slow") {
       state.pendingDrop = drops[0];
       runRouletteAnimation(state.currentCase, drops[0]);
     } else {
@@ -1009,7 +1344,10 @@ document.getElementById("open-case-btn").addEventListener("click", async () => {
 // ============================================
 function showMultiResults(drops) {
   document.getElementById("roulette-wrapper").style.display = "none";
+  document.getElementById("vertical-spin-wrapper").style.display = "none";
   document.getElementById("open-case-btn").style.display = "none";
+
+  state.lastMultiDrops = drops.slice();
 
   const grid = document.getElementById("multi-results-grid");
   grid.style.display = "grid";
@@ -1026,6 +1364,7 @@ function showMultiResults(drops) {
       <img src="${drop.image}" alt="${drop.name}" loading="lazy">
       <div class="multi-result-card-name">${drop.name}</div>
       <div class="multi-result-card-price">${fmt(drop.price)}</div>
+      <button type="button" class="multi-result-sell-btn" data-inv-id="${drop.id}">${t("sell_for_btn")} ${fmt(drop.price)}</button>
     `;
     grid.appendChild(el);
     cards.push({ el, drop });
@@ -1046,13 +1385,57 @@ function showMultiResults(drops) {
 
   const totalRevealTime = cards.length * STAGGER_MS + 350;
   setTimeout(() => {
-    document.getElementById("multi-results-total").innerHTML =
-      `${drops.length} × — <b>${fmt(total)}</b>`;
+    updateMultiResultsSummary();
     document.getElementById("multi-results-actions").style.display = "block";
     const anyRare = drops.some(d => ["Covert", "Knife", "Gloves"].includes(d.rarity));
     if (!anyRare) playSound("win");
   }, totalRevealTime);
 }
+
+// Пересчитывает и перерисовывает итоговую сумму + текст кнопки
+// "Продать все за [Сумма]" на основе того, что осталось в state.lastMultiDrops
+// (уменьшается по мере продажи отдельных предметов кнопками под карточками).
+function updateMultiResultsSummary() {
+  const total = state.lastMultiDrops.reduce((s, d) => s + d.price, 0);
+  document.getElementById("multi-results-total").innerHTML =
+    `${t("multi_results_total_label")} <b>${fmt(total)}</b>`;
+  const sellAllBtn = document.getElementById("multi-sell-all-btn");
+  if (state.lastMultiDrops.length) {
+    sellAllBtn.disabled = false;
+    sellAllBtn.textContent = `${t("sell_all_for_btn")} ${fmt(total)}`;
+  } else {
+    sellAllBtn.disabled = true;
+    sellAllBtn.textContent = t("sell_all_for_btn");
+  }
+}
+
+// Продажа ОДНОГО предмета прямо с карточки результата (кнопка "Продать за X").
+document.getElementById("multi-results-grid").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".multi-result-sell-btn");
+  if (!btn || btn.disabled) return;
+  const invId = btn.dataset.invId;
+  if (!invId) return;
+
+  btn.disabled = true;
+  try {
+    const result = await apiPost("/sell-skin", {
+      telegram_id: state.telegramId,
+      inventory_id: invId,
+    });
+    state.balance = result.new_balance;
+    updateBalanceDisplay();
+    playSound("sell");
+
+    state.lastMultiDrops = state.lastMultiDrops.filter(d => String(d.id) !== String(invId));
+    const card = btn.closest(".multi-result-card");
+    card.classList.add("sold-out");
+    btn.textContent = t("sold_label");
+    updateMultiResultsSummary();
+  } catch (err) {
+    btn.disabled = false;
+    tg?.showAlert?.(err.message);
+  }
+});
 
 document.getElementById("multi-keep-all-btn").addEventListener("click", () => {
   document.getElementById("multi-results-grid").style.display = "none";
@@ -1082,6 +1465,113 @@ document.getElementById("multi-sell-all-btn").addEventListener("click", async ()
     state.lastMultiDrops = [];
   }
 });
+
+// ============================================
+// Vertical Multi-Spin — N параллельных вертикальных лент (count > 1).
+// Каждая лента крутится СВЕРХУ ВНИЗ и тормозит по cubic-bezier; каждая
+// следующая лента получает +150мс к длительности анимации, поэтому они
+// останавливаются каскадом одна за другой, а не все разом.
+// ============================================
+function runVerticalMultiSpin(caseData, drops) {
+  document.getElementById("roulette-wrapper").style.display = "none";
+  document.getElementById("multi-results-grid").style.display = "none";
+  document.getElementById("multi-results-actions").style.display = "none";
+  document.getElementById("open-case-btn").style.display = "none";
+
+  const wrapper = document.getElementById("vertical-spin-wrapper");
+  const lanesContainer = document.getElementById("vertical-spin-lanes");
+  wrapper.style.display = "block";
+  lanesContainer.innerHTML = "";
+
+  const ITEM_HEIGHT = 82;   // высота карточки (64px) + вертикальные отступы (2×9px) — должно совпадать с CSS
+  const REEL_LENGTH = 24;   // сколько карточек в каждой ленте
+  const WINNING_INDEX = 18; // на этом индексе лента останавливается
+  const CASCADE_STEP_MS = 150; // задержка остановки каждой следующей ленты
+  const BASE_DURATION_MS = state.openSpeed === "fast" ? 1500 : 3400;
+
+  const pool = caseData.items;
+  const laneRefs = [];
+
+  drops.forEach(drop => {
+    const lane = document.createElement("div");
+    lane.className = "vertical-spin-lane";
+
+    const pointer = document.createElement("div");
+    pointer.className = "vertical-spin-pointer-line";
+
+    const track = document.createElement("div");
+    track.className = "vertical-spin-track";
+
+    const isRareDrop = ["Knife", "Gloves"].includes(drop.rarity);
+    const reel = [];
+    for (let i = 0; i < REEL_LENGTH; i++) {
+      reel.push(i === WINNING_INDEX ? drop : pool[Math.floor(Math.random() * pool.length)]);
+    }
+
+    let winningEl = null;
+    reel.forEach((item, i) => {
+      const el = document.createElement("div");
+      const mystery = isRareDrop && i === WINNING_INDEX;
+      el.className = `vertical-spin-item ${rarityClass(item.rarity)}${mystery ? " mystery-reveal" : ""}`;
+      el.innerHTML = mystery
+        ? `<div class="mystery-glyph">?</div><img src="${item.image}" alt="${item.name}" style="display:none;">`
+        : `<img src="${item.image}" alt="${item.name}">`;
+      track.appendChild(el);
+      if (i === WINNING_INDEX) winningEl = el;
+    });
+
+    lane.appendChild(pointer);
+    lane.appendChild(track);
+    lanesContainer.appendChild(lane);
+    laneRefs.push({ lane, track, drop, isRareDrop, winningEl });
+  });
+
+  // тиканье во время прокрутки, замедляется естественно вместе с лентами
+  let tickCount = 0;
+  const tickInterval = setInterval(() => {
+    playSound("spinTick");
+    tickCount++;
+  }, 150);
+
+  // ждём кадр, чтобы браузер посчитал реальную высоту лент перед стартом transition
+  requestAnimationFrame(() => {
+    laneRefs.forEach(({ lane, track }, i) => {
+      const laneHeight = lane.offsetHeight;
+      const targetOffset = WINNING_INDEX * ITEM_HEIGHT - laneHeight / 2 + ITEM_HEIGHT / 2;
+      const jitter = (Math.random() - 0.5) * (ITEM_HEIGHT * 0.3);
+      const duration = BASE_DURATION_MS + i * CASCADE_STEP_MS;
+      track.style.transition = `transform ${duration}ms cubic-bezier(0.12, 0.85, 0.15, 1)`;
+      track.style.transform = `translateY(-${targetOffset + jitter}px)`;
+    });
+  });
+
+  const lastLaneDuration = BASE_DURATION_MS + (laneRefs.length - 1) * CASCADE_STEP_MS;
+
+  // Раскрываем "тайну" (нож/перчатки) для каждой ленты сра��у после того,
+  // как ИМЕННО ОНА остановилась — не дожидаясь остановки всех остальных.
+  laneRefs.forEach(({ isRareDrop, winningEl, drop }, i) => {
+    if (!isRareDrop || !winningEl) return;
+    const stopTime = BASE_DURATION_MS + i * CASCADE_STEP_MS;
+    setTimeout(() => {
+      winningEl.classList.add("mystery-flip");
+      setTimeout(() => {
+        winningEl.classList.remove("mystery-reveal");
+        winningEl.innerHTML = `<img src="${drop.image}" alt="${drop.name}">`;
+      }, 250);
+    }, stopTime + 150);
+  });
+
+  setTimeout(() => {
+    clearInterval(tickInterval);
+    playSound("lock");
+    const anyRare = drops.some(d => ["Covert", "Knife", "Gloves"].includes(d.rarity));
+    if (anyRare) playSound("fanfare");
+    setTimeout(() => {
+      wrapper.style.display = "none";
+      showMultiResults(drops);
+    }, 500);
+  }, lastLaneDuration + 100);
+}
 
 function runRouletteAnimation(caseData, drop) {
   const wrapper = document.getElementById("roulette-wrapper");
@@ -1152,7 +1642,7 @@ function runRouletteAnimation(caseData, drop) {
 
     if (isRareDrop) {
       // Лента остановилась на золотом "?" — держим интригу чуть-чуть,
-      // затем переворачиваем плитку и раскрываем настоящий нож/перчатки
+      // затем переворачиваем плитку и раскрыв��ем настоящий нож/перчатки
       // (тип и StatTrak уже определены сервером в drop, игрок просто их видит).
       const slot = track.querySelector('[data-winning-slot="1"]');
       setTimeout(() => {
@@ -1398,13 +1888,30 @@ function renderInventory() {
     const isSelected = state.selectedInventoryIds.has(item.id);
     const card = document.createElement("div");
     card.className = `inventory-card${isSelected ? " selected" : ""}`;
+    // ---- Спринт 10: плашка StatTrak™ со счётчиком, точный Float и
+    // дублирование категории качества (Factory New / Field-Tested / ...) ----
+    // Оранжевая плашка StatTrak рисуется только при stattrak=true и несёт
+    // рядом сам счётчик. Категория качества показывается ДВАЖДЫ намеренно
+    // (требование ТЗ): коротким кодом в плашке (FT) и полным именем строкой
+    // ниже (Field-Tested) — короткий читается в сетке, полный не требует
+    // знания аббревиатур.
+    const stTag = item.stattrak
+      ? `<span class="inv-st-tag">ST™<span>${fmtNumber2(item.stattrak_count)}</span></span>`
+      : "";
+    const qualityTag = item.quality ? `<span class="inv-quality-tag">${item.quality}</span>` : "";
+    const floatLine = item.float_val != null
+      ? `<div class="inv-float-line">Float: ${formatFloatValue(item.float_val)}</div>`
+      : "";
+    const showcaseMark = item.is_in_showcase ? `<div class="inv-showcase-mark" title="В витрине">🏅</div>` : "";
+
     card.innerHTML = `
       <input type="checkbox" class="inventory-card-checkbox" data-id="${item.id}" ${isSelected ? "checked" : ""}>
-      <img src="${item.image || ""}" alt="${item.name}">
-      <div class="inventory-card-name">${item.name}</div>
-      <div class="inventory-card-quality">
-        ${item.quality || ""}${item.stattrak ? ` · <span class="inventory-card-stattrak">StatTrak™</span>` : ""}
-      </div>
+      ${showcaseMark}
+      <img src="${item.image || ""}" alt="${escapeAttr(item.name)}" data-item-detail="${item.id}">
+      <div class="inventory-card-name" data-item-detail="${item.id}">${escapeHtmlText(item.name)}</div>
+      <div class="inv-badges">${stTag}${qualityTag}</div>
+      <div class="inventory-card-quality">${escapeHtmlText(item.quality_name || "")}</div>
+      ${floatLine}
       <div class="rarity-bar ${rarityClass(item.rarity)}"></div>
       <div class="inventory-card-price">${fmt(item.price)}</div>
       <button class="sell-btn" data-id="${item.id}">${t("sell_label")}</button>
@@ -1420,6 +1927,14 @@ function renderInventory() {
       cb.closest(".inventory-card").classList.toggle("selected", cb.checked);
       updateInventorySelectionUI();
     });
+  });
+
+  // Спринт 10: тап по картинке/названию открывает карточку предмета с
+  // точным Float, категорией качества и счётчиком StatTrak™. Слушаем на
+  // самой картинке и названии (а не на всей карточке), чтобы не
+  // перехватывать нажатия по чекбоксу выделения и кнопке продажи.
+  grid.querySelectorAll("[data-item-detail]").forEach(el => {
+    el.addEventListener("click", () => openItemDetail(Number(el.dataset.itemDetail)));
   });
 
   grid.querySelectorAll(".sell-btn").forEach(btn => {
@@ -1731,6 +2246,7 @@ function applyProfileData(profile) {
   state.username = profile.username;
   state.photoUrl = profile.photo_url || null;
   state.balance = profile.balance;
+  state.goldBalance = profile.gold_balance ?? 0;
   state.isVip = profile.is_vip;
   state.vipExpiresAt = profile.vip_expires_at || null;
   if (Array.isArray(profile.inventory)) state.inventory = profile.inventory;
@@ -1744,6 +2260,12 @@ function applyProfileData(profile) {
   if (typeof profile.sound_enabled === "boolean") {
     state.soundEnabled = profile.sound_enabled;
     updateSoundToggleUI();
+  }
+  // Спринт 12: сервер — источник истины для фона (например, игрок сменил
+  // фон на другом устройстве) — применяем поверх того, что уже нарисовали
+  // оптимистично из localStorage при старте init().
+  if (profile.background && profile.background !== state.background) {
+    applyBackground(profile.background);
   }
   updateBalanceDisplay();
   renderProfileScreen(profile);
@@ -1815,6 +2337,334 @@ function renderProfileScreen(profile) {
   document.getElementById("ref-hint").textContent = refHintBonus + refHintCommission;
 
   if (profile.rank) renderRankCard(profile.rank);
+
+  // ---- Спринт 10: уровень аккаунта, титул/рамка, витрина ----
+  if (profile.level) renderLevelCard(profile.level);
+  applyTitlePill(document.getElementById("profile-title-pill"), profile.selected_title_info);
+  applyAvatarFrame(document.getElementById("profile-avatar-wrap"), profile.selected_frame_info);
+  renderCosmeticsSelectors(profile);
+  renderShowcase(profile);
+
+  // Бейдж входящих заявок в друзья — подтягиваем в фоне, чтобы к��опка
+  // "Друзья" сразу показывала, что кто-то ждёт ответа.
+  refreshFriendsBadgeQuietly();
+
+  // Уведомление о свежеоткрытой косметике: бэкенд отдаёт её только в тот
+  // единственный ответ, в котором условие выполнилось впервые.
+  if (Array.isArray(profile.newly_unlocked) && profile.newly_unlocked.length) {
+    const names = profile.newly_unlocked.map(x => x.name).join(", ");
+    tg?.showAlert?.(`${t("cosmetic_unlocked")} ${names}`);
+  }
+}
+
+// ============================================
+// СПРИНТ 10: УРОВЕНЬ АККАУНТА
+// ============================================
+// level — объект из levels.get_level_progress(): level, xp, xp_into_level,
+// xp_needed, progress_percent, showcase_slots, showcase_max_slots,
+// next_showcase_slot_level, is_max.
+function renderLevelCard(level) {
+  const card = document.getElementById("level-card");
+  if (!card) return;
+
+  document.getElementById("level-card-num").textContent = level.level;
+  document.getElementById("profile-level-badge").textContent = level.level;
+  document.getElementById("level-progress-fill").style.width = `${level.progress_percent ?? 0}%`;
+  card.classList.toggle("level-max", !!level.is_max);
+
+  document.getElementById("level-xp-line").textContent = level.is_max
+    ? t("level_max_line").replace("{xp}", fmtNumber2(level.xp))
+    : `${fmtNumber2(level.xp_into_level)} / ${fmtNumber2(level.xp_needed)} XP`;
+
+  // Подсказка про слоты витрины: пока лимит не выбран — говорим, на каком
+  // уровне откроется следующий; на максимуме — что все уже открыты.
+  const slotsEl = document.getElementById("level-slots-line");
+  if (level.next_showcase_slot_level) {
+    slotsEl.textContent = t("level_next_slot")
+      .replace("{level}", level.next_showcase_slot_level)
+      .replace("{slots}", level.showcase_slots);
+  } else {
+    slotsEl.textContent = t("level_slots_max").replace("{slots}", level.showcase_slots);
+  }
+}
+
+// Таблица уровней — показывает окно вокруг текущего уровня, а не все 200
+// строк: игроку важны ближайшие пороги и то, где дадут слот витрины.
+function openLevelTable() {
+  const lvl = state.lastProfile?.level?.level || 1;
+  const from = Math.max(1, lvl - 4);
+  const to = from + 24;
+
+  const rows = [];
+  for (let n = from; n <= to; n++) {
+    // Порог = 100 * 1.15^(n-1) — та же формула, что и на бэкенде (levels.py).
+    const need = Math.round(100 * Math.pow(1.15, n - 1));
+    const slots = showcaseSlotsForLevel(n);
+    const gained = n > 1 && slots > showcaseSlotsForLevel(n - 1);
+    const cls = n === lvl ? "current" : (n < lvl ? "reached" : "");
+    rows.push(`
+      <div class="level-table-row ${cls}">
+        <div class="level-table-lvl">${n}</div>
+        <div class="level-table-xp">${fmtNumber2(need)} XP</div>
+        ${gained ? `<div class="level-table-slot">🏅 +1</div>` : ""}
+      </div>`);
+  }
+  document.getElementById("level-table-list").innerHTML = rows.join("");
+  document.getElementById("level-table-modal").classList.add("active");
+}
+
+// Дублирует levels.showcase_slots_for_level() с бэкенда — нужна локально
+// только для таблицы уровней (показать, где дадут слот). Источник истины
+// всё равно бэкенд: фактическое число слотов приходит в profile.showcase.
+function showcaseSlotsForLevel(n) {
+  return Math.min(3 + Math.floor(n / 5), 10);
+}
+
+// ============================================
+// СПРИНТ 10: ТИТУЛ И РАМКА АВАТАРА
+// ============================================
+// Красит плашку активного титула. info — объект титула с бэкенда
+// (cosmetics.title_public): key, name, color, icon. null = титул не выбран.
+function applyTitlePill(el, info) {
+  if (!el) return;
+  if (!info) { el.style.display = "none"; return; }
+  el.style.display = "";
+  el.textContent = `${info.icon || ""} ${info.name}`.trim();
+  el.style.setProperty("--title-color", info.color || "");
+}
+
+// Навешивает рамку на обёртку аватара. info — объект рамки
+// (cosmetics.frame_public): key, name, color, style ("solid"|"glow"|"animated").
+function applyAvatarFrame(el, info) {
+  if (!el) return;
+  el.classList.remove("has-frame", "frame-glow", "frame-animated");
+  if (!info) return;
+  el.style.setProperty("--frame-color", info.color || "");
+  el.classList.add("has-frame");
+  if (info.style === "glow") el.classList.add("frame-glow");
+  else if (info.style === "animated") el.classList.add("frame-animated");
+}
+
+// Рисует оба селектора (титулы + рамки). Каталог приходит целиком: и
+// открытое, и закрытое с текстом условия — закрытые кликабельны, но вместо
+// применения показывают, что нужно сделать.
+function renderCosmeticsSelectors(profile) {
+  renderCosmeticRow("titles-row", profile.titles || [], profile.selected_title, "title");
+  renderCosmeticRow("frames-row", profile.frames || [], profile.selected_frame, "frame");
+}
+
+function renderCosmeticRow(containerId, items, selectedKey, kind) {
+  const box = document.getElementById(containerId);
+  if (!box) return;
+
+  // Опция "без титула/рамки" — иначе выбранное нельзя было бы снять.
+  const noneChip = `
+    <div class="cosmetic-chip ${!selectedKey ? "active" : ""}"
+         data-cosmetic-kind="${kind}" data-cosmetic-key="">
+      ${t("cosmetic_none")}
+    </div>`;
+
+  const chips = items.map(it => {
+    const active = it.key === selectedKey;
+    const locked = !it.unlocked;
+    // Для закрытой косметики показываем прогресс "3/5", если бэкенд его
+    // посчитал — так игрок видит, сколько осталось, а не только условие.
+    const progress = locked && it.progress_text
+      ? `<span class="cosmetic-chip-progress">${escapeHtmlText(it.progress_text)}</span>`
+      : "";
+    const swatch = kind === "frame"
+      ? `<span class="cosmetic-chip-swatch" style="background:${escapeAttr(it.color || "#888")}"></span>`
+      : (it.icon ? `<span>${it.icon}</span>` : "");
+
+    return `
+      <div class="cosmetic-chip ${active ? "active" : ""} ${locked ? "locked" : ""}"
+           style="--chip-color:${escapeAttr(it.color || "")}"
+           data-cosmetic-kind="${kind}"
+           data-cosmetic-key="${escapeAttr(it.key)}"
+           data-cosmetic-locked="${locked ? "1" : ""}"
+           data-cosmetic-hint="${escapeAttr(it.requirement_text || "")}">
+        ${swatch}<span>${escapeHtmlText(it.name)}</span>${progress}
+      </div>`;
+  }).join("");
+
+  box.innerHTML = noneChip + chips;
+}
+
+// Применяет выбор титула/рамки. Закрытая косметика не отправляется на
+// сервер — вместо запроса показываем условие разблокировки.
+async function selectCosmetic(kind, key, locked, hint) {
+  if (locked) {
+    tg?.showAlert?.(hint || t("cosmetic_locked"));
+    return;
+  }
+  try {
+    const res = await apiPost("/profile/select-cosmetic", {
+      telegram_id: state.telegramId,
+      kind,
+      key: key || null,
+    });
+    // Обновляем локальный профиль и перерисовываем — без полного
+    // перезапроса, ответ уже содержит новое состояние косметики.
+    if (state.lastProfile) {
+      state.lastProfile.selected_title = res.selected_title;
+      state.lastProfile.selected_frame = res.selected_frame;
+      state.lastProfile.selected_title_info = res.selected_title_info;
+      state.lastProfile.selected_frame_info = res.selected_frame_info;
+      renderProfileScreen(state.lastProfile);
+    }
+    playSound("click");
+  } catch (e) {
+    tg?.showAlert?.(e.message);
+  }
+}
+
+// ============================================
+// СПРИНТ 10: ВИТРИНА ЛУЧШИХ СКИНОВ
+// ============================================
+// Рисует ровно max_slots ячеек: занятые предметами, свободные пунктиром и
+// закрытые (сверх текущего лимита уровня) — приглушённые с номером уровня,
+// на котором откроются. Так игрок видит всю перспективу расширения.
+function renderShowcase(profile) {
+  const sc = profile.showcase;
+  const grid = document.getElementById("showcase-grid");
+  if (!sc || !grid) return;
+
+  document.getElementById("showcase-counter").textContent = `${sc.items.length} / ${sc.slots}`;
+
+  const cells = [];
+  for (let i = 0; i < sc.max_slots; i++) {
+    if (i < sc.items.length) {
+      cells.push(showcaseSlotHtml(sc.items[i]));
+    } else if (i < sc.slots) {
+      cells.push(`<div class="showcase-slot empty">+</div>`);
+    } else {
+      // Уровень, на котором откроется именно этот слот: слот №i (0-based)
+      // соответствует (i - 2)-му бонусному слоту, т.е. уровню (i-2)*5.
+      const unlockLevel = (i - 2) * 5;
+      cells.push(`<div class="showcase-slot locked">🔒<br>${t("level_short")} ${unlockLevel}</div>`);
+    }
+  }
+  grid.innerHTML = cells.join("");
+
+  const hint = document.getElementById("showcase-hint");
+  hint.textContent = sc.next_slot_level
+    ? t("showcase_hint").replace("{level}", sc.next_slot_level)
+    : t("showcase_hint_max");
+}
+
+// Ячейка витрины с предметом. Используется и в своём профиле, и в
+// публичной карточке друга (friends.js), поэтому лежит здесь как общая.
+function showcaseSlotHtml(item) {
+  const st = item.stattrak ? `<div class="st-mini">ST™</div>` : "";
+  return `
+    <div class="showcase-slot ${rarityClass(item.rarity)}" data-showcase-item="${item.id}">
+      ${st}
+      <img src="${escapeAttr(item.image || "")}" alt="${escapeAttr(item.name)}">
+      <div class="showcase-slot-name">${escapeHtmlText(item.name)}</div>
+      <div class="showcase-slot-price">${fmt(item.price)}</div>
+    </div>`;
+}
+
+// ============================================
+// СПРИНТ 10: КАРТОЧКА ПРЕДМЕТА (Float / StatTrak / качество)
+// ============================================
+function openItemDetail(inventoryId) {
+  const item = state.inventory.find(i => i.id === inventoryId);
+  if (!item) return;
+
+  state.itemDetailId = inventoryId;
+
+  document.getElementById("item-detail-image").src = item.image || "";
+  document.getElementById("item-detail-name").textContent = item.name;
+
+  const rarityEl = document.getElementById("item-detail-rarity");
+  rarityEl.textContent = rarityLabel(item.rarity);
+  rarityEl.className = `item-detail-rarity ${rarityClass(item.rarity)}`;
+  // Цвет редкости берём из той же CSS-переменной, что и рамки карточек,
+  // чтобы палитра совпадала с сеткой инвентаря.
+  rarityEl.style.color = `var(--rarity-${item.rarity.toLowerCase().replace("mil-spec", "milspec")})`;
+
+  // Оранжевая плашка StatTrak™ + счётчик
+  const stBox = document.getElementById("item-detail-st");
+  if (item.stattrak) {
+    stBox.style.display = "inline-flex";
+    document.getElementById("item-detail-st-count").textContent = fmtNumber2(item.stattrak_count);
+  } else {
+    stBox.style.display = "none";
+  }
+
+  // Категория качества полным именем + точный Float
+  document.getElementById("item-detail-quality").textContent =
+    item.quality_name ? `${item.quality_name} (${item.quality})` : (item.quality || "—");
+  document.getElementById("item-detail-float").textContent =
+    item.float_val != null ? formatFloatValue(item.float_val) : "—";
+  document.getElementById("item-detail-price").textContent = fmt(item.price);
+
+  // Маркер на шкале Float: позиция = само значение (шкала 0..1)
+  const marker = document.getElementById("item-detail-float-marker");
+  if (item.float_val != null) {
+    marker.style.display = "";
+    marker.style.left = `${Math.min(100, Math.max(0, item.float_val * 100))}%`;
+  } else {
+    marker.style.display = "none";
+  }
+
+  // Кнопка витрины переключает состояние — надпись зависит от того, в
+  // витрине предмет уже или ещё нет.
+  const btn = document.getElementById("item-detail-showcase-btn");
+  btn.textContent = item.is_in_showcase ? `🏅 ${t("showcase_remove")}` : `🏅 ${t("showcase_add")}`;
+
+  document.getElementById("item-detail-modal").classList.add("active");
+}
+
+// Закрепление/снятие предмета в Витрине. Лимит слотов проверяет бэкенд —
+// здесь только показываем его ответ.
+async function toggleShowcaseItem() {
+  const id = state.itemDetailId;
+  const item = state.inventory.find(i => i.id === id);
+  if (!item) return;
+
+  try {
+    const res = await apiPost("/profile/showcase/toggle", {
+      telegram_id: state.telegramId,
+      inventory_id: id,
+    });
+    item.is_in_showcase = res.is_in_showcase;
+    document.getElementById("item-detail-modal").classList.remove("active");
+    renderInventory();
+    loadProfile();   // перерисовать витрину в профиле новым составом
+    playSound("click");
+  } catch (e) {
+    tg?.showAlert?.(e.message);
+  }
+}
+
+// Точное значение Float с 6 знаками — ТЗ требует вид "Float: 0.013412",
+// поэтому нули в конце НЕ обрезаем (иначе 0.013400 выглядел бы как 0.0134
+// и терял ощущение точного измерения).
+function formatFloatValue(v) {
+  return Number(v).toFixed(6);
+}
+
+// ---- Утилиты экранирования ----
+// Все строки от бэкенда (имена скинов, ники и username друзей) попадают в
+// innerHTML, поэтому их обязательно прогонять через экранирование: ник вида
+// <img onerror=...> иначе исполнился бы как разметка.
+function escapeHtmlText(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function escapeAttr(s) {
+  return escapeHtmlText(s);
+}
+
+// Целое число с разделителями групп — для счётчиков (кейсы, StatTrak,
+// XP). Отличается от fmt/fmtNumber тем, что НЕ конвертирует валюту и не
+// добавляет копейки: это счётчик, а не денежная сумма.
+function fmtNumber2(n) {
+  return Number(n ?? 0).toLocaleString("en-US");
 }
 
 // ============================================
@@ -1857,6 +2707,13 @@ function showNextRankUp() {
   const ev = state.rankUpQueue.shift();
   if (!ev) {
     state.rankUpModalActive = false;
+    // Спринт 10: ранговая очередь опустела — если за то же начисление XP
+    // накопились и повышения уровня, показываем их сразу следом, иначе они
+    // остались бы висеть в очереди до следующего начисления.
+    if (state.levelUpQueue.length && !state.levelUpModalActive) {
+      showNextLevelUp();
+      return;
+    }
     loadProfile(); // подтягиваем актуальную карточку ранга после всей очереди
     return;
   }
@@ -1886,10 +2743,94 @@ document.getElementById("rankup-ok-btn").addEventListener("click", () => {
   setTimeout(showNextRankUp, 250);
 });
 
+// ============================================
+// СПРИНТ 10: обработчики (уровень, косметика, витрина, карточка предмета)
+// ============================================
+document.getElementById("levelup-ok-btn").addEventListener("click", () => {
+  document.getElementById("levelup-modal").classList.remove("active");
+  setTimeout(showNextLevelUp, 250);
+});
+
+document.getElementById("level-info-btn").addEventListener("click", openLevelTable);
+document.getElementById("level-table-close-btn").addEventListener("click", () => {
+  document.getElementById("level-table-modal").classList.remove("active");
+});
+
+document.getElementById("item-detail-close-btn").addEventListener("click", () => {
+  document.getElementById("item-detail-modal").classList.remove("active");
+});
+document.getElementById("item-detail-showcase-btn").addEventListener("click", toggleShowcaseItem);
+
+// Выбор титула/рамки — делегированно на контейнер: чипы полностью
+// перерисовываются при каждом рендере профиля, поэтому слушатели на самих
+// чипах умирали бы вместе с innerHTML.
+document.getElementById("cosmetics-card").addEventListener("click", (e) => {
+  const chip = e.target.closest(".cosmetic-chip");
+  if (!chip) return;
+  selectCosmetic(
+    chip.dataset.cosmeticKind,
+    chip.dataset.cosmeticKey,
+    chip.dataset.cosmeticLocked === "1",
+    chip.dataset.cosmeticHint,
+  );
+});
+
+// Тап по предмету в витрине открывает ту же карточку Float/StatTrak, что и
+// из инвентаря — предмет ищется в state.inventory по id.
+document.getElementById("showcase-grid").addEventListener("click", (e) => {
+  const cell = e.target.closest("[data-showcase-item]");
+  if (cell) openItemDetail(Number(cell.dataset.showcaseItem));
+});
+
 // Вызывать после КАЖДОГО ответа бэкенда, содержащего поле xp (см. _award_xp
 // в main.py — открытие кейсов, крафт, мини-игры, бонус, ежедневная награда, реклама).
 function handleXpResult(xpInfo) {
-  if (xpInfo && xpInfo.rank_up) enqueueRankUps(xpInfo.rank_up);
+  if (!xpInfo) return;
+  if (xpInfo.rank_up) enqueueRankUps(xpInfo.rank_up);
+  // Спринт 10: повышения уровня аккаунта. Своя очередь, независимая от
+  // ранговой — за одно начисление можно поднять и ранг, и несколько уровней;
+  // модалки не должны накладываться друг на друга.
+  if (xpInfo.level_up) enqueueLevelUps(xpInfo.level_up);
+}
+
+// ============================================
+// СПРИНТ 10: очередь модалок "Новый уровень!"
+// ============================================
+function enqueueLevelUps(levelUpEvents) {
+  if (!Array.isArray(levelUpEvents) || !levelUpEvents.length) return;
+  state.levelUpQueue.push(...levelUpEvents);
+  // Ранговая модалка приоритетнее: если она сейчас на экране, уровни
+  // подождут в очереди и покажутся после неё (см. showNextRankUp -> loadProfile).
+  if (!state.levelUpModalActive && !state.rankUpModalActive) showNextLevelUp();
+}
+
+function showNextLevelUp() {
+  const ev = state.levelUpQueue.shift();
+  if (!ev) {
+    state.levelUpModalActive = false;
+    loadProfile();  // обновить карточку уровня и витрину после всей очереди
+    return;
+  }
+  state.levelUpModalActive = true;
+
+  document.getElementById("levelup-num").textContent = ev.level;
+
+  // Строка "+1 слот витрины" — только на уровнях, кратных 5 (пока не
+  // достигнут максимум 10 слотов).
+  const slotLine = document.getElementById("levelup-slot-line");
+  if (ev.showcase_slot_gained) {
+    slotLine.style.display = "";
+    slotLine.textContent = t("levelup_slot_gained").replace("{slots}", ev.showcase_slots);
+  } else {
+    slotLine.style.display = "none";
+  }
+
+  const unlockLine = document.getElementById("levelup-unlock-line");
+  unlockLine.style.display = "none";
+
+  playSound("fanfare");
+  haptic("success");
+  document.getElementById("levelup-modal").classList.add("active");
 }
 
 // Реальный логин: один раз при старте приложения. Проверяет initData на
@@ -1964,6 +2905,8 @@ document.getElementById("apply-promo-btn").addEventListener("click", async () =>
 // ============================================
 function updateBalanceDisplay() {
   document.getElementById("balance-value").textContent = fmtNumber(state.balance);
+  const goldValueEl = document.getElementById("gold-value");
+  if (goldValueEl) goldValueEl.textContent = truncateTo2(state.goldBalance || 0).toLocaleString("en-US");
   document.getElementById("vip-pill").style.display = state.isVip ? "block" : "none";
   // VIP отключает рекламу (см. README) — баннер прячем полностью.
   // Для не-VIP уважаем ручное закрытие крестиком — не выскакивает обратно на каждый апдейт баланса.
@@ -2119,13 +3062,13 @@ document.getElementById("claim-bonus-btn").addEventListener("click", async () =>
 // ============================================
 // Ежедневный бонус (Daily Streak, 1-7 день)
 // ============================================
-const DAILY_DAY_ICONS = { balance: "💎", skin: "🔫", promo: "🎟️", jackpot: "🏆" };
+const DAILY_DAY_ICONS = { crystals: "💎", case: "🎁", gold: "💰", vip: "⭐" };
 
 function dailyRewardLabel(rewardDef) {
-  if (rewardDef.type === "balance") return fmtWithIcon(rewardDef.amount);
-  if (rewardDef.type === "skin") return t("daily_reward_skin");
-  if (rewardDef.type === "promo") return fmtWithIcon(rewardDef.amount);
-  if (rewardDef.type === "jackpot") return `${fmtWithIcon(rewardDef.amount)} + 🏆`;
+  if (rewardDef.type === "crystals") return fmtWithIcon(rewardDef.amount);
+  if (rewardDef.type === "case") return t("daily_reward_case");
+  if (rewardDef.type === "gold") return `${rewardDef.amount} 💰`;
+  if (rewardDef.type === "vip") return t("daily_reward_vip").replace("{h}", rewardDef.hours);
   return "";
 }
 
@@ -2136,10 +3079,10 @@ function renderDailyDays(data) {
     const isClaimedDay = r.day < data.current_day || (r.day === data.current_day && data.claimed_today);
     const isCurrent = r.day === data.current_day && !data.claimed_today;
     const el = document.createElement("div");
-    el.className = `daily-day-card ${isClaimedDay ? "claimed" : ""} ${isCurrent ? "current" : ""} ${r.type === "jackpot" ? "jackpot" : ""}`.trim();
+    el.className = `daily-day-card ${isClaimedDay ? "claimed" : ""} ${isCurrent ? "current" : ""} ${r.day === 7 ? "jackpot" : ""}`.trim();
     el.innerHTML = `
       <div class="day-num">${t("daily_day_label").replace("{n}", r.day)}</div>
-      <div class="day-icon">${r.type === "balance" ? currencyIcon() : (DAILY_DAY_ICONS[r.type] || currencyIcon())}</div>
+      <div class="day-icon">${DAILY_DAY_ICONS[r.type] || currencyIcon()}</div>
       <div class="day-reward">${dailyRewardLabel(r)}</div>
     `;
     grid.appendChild(el);
@@ -2148,6 +3091,14 @@ function renderDailyDays(data) {
   document.getElementById("daily-streak-label").innerHTML =
     t("daily_streak_label").replace("{n}", `<b>${data.streak}</b>`);
 
+  const mega = document.getElementById("daily-mega-hint");
+  if (mega) {
+    const left = Math.max(0, data.mega_bonus_threshold - data.streak);
+    mega.textContent = left > 0
+      ? t("daily_mega_hint").replace("{n}", left).replace("{gold}", data.mega_bonus_gold)
+      : "";
+  }
+
   const btn = document.getElementById("daily-claim-btn");
   btn.textContent = data.claimed_today ? t("daily_claimed_btn") : t("daily_claim_btn");
   btn.disabled = !!data.claimed_today;
@@ -2155,11 +3106,11 @@ function renderDailyDays(data) {
 
 async function loadDailyStatus() {
   try {
-    const data = await apiGet(`/daily-status?telegram_id=${state.telegramId}`);
+    const data = await apiGet(`/streak/status?telegram_id=${state.telegramId}`);
     state.dailyStatus = data;
     renderDailyDays(data);
   } catch (e) {
-    console.error("Ошибка загрузки ежедневного статуса:", e);
+    console.error("Ошибка загрузки статуса стрика:", e);
   }
 }
 
@@ -2187,27 +3138,32 @@ function showDailyResult(result) {
   const promoEl = document.getElementById("daily-result-promo");
   promoEl.style.display = "none";
 
-  if (reward.type === "balance") {
+  if (reward.type === "crystals") {
     icon.textContent = currencyIcon();
     nameEl.textContent = t("daily_day_label").replace("{n}", reward.day);
     valueEl.textContent = fmt(reward.amount);
-  } else if (reward.type === "skin") {
-    icon.textContent = "🔫";
-    nameEl.textContent = `${t("daily_reward_skin")} ${reward.skin.name}`;
-    valueEl.textContent = fmt(reward.skin.price);
-  } else if (reward.type === "promo") {
-    icon.textContent = "🎟️";
-    nameEl.textContent = t("daily_reward_promo");
-    valueEl.textContent = fmt(reward.amount);
-    promoEl.style.display = "block";
-    promoEl.textContent = `${t("daily_promo_hint")} ${reward.promo_code}`;
-  } else if (reward.type === "jackpot") {
-    icon.textContent = "🏆";
-    nameEl.textContent = `${t("daily_reward_jackpot")} ${reward.skin.name}`;
-    valueEl.textContent = fmt(reward.amount + reward.skin.price);
+  } else if (reward.type === "case") {
+    icon.textContent = "🎁";
+    nameEl.textContent = `${reward.case_name}: ${reward.item.name}`;
+    valueEl.textContent = fmt(reward.item.price);
+  } else if (reward.type === "gold") {
+    icon.textContent = "💰";
+    nameEl.textContent = t("daily_reward_gold");
+    valueEl.textContent = `${reward.amount} 💰`;
+  } else if (reward.type === "vip") {
+    icon.textContent = "⭐";
+    nameEl.textContent = reward.already_permanent_vip
+      ? t("daily_reward_vip_already")
+      : t("daily_reward_vip").replace("{h}", reward.hours);
+    valueEl.textContent = "";
   }
 
-  playSound(reward.type === "skin" || reward.type === "jackpot" ? "fanfare" : "win");
+  if (result.mega_bonus_awarded) {
+    promoEl.style.display = "block";
+    promoEl.textContent = `${t("daily_mega_bonus_toast")} +${result.mega_bonus_gold} 💰`;
+  }
+
+  playSound(reward.type === "case" || reward.type === "vip" ? "fanfare" : "win");
   haptic("success");
   document.getElementById("daily-result-modal").classList.add("active");
 }
@@ -2218,8 +3174,9 @@ document.getElementById("daily-result-ok-btn").addEventListener("click", () => {
 
 document.getElementById("daily-claim-btn").addEventListener("click", async () => {
   try {
-    const result = await apiPost("/daily-claim", { telegram_id: state.telegramId });
+    const result = await apiPost("/streak/claim", { telegram_id: state.telegramId });
     state.balance = result.new_balance;
+    state.goldBalance = result.new_gold_balance;
     updateBalanceDisplay();
     showDailyResult(result);
     loadDailyStatus();
@@ -2229,12 +3186,330 @@ document.getElementById("daily-claim-btn").addEventListener("click", async () =>
 });
 
 // ============================================
+// Ежедневное колесо удачи (Daily Wheel, Спринт 6)
+// ============================================
+function wheelSectorIcon(sector) {
+  if (sector.type === "crystals") return "💎";
+  if (sector.type === "gold") return "💰";
+  if (sector.type === "vip") return "⭐";
+  if (sector.type === "case") return "🎁";
+  return "🎲";
+}
+
+function wheelSectorAmountText(sector) {
+  if (sector.type === "crystals") return fmtNumber(sector.amount);
+  if (sector.type === "gold") return `${sector.amount}`;
+  if (sector.type === "vip") return `${sector.hours}${state.lang === "en" ? "h" : "ч"}`;
+  return "";
+}
+
+function renderWheelLabels(sectors) {
+  const wrap = document.getElementById("wheel-labels");
+  wrap.innerHTML = "";
+  const count = sectors.length;
+  const arc = 360 / count;
+  const radius = 85;
+
+  sectors.forEach((sector, idx) => {
+    const centerDeg = idx * arc + arc / 2;
+    const outer = document.createElement("div");
+    outer.className = "wheel-sector-label";
+    outer.style.transform = `rotate(${centerDeg}deg) translate(0, -${radius}px)`;
+
+    const inner = document.createElement("div");
+    inner.className = "wheel-sector-label-inner";
+    inner.style.transform = `translate(-50%, -50%) rotate(${-centerDeg}deg)`;
+    inner.innerHTML = `
+      <span class="wheel-sector-icon">${wheelSectorIcon(sector)}</span>
+      <span class="wheel-sector-amount">${wheelSectorAmountText(sector)}</span>
+    `;
+
+    outer.appendChild(inner);
+    wrap.appendChild(outer);
+  });
+}
+
+function updateWheelHintAndButton(status) {
+  const hintEl = document.getElementById("wheel-hint");
+  const btn = document.getElementById("wheel-spin-btn");
+  hintEl.classList.remove("wheel-hint-ready");
+
+  if (state.wheelSpinning) return;
+
+  if (status.free_spin_available) {
+    hintEl.innerHTML = t("wheel_free_hint");
+    hintEl.classList.add("wheel-hint-ready");
+    btn.disabled = false;
+    btn.textContent = t("wheel_spin_btn");
+    return;
+  }
+
+  if (status.paid_spins_left <= 0) {
+    hintEl.textContent = t("wheel_no_spins_left");
+    btn.disabled = true;
+    btn.textContent = t("wheel_spin_btn");
+    return;
+  }
+
+  const goldOk = (state.goldBalance || 0) >= status.paid_spin_gold_cost;
+  hintEl.innerHTML = `${t("wheel_paid_hint")} · ${t("wheel_paid_left")}: <b>${status.paid_spins_left}</b>`;
+  btn.disabled = !goldOk;
+  btn.textContent = goldOk ? t("wheel_spin_btn") : t("wheel_no_gold");
+}
+
+function stopWheelCountdown() {
+  if (state.wheelCountdownInterval) {
+    clearInterval(state.wheelCountdownInterval);
+    state.wheelCountdownInterval = null;
+  }
+}
+
+function startWheelCountdown(secondsLeft) {
+  stopWheelCountdown();
+  let remaining = secondsLeft;
+  const hintEl = document.getElementById("wheel-hint");
+
+  function tick() {
+    if (state.wheelSpinning) return;
+    if (remaining <= 0) {
+      stopWheelCountdown();
+      loadWheelStatus();
+      return;
+    }
+    const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
+    const ss = String(remaining % 60).padStart(2, "0");
+    hintEl.innerHTML = `${t("wheel_free_in")} <b>${mm}:${ss}</b>`;
+    remaining -= 1;
+  }
+
+  tick();
+  state.wheelCountdownInterval = setInterval(tick, 1000);
+}
+
+async function loadWheelStatus() {
+  try {
+    const status = await apiGet(`/wheel/status?telegram_id=${state.telegramId}`);
+    state.wheelStatus = status;
+
+    if (!state.wheelSectorsRendered) {
+      renderWheelLabels(status.sectors);
+      state.wheelSectorsRendered = true;
+    }
+
+    updateWheelHintAndButton(status);
+    if (!status.free_spin_available) {
+      startWheelCountdown(status.seconds_until_free_spin);
+    } else {
+      stopWheelCountdown();
+    }
+  } catch (e) {
+    console.error("Ошибка загрузки статуса колеса:", e);
+  }
+}
+
+function openWheelModal() {
+  document.getElementById("wheel-modal").classList.add("active");
+  loadWheelStatus();
+}
+
+document.getElementById("open-wheel-modal-btn").addEventListener("click", openWheelModal);
+document.getElementById("wheel-earn-btn").addEventListener("click", openWheelModal);
+
+document.getElementById("wheel-close-btn").addEventListener("click", () => {
+  document.getElementById("wheel-modal").classList.remove("active");
+  if (!state.wheelSpinning) stopWheelCountdown();
+});
+document.getElementById("wheel-modal").addEventListener("click", (e) => {
+  if (e.target.id === "wheel-modal") {
+    e.currentTarget.classList.remove("active");
+    if (!state.wheelSpinning) stopWheelCountdown();
+  }
+});
+
+function showWheelResult(result) {
+  const reward = result.reward;
+  const icon = document.getElementById("wheel-result-icon");
+  const nameEl = document.getElementById("wheel-result-name");
+  const valueEl = document.getElementById("wheel-result-value");
+  valueEl.className = "win-item-price";
+
+  if (reward.type === "crystals") {
+    icon.textContent = "💎";
+    nameEl.textContent = t("wheel_sector_crystals");
+    valueEl.textContent = fmt(reward.amount);
+  } else if (reward.type === "gold") {
+    icon.textContent = "💰";
+    nameEl.textContent = t("wheel_sector_gold");
+    valueEl.textContent = `💰 ${reward.amount}`;
+    valueEl.classList.add("wheel-result-gold");
+  } else if (reward.type === "vip") {
+    icon.textContent = "⭐";
+    nameEl.textContent = t("wheel_sector_vip");
+    valueEl.textContent = "";
+  } else if (reward.type === "case") {
+    icon.textContent = "🎁";
+    nameEl.textContent = `${t("wheel_sector_case")}: ${reward.item.name}`;
+    valueEl.textContent = fmt(reward.item.price);
+  }
+
+  playSound(reward.type === "case" || reward.type === "vip" ? "fanfare" : "win");
+  haptic("success");
+  document.getElementById("wheel-result-modal").classList.add("active");
+}
+
+document.getElementById("wheel-result-ok-btn").addEventListener("click", () => {
+  document.getElementById("wheel-result-modal").classList.remove("active");
+});
+
+document.getElementById("wheel-spin-btn").addEventListener("click", async () => {
+  if (state.wheelSpinning) return;
+  const disc = document.getElementById("wheel-disc");
+  const btn = document.getElementById("wheel-spin-btn");
+
+  try {
+    state.wheelSpinning = true;
+    btn.disabled = true;
+    btn.textContent = t("wheel_spinning");
+    stopWheelCountdown();
+
+    const result = await apiPost("/wheel/spin", { telegram_id: state.telegramId });
+
+    haptic("light");
+    // Всегда крутим ВПЕРЁД от текущего накопленного угла, а не абсолютно —
+    // иначе при следующем спине с меньшим "снапом" диск визуально крутился
+    // бы назад вместо продолжения по часовой стрелке.
+    const baseFull = Math.floor(state.wheelCurrentRotation / 360) * 360;
+    const targetRotation = baseFull + result.angle_degrees;
+    state.wheelCurrentRotation = targetRotation;
+    disc.style.transform = `rotate(${targetRotation}deg)`;
+
+    setTimeout(() => {
+      state.balance = result.new_balance;
+      state.goldBalance = result.new_gold_balance;
+      if (result.reward.type === "vip" && result.reward.vip_expires_at) {
+        state.isVip = true;
+        state.vipExpiresAt = result.reward.vip_expires_at;
+      }
+      updateBalanceDisplay();
+      showWheelResult(result);
+      loadProfile();
+      state.wheelSpinning = false;
+      loadWheelStatus();
+    }, 5100);
+  } catch (e) {
+    state.wheelSpinning = false;
+    btn.disabled = false;
+    btn.textContent = t("wheel_spin_btn");
+    tg?.showAlert?.(e?.message || t("wheel_no_gold"));
+    loadWheelStatus();
+  }
+});
+
+// ============================================
+// СОЦИАЛЬНЫЕ ЗАДАНИЯ (Free Gold Tasks, Спринт 7)
+// ============================================
+const TASK_ICONS = {
+  telegram_channel: "📢",
+  telegram_chat: "💬",
+  referrals: "👥",
+  profile: "🖼️",
+};
+
+function renderTasks(data) {
+  const list = document.getElementById("tasks-list");
+  list.innerHTML = "";
+
+  data.tasks.forEach(task => {
+    const el = document.createElement("div");
+    el.className = `task-card ${task.completed ? "completed" : ""}`.trim();
+    el.innerHTML = `
+      <div class="task-icon">${TASK_ICONS[task.task_type] || "✅"}</div>
+      <div class="task-info">
+        <div class="task-title">${task.title}</div>
+        <div class="task-desc">${task.description || ""}</div>
+        <div class="task-reward">+${task.reward_gold} 💰</div>
+      </div>
+      <button class="btn-primary small task-action-btn" data-task-key="${task.key}">
+        ${task.completed ? t("task_done_btn") : (task.action_url ? t("task_open_btn") : t("task_check_btn"))}
+      </button>
+    `;
+
+    const btn = el.querySelector(".task-action-btn");
+    if (task.completed) {
+      btn.disabled = true;
+    } else {
+      btn.addEventListener("click", () => onTaskActionClick(task));
+    }
+
+    list.appendChild(el);
+  });
+}
+
+async function loadTasks() {
+  try {
+    const data = await apiGet(`/tasks/list?telegram_id=${state.telegramId}`);
+    state.goldBalance = data.gold_balance;
+    updateBalanceDisplay();
+    renderTasks(data);
+  } catch (e) {
+    console.error("Ошибка загрузки заданий:", e);
+  }
+}
+
+async function onTaskActionClick(task) {
+  // Для заданий с внешней ссылкой (подписка на канал/чат) — сперва
+  // открываем ссылку, чтобы пользователь реально успел подписаться,
+  // саму проверку запускаем сразу же following (Telegram не даёт узнать,
+  // когда именно пользователь вернётся из canала, поэтому проверяем
+  // оптимистично — если рано, просто покажем "не выполнено").
+  if (task.action_url) {
+    tg?.openTelegramLink?.(task.action_url) || window.open(task.action_url, "_blank");
+  }
+  await checkTask(task.key);
+}
+
+async function checkTask(taskKey) {
+  try {
+    const result = await apiPost("/tasks/check", { telegram_id: state.telegramId, task_key: taskKey });
+    if (result.success) {
+      state.goldBalance = result.new_gold_balance;
+      state.balance = result.new_balance;
+      updateBalanceDisplay();
+      haptic("success");
+      tg?.showAlert?.(t("task_completed_toast").replace("{gold}", result.reward_gold));
+    } else {
+      haptic("error");
+      tg?.showAlert?.(t("task_not_verified_toast"));
+    }
+    loadTasks();
+  } catch (e) {
+    tg?.showAlert?.(e?.message || t("task_check_error_toast"));
+  }
+}
+
+function openTasksModal() {
+  document.getElementById("tasks-modal").classList.add("active");
+  loadTasks();
+}
+
+document.getElementById("open-tasks-modal-btn").addEventListener("click", openTasksModal);
+document.getElementById("tasks-earn-btn").addEventListener("click", openTasksModal);
+
+document.getElementById("tasks-close-btn").addEventListener("click", () => {
+  document.getElementById("tasks-modal").classList.remove("active");
+});
+document.getElementById("tasks-modal").addEventListener("click", (e) => {
+  if (e.target.id === "tasks-modal") e.currentTarget.classList.remove("active");
+});
+
+// ============================================
 // ХАБ МИНИ-ИГР — единый полноэкранный контейнер,
 // в который динамически подгружается разметка нужной игры.
 // ============================================
 const GAME_TITLES = {
   rocket: () => `🚀 ${t("game_rocket")}`,
   upgrader: () => `🔺 ${t("game_upgrader")}`,
+  crafter: () => `🧪 ${t("game_crafter")}`,
   wheel: () => `🎡 ${t("game_wheel")}`,
   miner: () => `💣 ${t("game_miner")}`,
   tower: () => `🗼 ${t("game_tower")}`,
@@ -2257,7 +3532,7 @@ document.getElementById("games-grid").addEventListener("click", (e) => {
 let activeGameKey = null;
 
 function openGameScreen(gameKey) {
-  // На случай прямого переключения между играми без прохода через "Назад" —
+  // На случай прямого переключения между играми без прохода ��ерез "Назад" —
   // подчищаем предыдущую игру перед монтированием новой.
   if (activeGameKey && GAME_TEMPLATES[activeGameKey]?.destroy) {
     try { GAME_TEMPLATES[activeGameKey].destroy(); } catch (e) { /* noop */ }
@@ -2438,7 +3713,7 @@ const RocketGame = {
 
   // Живой полёт: множитель считается в реальном времени по той же формуле,
   // что и на бэкенде (growthCurve), а ракета летит, пока её либо не заберут
-  // вручную ("Забрать" — доступна на ЛЮБОМ X всё время полёта), либо пока
+  // вручную ("Забрать" — доступна на ЛЮБОМ X всё время полёта), либо по��а
   // сервер не сообщит через /poll, что она уже лопнула.
   playFlight() {
     this.playing = true;
@@ -2659,7 +3934,7 @@ const RocketGame = {
 // 🔺 УЛУЧШИТЕЛЬ (Upgrader) — v2
 // ============================================
 // Игрок выбирает предмет из инвентаря и ЦЕЛЬ ОДНИМ из 4 способов:
-//   item       — конкретный скин из глобальной базы (поиск)
+//   item       — кон��ретный скин из глобальной базы (поиск)
 //   price      — произвольная желаемая стоимость в 💎
 //   multiplier — быстрые кнопки x2 / x3 / x5 (или свой множитель)
 //   chance     — быстрые кнопки 30% / 55% / 75% (или свой шанс)
@@ -3170,6 +4445,445 @@ document.getElementById("upgrade-result-ok-btn")?.addEventListener("click", () =
 });
 
 // ============================================
+// 🧪 СИНТЕЗАТОР (Item Crafter, Спринт 4)
+// ============================================
+// Отдельная механика от УЛУЧШИТЕЛЯ (UpgraderGame) выше: здесь ставка — это
+// КОНКРЕТНЫЕ предметы инвентаря (+опционально Кристаллы поверх), шанс
+// считается прямым отношением (staked_value / target_value) * 100, зажатым
+// в [1%, 80%], а при поражении вся ставка сгорает целиком без утешительного
+// скина. Бэкенд: POST /api/upgrader/spin (routers/upgrader.py).
+const CRAFTER_MAX_ITEMS = 6;
+
+const CrafterGame = {
+  selectedItemIds: [],
+  sortDir: "asc",
+  addCrystals: 0,
+  targetEntry: null,
+  searchTimer: null,
+  priceTimer: null,
+  spinning: false,
+
+  render() {
+    return `
+      <div class="game-panel-desc">${t("crafter_desc")}</div>
+
+      <div class="mg-row">
+        <div class="upg-your-items-header">
+          <label class="mg-label">${t("crafter_components_label")} <span id="crafter-picked-count">(0/${CRAFTER_MAX_ITEMS})</span></label>
+          <button type="button" class="upg-sort-btn" id="crafter-sort-btn" data-dir="asc">
+            <span id="crafter-sort-label">↑ ${t("sort_price_label")}</span>
+          </button>
+        </div>
+        <div class="upg-your-items-grid" id="crafter-items-grid"></div>
+      </div>
+
+      <div class="mg-row">
+        <label class="mg-label">${t("crafter_add_crystals_label")}: <span id="crafter-crystals-value">0</span> ${currencyIcon()}</label>
+        <input type="range" id="crafter-crystals-slider" min="0" max="0" step="1" value="0">
+      </div>
+
+      <div class="upg-wheel-wrap" id="crafter-wheel-wrap">
+        <svg width="200" height="200" viewBox="0 0 200 200" class="upg-wheel-svg">
+          <circle class="upg-track-bg" cx="100" cy="100" r="82"></circle>
+          <circle class="upg-track-progress" id="crafter-track-progress" cx="100" cy="100" r="82"
+            stroke-dasharray="0 515.2" transform="rotate(-90 100 100)"></circle>
+        </svg>
+        <div class="upg-needle-pivot" id="crafter-needle-pivot"><div class="upg-needle"></div></div>
+        <div class="upg-wheel-center">
+          <div class="upg-wheel-percent"><span id="crafter-wheel-percent">0</span>%</div>
+          <div class="upg-wheel-sub">${t("chance_preview_label")}</div>
+        </div>
+      </div>
+
+      <div class="upg-summary-row">
+        <div class="upg-summary-box">
+          <div class="upg-summary-label">${t("crafter_input_value_label")}</div>
+          <div class="upg-summary-value" id="crafter-summary-input">— ${currencyIcon()}</div>
+        </div>
+        <div class="upg-summary-arrow">→</div>
+        <div class="upg-summary-box">
+          <div class="upg-summary-label">${t("crafter_target_label")}</div>
+          <div class="upg-summary-value" id="crafter-summary-target">— ${currencyIcon()}</div>
+        </div>
+      </div>
+
+      <button class="btn-primary full" id="crafter-play-btn">${t("crafter_synthesize_btn")}</button>
+
+      <div class="crf-target-section">
+        <label class="mg-label">${t("crafter_target_label")}</label>
+
+        <div class="crf-target-card" id="crafter-target-card" style="display:none;"></div>
+
+        <div class="crf-quick-row" id="crafter-quick-row">
+          <button type="button" class="upg-preset-btn" data-qmult="2">x2</button>
+          <button type="button" class="upg-preset-btn" data-qmult="4">x4</button>
+          <button type="button" class="upg-preset-btn" data-qmult="8">x8</button>
+          <button type="button" class="upg-preset-btn" data-qchance="35">35%</button>
+          <button type="button" class="upg-preset-btn" data-qchance="55">55%</button>
+          <button type="button" class="upg-preset-btn" data-qchance="75">75%</button>
+        </div>
+
+        <input type="text" id="crafter-search-input" class="mg-input" placeholder="${t("upgrade_search_placeholder")}">
+        <div class="crf-price-range-row">
+          <input type="number" id="crafter-price-min" class="mg-input" min="0" step="1" placeholder="${t("crafter_price_from")}">
+          <input type="number" id="crafter-price-max" class="mg-input" min="0" step="1" placeholder="${t("crafter_price_to")}">
+        </div>
+
+        <div class="crf-catalog-grid" id="crafter-catalog-grid"></div>
+      </div>
+    `;
+  },
+
+  init() {
+    this.selectedItemIds = [];
+    this.sortDir = "asc";
+    this.addCrystals = 0;
+    this.targetEntry = null;
+    this.spinning = false;
+
+    this.renderItemsGrid();
+
+    document.getElementById("crafter-sort-btn").addEventListener("click", () => {
+      this.sortDir = this.sortDir === "asc" ? "desc" : "asc";
+      this.renderItemsGrid();
+    });
+
+    const crystalsSlider = document.getElementById("crafter-crystals-slider");
+    // Максимум слайдера — теку��ий баланс (в "сырых" Кристаллах, без
+    // конвертации в отображаемую валюту — на бэкенд всегда уходят Кристаллы).
+    crystalsSlider.max = Math.max(0, Math.floor(state.balance));
+    crystalsSlider.addEventListener("input", (e) => {
+      this.addCrystals = parseFloat(e.target.value) || 0;
+      document.getElementById("crafter-crystals-value").textContent = fmtNumber(this.addCrystals);
+      this.updateSummary();
+    });
+
+    document.getElementById("crafter-quick-row").addEventListener("click", (e) => {
+      const btn = e.target.closest(".upg-preset-btn");
+      if (!btn) return;
+      this.applyQuickValue(btn);
+    });
+
+    const searchInput = document.getElementById("crafter-search-input");
+    searchInput.addEventListener("input", () => {
+      clearTimeout(this.searchTimer);
+      this.searchTimer = setTimeout(() => this.runCatalogSearch(), 250);
+    });
+
+    const minInput = document.getElementById("crafter-price-min");
+    const maxInput = document.getElementById("crafter-price-max");
+    [minInput, maxInput].forEach(inp => {
+      inp.addEventListener("input", () => {
+        clearTimeout(this.priceTimer);
+        this.priceTimer = setTimeout(() => this.runCatalogSearch(), 300);
+      });
+    });
+
+    document.getElementById("crafter-play-btn").addEventListener("click", () => this.play());
+
+    this.updateSummary();
+    this.runCatalogSearch();
+  },
+
+  destroy() {
+    clearTimeout(this.searchTimer);
+    clearTimeout(this.priceTimer);
+  },
+
+  // Сетка своих предметов (карточки с чекбоксом) — та же логика, что у
+  // UpgraderGame.renderItemsGrid, но со своими id/лимитом.
+  renderItemsGrid() {
+    const grid = document.getElementById("crafter-items-grid");
+    const sortBtn = document.getElementById("crafter-sort-btn");
+    const sortLabel = document.getElementById("crafter-sort-label");
+    if (!grid) return;
+
+    if (sortBtn) sortBtn.dataset.dir = this.sortDir;
+    if (sortLabel) sortLabel.textContent = `${this.sortDir === "asc" ? "↑" : "↓"} ${t("sort_price_label")}`;
+
+    this.selectedItemIds = this.selectedItemIds.filter(id =>
+      state.inventory.some(i => String(i.id) === String(id))
+    );
+
+    grid.innerHTML = "";
+    if (!state.inventory.length) {
+      grid.innerHTML = `<div class="upg-items-empty">${t("inventory_empty")}</div>`;
+      this.updatePickedCount();
+      return;
+    }
+
+    const sorted = [...state.inventory].sort((a, b) =>
+      this.sortDir === "asc" ? a.price - b.price : b.price - a.price
+    );
+
+    sorted.forEach(item => {
+      const picked = this.selectedItemIds.some(id => String(id) === String(item.id));
+      const disableUnpicked = !picked && this.selectedItemIds.length >= CRAFTER_MAX_ITEMS;
+      const el = document.createElement("div");
+      el.className = `upg-item-card ${rarityClass(item.rarity)}${picked ? " picked" : ""}${disableUnpicked ? " disabled" : ""}`;
+      el.innerHTML = `
+        <img src="${item.image}" alt="${item.name}" loading="lazy">
+        <div class="upg-item-card-name">${item.name}</div>
+        <div class="upg-item-card-price">${fmt(item.price)}</div>
+        <div class="upg-item-card-check">${picked ? "✓" : ""}</div>
+      `;
+      el.addEventListener("click", () => {
+        if (picked) {
+          this.selectedItemIds = this.selectedItemIds.filter(id => String(id) !== String(item.id));
+        } else {
+          if (this.selectedItemIds.length >= CRAFTER_MAX_ITEMS) return;
+          this.selectedItemIds.push(item.id);
+        }
+        this.renderItemsGrid();
+        this.updateSummary();
+      });
+      grid.appendChild(el);
+    });
+
+    this.updatePickedCount();
+  },
+
+  updatePickedCount() {
+    const el = document.getElementById("crafter-picked-count");
+    if (el) el.textContent = `(${this.selectedItemIds.length}/${CRAFTER_MAX_ITEMS})`;
+  },
+
+  getSelectedItems() {
+    return this.selectedItemIds
+      .map(id => state.inventory.find(i => String(i.id) === String(id)))
+      .filter(Boolean);
+  },
+
+  getInputValue() {
+    const itemsTotal = this.getSelectedItems().reduce((sum, i) => sum + i.price, 0);
+    return itemsTotal + (this.addCrystals || 0);
+  },
+
+  // Быстрые кнопки-множители (x2/x4/x8) и быстрые шансы (35/55/75%):
+  // вычисляют желаемую стоимость цели по текущей ставке и подставляют её
+  // в диапазон цен "от/до" каталога (±15%), чтобы сразу найти подходящий
+  // целевой предмет — сам success_rate всё равно пересчитывается точно
+  // после выбора конкретного предмета в updateSummary().
+  applyQuickValue(btn) {
+    document.querySelectorAll("#crafter-quick-row .upg-preset-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+
+    const inputValue = this.getInputValue();
+    if (inputValue <= 0) {
+      tg?.showAlert?.(t("crafter_pick_component_first"));
+      return;
+    }
+
+    let desiredTarget;
+    if (btn.dataset.qmult) {
+      desiredTarget = inputValue * parseFloat(btn.dataset.qmult);
+    } else {
+      const pct = parseFloat(btn.dataset.qchance);
+      desiredTarget = inputValue / (pct / 100);
+    }
+
+    const minInput = document.getElementById("crafter-price-min");
+    const maxInput = document.getElementById("crafter-price-max");
+    minInput.value = Math.max(0, Math.round(desiredTarget * 0.85));
+    maxInput.value = Math.round(desiredTarget * 1.15);
+
+    clearTimeout(this.priceTimer);
+    this.runCatalogSearch();
+  },
+
+  async runCatalogSearch() {
+    const grid = document.getElementById("crafter-catalog-grid");
+    if (!grid) return;
+    const query = document.getElementById("crafter-search-input").value;
+    const minPrice = document.getElementById("crafter-price-min").value;
+    const maxPrice = document.getElementById("crafter-price-max").value;
+
+    let url = `/items/search?q=${encodeURIComponent(query)}&limit=24`;
+    if (minPrice !== "") url += `&min_price=${encodeURIComponent(minPrice)}`;
+    if (maxPrice !== "") url += `&max_price=${encodeURIComponent(maxPrice)}`;
+
+    try {
+      const data = await apiGet(url);
+      if (!data.results.length) {
+        grid.innerHTML = `<div class="upg-search-empty">${t("crafter_catalog_empty")}</div>`;
+        return;
+      }
+      grid.innerHTML = "";
+      data.results.forEach(entry => {
+        const el = document.createElement("div");
+        const isSelected = this.targetEntry && this.targetEntry.name === entry.name;
+        el.className = `upg-search-item ${rarityClass(entry.rarity)}${isSelected ? " selected" : ""}`;
+        el.innerHTML = `
+          <img src="${entry.image}" alt="" loading="lazy">
+          <div class="upg-search-item-info">
+            <div class="upg-search-item-name">${entry.name}</div>
+            <div class="upg-search-item-price">${fmtWithIcon(entry.base_price)}</div>
+          </div>
+        `;
+        el.addEventListener("click", () => {
+          this.targetEntry = entry;
+          this.showTargetCard();
+          this.updateSummary();
+          this.runCatalogSearch(); // перерисовать, чтобы подсветить выбранную карточку
+        });
+        grid.appendChild(el);
+      });
+    } catch (e) { /* тихо игнорируем сетевые сбои поиска каталога */ }
+  },
+
+  showTargetCard() {
+    const el = document.getElementById("crafter-target-card");
+    if (!this.targetEntry) { el.style.display = "none"; return; }
+    el.style.display = "flex";
+    el.innerHTML = `
+      <img src="${this.targetEntry.image}" alt="">
+      <div>
+        <div class="upg-search-item-name">${this.targetEntry.name}</div>
+        <div class="upg-search-item-price">${fmtWithIcon(this.targetEntry.base_price)}</div>
+      </div>
+    `;
+  },
+
+  // Пересчёт превью ЧИСТО НА ФРОНТЕ: success_rate = (input/target)*100,
+  // зажатый в [1%, 80%] — точная копия формулы бэкенда (routers/upgrader.py),
+  // финальное число всё равно приходит с сервера в ответе /upgrader/spin.
+  updateSummary() {
+    const inputValue = this.getInputValue();
+    document.getElementById("crafter-summary-input").textContent = inputValue > 0 ? fmt(inputValue) : "—";
+
+    const targetValue = this.targetEntry ? this.targetEntry.base_price : 0;
+    document.getElementById("crafter-summary-target").textContent = targetValue > 0 ? fmt(targetValue) : "—";
+
+    let chancePct = 0;
+    if (inputValue > 0 && targetValue > 0) {
+      chancePct = Math.max(1, Math.min(80, (inputValue / targetValue) * 100));
+    }
+    this.setWheelChance(chancePct);
+  },
+
+  setWheelChance(chancePct) {
+    chancePct = Math.max(0, Math.min(100, chancePct || 0));
+    const CIRC = 2 * Math.PI * 82;
+    const dash = (chancePct / 100) * CIRC;
+    document.getElementById("crafter-track-progress").style.strokeDasharray = `${dash} ${CIRC - dash}`;
+    document.getElementById("crafter-wheel-percent").textContent = Math.round(chancePct);
+  },
+
+  async play() {
+    if (this.spinning) return;
+    const items = this.getSelectedItems();
+    if (!items.length && !(this.addCrystals > 0)) {
+      tg?.showAlert?.(t("crafter_pick_component_first"));
+      return;
+    }
+    if (!this.targetEntry) {
+      tg?.showAlert?.(t("crafter_pick_target_first"));
+      return;
+    }
+
+    const playBtn = document.getElementById("crafter-play-btn");
+    this.spinning = true;
+    playBtn.disabled = true;
+    playBtn.textContent = t("crafter_synthesizing");
+
+    try {
+      const result = await apiPost("/upgrader/spin", {
+        telegram_id: state.telegramId,
+        inventory_item_ids: items.map(i => Number(i.id)),
+        add_crystals: this.addCrystals || 0,
+        target_item_id: this.targetEntry.name,
+      });
+      this.spinWheelToResult(result);
+    } catch (e) {
+      tg?.showAlert?.(e.message);
+      this.spinning = false;
+      playBtn.disabled = false;
+      playBtn.textContent = t("crafter_synthesize_btn");
+    }
+  },
+
+  // Крутит стрелку "вслепую", а по окончании анимации показывает уже
+  // известный (пришедший с сервера) результат — тот же приём, что у
+  // UpgraderGame.spinWheelToResult, только со своими DOM id.
+  spinWheelToResult(result) {
+    const pivot = document.getElementById("crafter-needle-pivot");
+    const chanceUsed = result.chance_used;
+    const winThreshold = chanceUsed * 3.6;
+    const landingAngle = result.result === "win"
+      ? Math.random() * winThreshold
+      : winThreshold + Math.random() * (360 - winThreshold);
+
+    const extraSpins = 5 + Math.floor(Math.random() * 3);
+    const targetRotation = extraSpins * 360 + landingAngle;
+
+    pivot.style.transition = "transform 3.6s cubic-bezier(0.12, 0.75, 0.15, 1)";
+    pivot.style.transform = `translate(-50%,-50%) rotate(${targetRotation}deg)`;
+
+    setTimeout(() => this.finishRound(result), 3800);
+  },
+
+  async finishRound(result) {
+    playSound(result.result === "win" ? "win" : "lose");
+    showCrafterResult(result.result === "win", result.item || null);
+
+    // Заложенные предметы списываются на бэкенде вне зависимости от исхода
+    // (при победе — "превращаются" в цель, при поражении — сгорают).
+    state.inventory = state.inventory.filter(i => !this.selectedItemIds.some(id => String(id) === String(i.id)));
+    await loadInventory();
+    this.selectedItemIds = [];
+    this.addCrystals = 0;
+    document.getElementById("crafter-crystals-slider").value = 0;
+    document.getElementById("crafter-crystals-slider").max = Math.max(0, Math.floor(state.balance));
+    document.getElementById("crafter-crystals-value").textContent = "0";
+    this.renderItemsGrid();
+    this.targetEntry = null;
+    this.showTargetCard();
+    document.querySelectorAll("#crafter-quick-row .upg-preset-btn").forEach(b => b.classList.remove("active"));
+    this.updateSummary();
+    this.runCatalogSearch();
+    loadProfile();
+
+    const playBtn = document.getElementById("crafter-play-btn");
+    this.spinning = false;
+    playBtn.disabled = false;
+    playBtn.textContent = t("crafter_synthesize_btn");
+
+    const pivot = document.getElementById("crafter-needle-pivot");
+    pivot.style.transition = "none";
+    pivot.style.transform = "translate(-50%,-50%) rotate(0deg)";
+  },
+};
+
+// Модалка результата Синтезатора — переиспользует ту же разметку, что и
+// showUpgradeResult() выше, но БЕЗ утешительного скина/крох при поражении:
+// по ТЗ спринта 4 при неудаче ставка сгорает целиком.
+function showCrafterResult(isWin, item) {
+  const modal = document.getElementById("upgrade-result-modal");
+  const sheet = modal.querySelector(".modal-sheet");
+  sheet.classList.toggle("upgrade-lose-sheet", !isWin);
+  document.getElementById("upgrade-result-title").textContent = isWin ? t("crafter_success_title") : t("crafter_fail_title");
+  document.getElementById("upgrade-result-subtitle").style.display = "block";
+
+  if (!isWin || !item) {
+    document.getElementById("upgrade-result-subtitle").textContent = t("crafter_fail_desc");
+    document.getElementById("upgrade-result-image").src = "";
+    document.getElementById("upgrade-result-name").textContent = "";
+    document.getElementById("upgrade-result-quality").textContent = "";
+    document.getElementById("upgrade-result-price").textContent = "";
+    modal.classList.add("active");
+    return;
+  }
+
+  document.getElementById("upgrade-result-subtitle").style.display = "none";
+  document.getElementById("upgrade-result-image").src = item.image || "";
+  document.getElementById("upgrade-result-name").textContent = item.name;
+  document.getElementById("upgrade-result-quality").textContent =
+    `${item.quality_name || ""}${item.stattrak ? " · StatTrak™" : ""}`;
+  document.getElementById("upgrade-result-price").textContent = fmt(item.price);
+  modal.classList.add("active");
+}
+
+// ============================================
 // 🎡 КОЛЕСО (Wheel)
 // ============================================
 const WheelGame = {
@@ -3654,6 +5368,7 @@ const LadderGame = createClimbGame("ladder", 5, 2);
 const GAME_TEMPLATES = {
   rocket: RocketGame,
   upgrader: UpgraderGame,
+  crafter: CrafterGame,
   wheel: WheelGame,
   miner: MinerGame,
   tower: TowerGame,
@@ -3713,6 +5428,15 @@ document.getElementById("open-giveaways").addEventListener("click", () => {
   updateSoundToggleUI();
   refreshCurrencyDisplay();
 
+  // Спринт 12: фон — оптимистично из localStorage, ДО загрузки конфига и
+  // логина, чтобы не было "мигания" темной темы перед появлением картинки.
+  // state.backgroundOptions ещё пуст на этом моменте — applyBackground()
+  // корректно откатится на "dark", если словаря опций пока нет; сетка
+  // выбора и, если нужно, повторное применение перерисуются ниже, как
+  // только придёт /app-config.
+  const savedBackground = localStorage.getItem("cs2_background");
+  if (savedBackground) state.background = savedBackground;
+
   try {
     const cfg = await apiGet("/app-config");
     state.botUsername = cfg.bot_username;
@@ -3724,6 +5448,8 @@ document.getElementById("open-giveaways").addEventListener("click", () => {
     state.craftFeeByRarity = cfg.craft_fee_by_rarity || {};
     state.craftItemsRequired = cfg.craft_items_required || 5;
     if (cfg.currency_rates) state.currencyRates = cfg.currency_rates;
+    state.backgroundOptions = cfg.background_options || [];
+    applyBackground(state.background || DEFAULT_BACKGROUND);
     // Раньше загруженная цена VIP из конфига нигде не использовалась —
     // текст в UI оставался захардкоженным "150 ⭐" даже если бэкенд
     // отдавал другое значение. Теперь подставляем актуальную цену в лейбл.
@@ -3740,4 +5466,237 @@ document.getElementById("open-giveaways").addEventListener("click", () => {
   await loadInventory();
   await loadBonusStatus();
   await loadDailyStatus();
+  if (typeof loadPassStatus === "function") await loadPassStatus();
 })();
+
+// ============================================
+// ГЛОБАЛЬНЫЙ ЧАТ (Спринт 11)
+// --------------------------------------------
+// Фронтенд для /api/chat/*: живая лента с polling каждые 3с, отправка
+// с учётом rate-limit/мута/бана (ошибки прилетают с бэкенда), жалоба по
+// клику на чужое сообщение. Авто-фильтр и авто-мут обрабатываются на
+// сервере — здесь мы лишь показываем пользователю статус и ошибки.
+// ============================================
+const chatState = {
+  pollTimer: null,   // id setInterval активного опроса
+  lastId: 0,         // max id уже показанного сообщения (для after_id)
+  myUserId: null,    // внутренний user_id текущего игрока (для «своих» сообщений)
+  sending: false,    // защита от двойной отправки
+  bound: false,      // слушатели формы навешены один раз
+};
+
+function chatEls() {
+  return {
+    list: document.getElementById("chat-messages"),
+    empty: document.getElementById("chat-empty"),
+    status: document.getElementById("chat-status"),
+    form: document.getElementById("chat-form"),
+    input: document.getElementById("chat-input"),
+    sendBtn: document.getElementById("chat-send-btn"),
+  };
+}
+
+function chatTimeLabel(iso) {
+  try {
+    const norm = iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z";
+    const d = new Date(norm);
+    return d.toLocaleTimeString(state.lang === "en" ? "en-GB" : "ru-RU", {
+      hour: "2-digit", minute: "2-digit",
+    });
+  } catch (_) { return ""; }
+}
+
+function updateChatEmpty() {
+  const { list, empty } = chatEls();
+  if (!list || !empty) return;
+  const has = list.querySelector(".chat-msg");
+  empty.style.display = has ? "none" : "block";
+}
+
+function chatScrollToBottom(force) {
+  const { list } = chatEls();
+  if (!list) return;
+  const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 140;
+  if (force || nearBottom) list.scrollTop = list.scrollHeight;
+}
+
+function renderChatMessage(m) {
+  const { list } = chatEls();
+  if (!list) return;
+  if (document.getElementById(`chat-msg-${m.id}`)) {
+    chatState.lastId = Math.max(chatState.lastId, m.id);
+    return; // уже отрисовано (гонка polling ↔ оптимистичная вставка)
+  }
+
+  if (m.is_system) {
+    const el = document.createElement("div");
+    el.className = "chat-msg system";
+    el.id = `chat-msg-${m.id}`;
+    el.innerHTML = `<span class="chat-sys-text">${escapeHtmlText(m.text)}</span>`;
+    list.appendChild(el);
+  } else {
+    const mine = chatState.myUserId != null && m.user_id === chatState.myUserId;
+    const el = document.createElement("div");
+    el.className = `chat-msg${mine ? " mine" : ""}`;
+    el.id = `chat-msg-${m.id}`;
+    const initial = escapeHtmlText((m.author_name || "?").trim().slice(0, 1).toUpperCase() || "?");
+    const avatar = m.author_photo
+      ? `<img class="chat-avatar" src="${escapeAttr(m.author_photo)}" alt="" loading="lazy">`
+      : `<div class="chat-avatar chat-avatar-fallback">${initial}</div>`;
+    const name = mine ? escapeHtmlText(t("chat_you")) : escapeHtmlText(m.author_name || "Игрок");
+    el.innerHTML = `
+      ${avatar}
+      <div class="chat-bubble">
+        <div class="chat-meta">
+          <span class="chat-name">${name}</span>
+          <span class="chat-time">${chatTimeLabel(m.created_at || "")}</span>
+        </div>
+        <div class="chat-text">${escapeHtmlText(m.text)}</div>
+      </div>`;
+    if (!mine) {
+      // ТЗ: клик по чужому сообщению ➔ [Пожаловаться].
+      el.classList.add("reportable");
+      el.setAttribute("title", t("chat_report"));
+      el.addEventListener("click", () => reportChatMessage(m.id));
+    }
+    list.appendChild(el);
+  }
+  chatState.lastId = Math.max(chatState.lastId, m.id);
+}
+
+function applyChatMeState(me) {
+  if (!me) return;
+  chatState.myUserId = me.user_id;
+  const { input, sendBtn, status } = chatEls();
+  if (!input || !sendBtn || !status) return;
+
+  let blocked = null;
+  if (me.is_chat_banned) {
+    blocked = t("chat_banned");
+  } else if (me.is_muted) {
+    blocked = t("chat_muted");
+    if (me.mute_until) {
+      const left = Math.max(0, Math.round((new Date(me.mute_until).getTime() - Date.now()) / 60000));
+      if (left > 0) blocked += ` (~${left} ${state.lang === "en" ? "min" : "мин"})`;
+    }
+    if (me.mute_reason) blocked += ` — ${me.mute_reason}`;
+  }
+
+  if (blocked) {
+    input.disabled = true;
+    sendBtn.disabled = true;
+    input.value = "";
+    status.hidden = false;
+    status.textContent = blocked;
+    status.classList.add("blocked");
+  } else {
+    input.disabled = false;
+    sendBtn.disabled = false;
+    status.hidden = true;
+    status.textContent = "";
+    status.classList.remove("blocked");
+  }
+}
+
+async function loadChatMessages(initial) {
+  try {
+    const afterId = initial ? 0 : chatState.lastId;
+    const data = await apiGet(`/chat/messages?telegram_id=${state.telegramId}&after_id=${afterId}`);
+    applyChatMeState(data.me);
+    if (initial) {
+      const { list } = chatEls();
+      if (list) list.querySelectorAll(".chat-msg").forEach(n => n.remove());
+      chatState.lastId = 0;
+    }
+    (data.messages || []).forEach(renderChatMessage);
+    updateChatEmpty();
+    chatScrollToBottom(initial);
+  } catch (e) {
+    console.error("Ошибка загрузки чата:", e);
+  }
+}
+
+async function sendChat() {
+  if (chatState.sending) return;
+  const { input, sendBtn } = chatEls();
+  if (!input) return;
+  const text = (input.value || "").trim();
+  if (!text) return;
+
+  chatState.sending = true;
+  if (sendBtn) sendBtn.disabled = true;
+  try {
+    const res = await apiPost("/chat/send", { telegram_id: state.telegramId, text });
+    input.value = "";
+    if (res.message) {
+      renderChatMessage(res.message);
+      updateChatEmpty();
+      chatScrollToBottom(true);
+    }
+    haptic("light");
+  } catch (e) {
+    haptic("error");
+    tg?.showAlert?.(e.message || "Ошибка отправки");
+    // Мут/бан/rate-limit могли измениться — подтягиваем актуальный статус.
+    loadChatMessages(false);
+  } finally {
+    chatState.sending = false;
+    if (sendBtn && !input.disabled) sendBtn.disabled = false;
+  }
+}
+
+async function reportChatMessage(messageId) {
+  const doReport = async () => {
+    try {
+      const res = await apiPost("/chat/report", { telegram_id: state.telegramId, message_id: messageId });
+      haptic("success");
+      if (res.hidden) {
+        const el = document.getElementById(`chat-msg-${messageId}`);
+        if (el) el.remove();
+        updateChatEmpty();
+      }
+      tg?.showAlert?.(t("chat_report_done"));
+    } catch (e) {
+      tg?.showAlert?.(e.message || "Ошибка");
+    }
+  };
+  const question = t("chat_report") + "?";
+  if (tg?.showConfirm) {
+    tg.showConfirm(question, (ok) => { if (ok) doReport(); });
+  } else if (confirm(question)) {
+    doReport();
+  }
+}
+
+function bindChatOnce() {
+  if (chatState.bound) return;
+  chatState.bound = true;
+  const { form, input } = chatEls();
+  if (!form || !input) return;
+  // IME (CJK): не отправляем сообщение, пока идёт композиция иероглифов.
+  input.addEventListener("compositionstart", () => { input.dataset.composing = "1"; });
+  input.addEventListener("compositionend", () => { input.dataset.composing = ""; });
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (input.dataset.composing === "1") return;
+    sendChat();
+  });
+}
+
+function startChatPolling() {
+  stopChatPolling();
+  chatState.pollTimer = setInterval(() => loadChatMessages(false), 3000);
+}
+
+function stopChatPolling() {
+  if (chatState.pollTimer) {
+    clearInterval(chatState.pollTimer);
+    chatState.pollTimer = null;
+  }
+}
+
+function openChat() {
+  bindChatOnce();
+  loadChatMessages(true);
+  startChatPolling();
+}

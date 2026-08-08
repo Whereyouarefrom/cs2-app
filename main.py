@@ -8,6 +8,8 @@ import math
 import asyncio
 import time
 import datetime
+import logging
+import traceback
 from typing import Optional, List
 
 import httpx
@@ -16,11 +18,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import select, func
 
-from database import async_session, init_db, close_db, User, Inventory, PromoCode
+from database import async_session, init_db, close_db, User, Inventory, PromoCode, ChatMessage
 from cases_data import CASES
 import items_data
 import currency
 import ranks
+import levels
+import cosmetics
 from auth import parse_and_verify_init_data, InitDataError
 from format_utils import format_balance_with_icon
 import config
@@ -35,17 +39,80 @@ app.add_middleware(
 )
 
 
+_bot_polling_task: Optional[asyncio.Task] = None
+
+
 @app.on_event("startup")
 async def startup_event():
+    global _bot_polling_task
+
     await init_db()
     # Фоновая задача курса валют — первое обновление прямо сейчас (не
     # блокирует запуск сервера, если сети нет: тихо останется на
     # FALLBACK_RATES), дальше сама себя перезапускает каждые несколько часов.
     asyncio.create_task(currency.periodic_refresh())
 
+    # Спринт 7: апсерт дефолтных социальных заданий (routers/tasks.py) —
+    # ПОСЛЕ init_db(), чтобы таблица tasks уже точно существовала.
+    from routers.tasks import seed_default_tasks
+    async with async_session() as _seed_session:
+        await seed_default_tasks(_seed_session)
+
+    # Спринт 9.5: фоновая задача подведения итогов еженедельных турниров —
+    # раз в минуту проверяет "не воскресенье 23:59 UTC ли сейчас" и, если
+    # да, один раз раздаёт награды (см. routers/tournament.py).
+    from routers.tournament import periodic_weekly_payout
+    asyncio.create_task(periodic_weekly_payout())
+
+    # ============================================
+    # Спринт 12: запуск Telegram-бота (админ-команды) вместе с API
+    # ============================================
+    # Раньше bot.py запускался отдельным процессом (`python bot.py`) — это
+    # по-прежнему рабочий вариант для деплоя на 2 процесса/контейнера.
+    # Здесь бот поднимается ВНУТРИ процесса API как фоновая asyncio-задача,
+    # чтобы `python main.py` был единой точкой входа для всего бэкенда.
+    #
+    # ВАЖНО про init_db()/close_db(): bot.py в своём отдельном main() тоже
+    # вызывает их — но при запуске отсюда мы используем УЖЕ выполненный
+    # выше init_db() этого процесса и НЕ вызываем bot.close_db() на
+    # остановке (см. shutdown_event ниже), чтобы не закрыть пул соединений,
+    # которым продолжает пользоваться FastAPI. Оба модуля (bot.py и
+    # database.py) используют один и тот же движок SQLAlchemy (одиночка на
+    # уровне модуля database.py), поэтому это безопасно и не создаёт
+    # второй пул.
+    #
+    # BOT_TOKEN оставлен плейсхолдером в config.py по умолчанию — если его
+    # не заполнить, aiogram упадёт при первом запросе к Telegram API.
+    # Ошибку логируем, но НЕ роняем весь FastAPI-процесс из-за неё: игровой
+    # API должен продолжать работать, даже если бот временно недоступен.
+    try:
+        import bot as bot_module
+        await bot_module.setup_bot()
+        _bot_polling_task = asyncio.create_task(bot_module.run_polling_with_reconnect())
+    except Exception:
+        logging.getLogger(__name__).error(
+            "Не удалось запустить Telegram-бота вместе с API "
+            "(проверь BOT_TOKEN в config.py):\n" + traceback.format_exc()
+        )
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    # Останавливаем polling бота ДО закрытия пула БД — иначе висящий
+    # long-polling запрос может попытаться обратиться к уже закрытому
+    # соединению в момент штатной остановки.
+    if _bot_polling_task is not None:
+        _bot_polling_task.cancel()
+        try:
+            await _bot_polling_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        try:
+            import bot as bot_module
+            await bot_module.bot.session.close()
+        except Exception:
+            pass
+
     # Закрываем пул соединений с БД при штатной остановке процесса
     # (рестарт деплоя, graceful shutdown uvicorn) — иначе соединения
     # остаются висеть до истечения серверного idle-таймаута.
@@ -136,7 +203,7 @@ QUALITY_PRICE_MULTIPLIER = {"FN": 1.65, "MW": 1.25, "FT": 1.0, "WW": 0.82, "BS":
 # Официальные пороги float Valve — граница качества определяется ТОЛЬКО
 # позицией float_val внутри этого диапазона (раньше quality и float_val
 # роллились независимо друг от друга, из-за чего мог выпасть, например,
-# "Factory New" с float 0.9, чего в игре быть не может).
+# "Factory New" с float 0.9, чего в игр�� быть не может).
 QUALITY_FLOAT_RANGE = {
     "FN": (0.00, 0.07),
     "MW": (0.07, 0.15),
@@ -157,6 +224,42 @@ def _roll_quality_and_float() -> tuple[str, float]:
     lo, hi = QUALITY_FLOAT_RANGE[quality]
     float_val = round(random.uniform(lo, hi), 4)
     return quality, float_val
+
+
+def serialize_inventory_item(item) -> dict:
+    """Единая сериализация строки инвентаря для ВСЕХ эндпоинтов, которые
+    отдают предметы (профиль, /api/inventory, витрина, публичная карточка
+    друга).
+
+    Раньше этот словарь дублировался копипастой в нескольких местах, и
+    добавление поля требовало правок во всех — из-за чего, например,
+    stattrak_count вообще никогда не доезжал до фронта. Спринт 10 добавил
+    сюда точный float, полное имя категории качества (Factory New,
+    Field-Tested и т.д.) и счётчик StatTrak™, поэтому единая точка стала
+    обязательной.
+
+    float_val округляем до 6 знаков и отдаём как есть — карточка скина в
+    инвентаре показывает ТОЧНОЕ значение (напр. Float: 0.013412), а не
+    только категорию качества."""
+    float_val = item.float_val
+    return {
+        "id": item.id,
+        "name": item.skin_name,
+        "price": item.skin_price,
+        "rarity": item.rarity,
+        # quality — короткий код (FN/MW/FT/WW/BS), quality_name — полное
+        # человекочитаемое имя категории. Фронт показывает ОБА (дублирование
+        # категории качества требует ТЗ Спринта 10).
+        "quality": item.quality,
+        "quality_name": QUALITY_FULL_NAME.get(item.quality, ""),
+        "float_val": round(float_val, 6) if float_val is not None else None,
+        "stattrak": bool(item.stattrak),
+        "stattrak_count": item.stattrak_count or 0,
+        "image": item.image_url,
+        "obtained_from_case": item.obtained_from_case,
+        "is_in_showcase": bool(item.is_in_showcase),
+        "is_on_market": bool(item.is_on_market),
+    }
 
 
 STATTRAK_CHANCE = 0.10
@@ -293,7 +396,7 @@ def _raw_case_expected_value(case_key: str) -> float:
 
 def _case_price_map() -> dict[str, float]:
     """Считает и кэширует нормализованные цены (100–999 💎) один раз для
-    всех кейсов сразу — иначе относительное ранжирование "дешевле/дороже"
+    всех кейсов сразу — иначе относ��тельное ранжирование "дешевле/дороже"
     между кейсами было бы невозможно посчитать по одному кейсу за раз."""
     if _CASE_PRICE_CACHE:
         return _CASE_PRICE_CACHE
@@ -412,7 +515,7 @@ CRAFT_FEE_BY_RARITY = {
 
 def _next_craft_rarity(rarity: str) -> Optional[str]:
     """Следующая по старшинству редкость для трейд-апа. None — если
-    редкость уже максимальная (Knife) и апгрейдить дальше некуда."""
+    редкость уже максимальная (Knife) и апгрейдить дальше неку��а."""
     try:
         idx = RARITY_ORDER.index(rarity)
     except ValueError:
@@ -617,7 +720,7 @@ async def _credit_referral_commission(session, spender: User, spent_amount: floa
     "сколько кристаллов пассивно получено с активности друзей").
 
     Ничего не коммитит сама — вызывается ВНУТРИ уже открытой транзакции,
-    рядом с _award_xp, чтобы списание у спендера и начисление рефереру
+    рядом с _award_xp, чтобы спи��ание у спендера и начисление рефереру
     ушли в БД одной атомарной операцией вместе с остальным эндпоинтом.
     """
     if not spender.referred_by or spent_amount <= 0:
@@ -638,6 +741,62 @@ async def _credit_referral_commission(session, spender: User, spent_amount: floa
     referrer.ref_earnings_total = round((referrer.ref_earnings_total or 0.0) + commission, 2)
 
 
+async def _find_referrer(session, spender: User) -> Optional[User]:
+    if not spender.referred_by:
+        return None
+    result = await session.execute(
+        select(User).where(User.telegram_id == spender.referred_by)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _credit_referral_upgrader_loss(session, spender: User, lost_amount: float) -> None:
+    """Спринт 9.5: пожизненное отчисление рефереру — config.REF_UPGRADER_LOSS_COMMISSION_PERCENT
+    (5%) от ставки, ПРОИГРАННОЙ рефералом в Апгрейдере (routers/upgrader.py,
+    результат 'lose'). lost_amount — это staked_value (стоимость сгоревших
+    предметов + добавленных Кристаллов), т.е. вся сгоревшая ставка целиком.
+
+    Отдельная функция от _credit_referral_commission (общие траты) — так как
+    у Апгрейдера, в отличие от открытия кейса/крафта, есть явный исход
+    (выигрыш/проигрыш), комиссия здесь считается от исхода, а не от факта
+    самой ставки. Ничего не коммитит сама — вызывается внутри уже открытой
+    транзакции эндпоинта, рядом с остальными начислениями."""
+    if lost_amount <= 0:
+        return
+    referrer = await _find_referrer(session, spender)
+    if not referrer:
+        return
+
+    commission = round(lost_amount * config.REF_UPGRADER_LOSS_COMMISSION_PERCENT, 2)
+    if commission <= 0:
+        return
+
+    referrer.balance += commission
+    referrer.ref_earnings_total = round((referrer.ref_earnings_total or 0.0) + commission, 2)
+
+
+async def _credit_referral_upgrader_win(session, spender: User, net_win: float) -> None:
+    """Спринт 9.5: пожизненное отчисление рефереру — config.REF_UPGRADER_WIN_COMMISSION_PERCENT
+    (2%) от ЧИСТОГО выигрыша реферала в Апгрейдере (результат 'win').
+    net_win — это (target_value - staked_value), т.е. только "навар" сверх
+    той ставки, что уже сгорела в предмет, а НЕ вся стоимость выигранного
+    предмета целиком. Если по какой-то причине net_win <= 0 (не должно
+    случаться при победе, т.к. цель всегда дороже шанса на неё), комиссия
+    просто не начисляется. Ничего не коммитит сама — см. _credit_referral_upgrader_loss."""
+    if net_win <= 0:
+        return
+    referrer = await _find_referrer(session, spender)
+    if not referrer:
+        return
+
+    commission = round(net_win * config.REF_UPGRADER_WIN_COMMISSION_PERCENT, 2)
+    if commission <= 0:
+        return
+
+    referrer.balance += commission
+    referrer.ref_earnings_total = round((referrer.ref_earnings_total or 0.0) + commission, 2)
+
+
 async def _award_xp(session, user: User, amount: int) -> dict:
     """Начисляет XP пользователю и, если пройден порог следующего ранга
     (или сразу нескольких — на случай крупного разового начисления),
@@ -650,7 +809,18 @@ async def _award_xp(session, user: User, amount: int) -> dict:
     крысталлов за ранг и сам предмет ушли в БД одной атомарной операцией.
     """
     if amount <= 0:
-        return {"gained": 0, "total_xp": user.xp or 0, "rank_level": user.rank_level or 0, "rank_up": []}
+        return {
+            "gained": 0,
+            "total_xp": user.xp or 0,
+            "rank_level": user.rank_level or 0,
+            "rank_up": [],
+            "level_up": [],
+            "level": levels.level_from_xp(user.xp or 0),
+        }
+
+    # Уровень аккаунта ДО начисления — по нему потом определяем, какие
+    # уровни игрок перешагнул этим начислением (см. конец функции).
+    level_before = levels.level_from_xp(user.xp or 0)
 
     user.xp = (user.xp or 0) + amount
     current_level = user.rank_level or 0
@@ -698,12 +868,63 @@ async def _award_xp(session, user: User, amount: int) -> dict:
 
     user.rank_level = current_level
 
+    # ---- Спринт 10: уровень аккаунта + счётчики StatTrak™ ----
+    # Уровень аккаунта нигде не хранится (всегда выводится из xp), поэтому
+    # тут мы лишь СРАВНИВАЕМ уровень до и после начисления, чтобы отдать
+    # фронту события повышения. За одно крупное начисление можно перешагнуть
+    # сразу несколько уровней — отдаём список, а не одно значение.
+    level_after = levels.level_from_xp(user.xp)
+    level_up_events = []
+    for lvl in range(level_before + 1, level_after + 1):
+        prev_slots = levels.showcase_slots_for_level(lvl - 1)
+        slots = levels.showcase_slots_for_level(lvl)
+        level_up_events.append({
+            "level": lvl,
+            "showcase_slots": slots,
+            # +1 слот витрины даётся не на каждом уровне, а раз в 5 — фронт
+            # по этому флагу решает, показывать ли строку «+1 слот Витрины».
+            "showcase_slot_gained": slots > prev_slots,
+        })
+    user.last_seen_level = level_after
+
+    await _tick_stattrak_counters(session, user)
+
     return {
         "gained": amount,
         "total_xp": user.xp,
         "rank_level": user.rank_level,
         "rank_up": rank_up_events,
+        # ---- Спринт 10 ----
+        "level": level_after,
+        "level_up": level_up_events,
     }
+
+
+async def _tick_stattrak_counters(session, user: User) -> None:
+    """Спринт 10: «оживляет» счётчик StatTrak™.
+
+    StatTrak-предмет всегда падает игроку с нулём (stattrak_count=0) и
+    набивает счётчик от АКТИВНОСТИ — но только тот предмет, который игрок
+    реально "носит", то есть выставил в Витрину профиля (is_in_showcase).
+    Это и логика, и защита от абсурда: иначе счётчик рос бы одновременно у
+    сотен лежащих в инвентаре скинов и ничего бы не значил.
+
+    Вызывается из _award_xp — единой воронки любой активности (открытие
+    кейсов, мини-игры, крафт, контракты, ежедневки, реклама), поэтому
+    отдельно врезаться в каждый эндпоинт не нужно. Витрина ограничена 10
+    слотами, так что это всегда обновление максимум 10 строк.
+
+    Ничего не коммитит — работает внутри уже открытой транзакции вызывающего.
+    """
+    result = await session.execute(
+        select(Inventory).where(
+            Inventory.user_id == user.id,
+            Inventory.is_in_showcase == True,   # noqa: E712 — SQLAlchemy требует явное сравнение
+            Inventory.stattrak == True,          # noqa: E712
+        )
+    )
+    for item in result.scalars().all():
+        item.stattrak_count = (item.stattrak_count or 0) + 1
 
 
 @app.get("/api/ranks")
@@ -782,7 +1003,7 @@ class UpgradeRequest(BaseModel):
     #   "item"       — выбрал конкретный скин из поиска -> target_name
     #   "price"      — вручную ввёл желаемую стоимость   -> target_price
     #   "multiplier" — быстрая кнопка/ползунок множителя -> multiplier (x2/x3/x5...)
-    #   "chance"     — быстрая кнопка/ползунок шанса     -> chance (30/55/75...)
+    #   "chance"     — б��страя кнопка/ползунок шанса     -> chance (30/55/75...)
     # Ровно одно из полей target_name/target_price/multiplier/chance должно
     # соответствовать выбранному mode — остальные игнорируются бэкендом.
     mode: str = "multiplier"
@@ -818,6 +1039,7 @@ class UpdateSettingsRequest(BaseModel):
     telegram_id: int
     lang: Optional[str] = None
     sound_enabled: Optional[bool] = None
+    background: Optional[str] = None
 
 
 class BonusClaimRequest(BaseModel):
@@ -859,6 +1081,70 @@ class ClimbCashoutRequest(BaseModel):
 
 
 # ============================================
+# Спринт 12: Кастомизация фона симулятора
+# ============================================
+# Единый каталог доступных фонов — источник истины и для валидации на
+# бэкенде (update_settings), и для отрисовки сетки выбора на фронте
+# (отдаётся клиенту через /api/app-config, чтобы не дублировать список в
+# app.js — новый фон добавляется ровно в одном месте).
+#
+# type="theme"  — обычная тёмная тема приложения, media не участвует;
+# type="image"  — статичная HD-картинка карты (JPG/WebP), растягивается
+#                 на весь фон через object-fit: cover;
+# type="video"  — зацикленное видео-локация (WebM/MP4), рендерится с
+#                 autoplay loop muted playsinline (обязательно для
+#                 автовоспроизведения в мобильных WebView Telegram).
+#
+# thumb — превью для сетки выбора в Настройках (может совпадать с src для
+# картинок; для видео — отдельный статичный кадр, чтобы не грузить видео
+# только ради иконки выбора).
+BACKGROUND_OPTIONS = [
+    {
+        "key": "dark",
+        "label": "Классическая тёмная",
+        "type": "theme",
+    },
+    {
+        "key": "map_mirage",
+        "label": "Mirage",
+        "type": "image",
+        "src": "/assets/backgrounds/mirage.jpg",
+        "thumb": "/assets/backgrounds/thumbs/mirage.jpg",
+    },
+    {
+        "key": "map_dust2",
+        "label": "Dust II",
+        "type": "image",
+        "src": "/assets/backgrounds/dust2.jpg",
+        "thumb": "/assets/backgrounds/thumbs/dust2.jpg",
+    },
+    {
+        "key": "map_inferno",
+        "label": "Inferno",
+        "type": "image",
+        "src": "/assets/backgrounds/inferno.jpg",
+        "thumb": "/assets/backgrounds/thumbs/inferno.jpg",
+    },
+    {
+        "key": "video_mirage",
+        "label": "Mirage (видео)",
+        "type": "video",
+        "src": "/assets/backgrounds/mirage_loop.mp4",
+        "thumb": "/assets/backgrounds/thumbs/mirage_loop.jpg",
+    },
+    {
+        "key": "video_dust2",
+        "label": "Dust II (видео)",
+        "type": "video",
+        "src": "/assets/backgrounds/dust2_loop.mp4",
+        "thumb": "/assets/backgrounds/thumbs/dust2_loop.jpg",
+    },
+]
+BACKGROUND_KEYS = {opt["key"] for opt in BACKGROUND_OPTIONS}
+DEFAULT_BACKGROUND = "dark"
+
+
+# ============================================
 # 2. GET /api/app-config — конфиг для фронтенда
 # ============================================
 @app.get("/api/app-config")
@@ -883,6 +1169,8 @@ async def app_config():
         # минут, пока открыт WebApp).
         "currency_rates": currency.get_rates(),
         "currency_symbols": {"RUB": "💎", "USD": "$", "UAH": "₴"},
+        # Спринт 12: каталог фонов симулятора для сетки выбора в Настройках.
+        "background_options": BACKGROUND_OPTIONS,
     }
 
 
@@ -919,7 +1207,7 @@ async def get_cases():
                     "base_price": get_base_price_rub(i["name"], i["rarity"]),
                     "drop_chance": chances.get(i["name"], 0.0),
                     # Есть ли у ЭТОГО конкретного скина StatTrak™-версия (для
-                    # ножей/перчаток не используется — там показывается
+                    # нож��й/перчаток не используется — там показывается
                     # агрегированная статистика по всей категории, см. фронт).
                     "stattrak_available": (
                         i["rarity"] != "Gloves"
@@ -988,6 +1276,8 @@ async def open_case(req: OpenCaseRequest):
             drops.append(drop)
             item_records.append(item_record)
             _maybe_update_top_drop(user, drop)
+            # Спринт 11: авто-лента в глобальный чат для дорогих дропов (>100k 💎)
+            _maybe_post_drop_to_chat(session, user, drop)
 
         xp_info = await _award_xp(session, user, _xp_for_case_open(case_price, req.count))
 
@@ -1177,15 +1467,63 @@ async def activate_promo(req: PromoRequest):
 
 def _maybe_update_top_drop(user: User, drop: dict) -> None:
     """Обновляет "Топ дроп" пользователя, ЕСЛИ новый предмет дороже текущего
-    рекорда. Вызывается при любом получении предмета (открытие кейса,
+    рекорда. Вызывается пр�� любом получении предмета (открытие кейса,
     промокод и т.п.) — само поле живёт на User, а не считается из
-    инвентаря, поэтому продажа предмета никогда его не затирает."""
+    инвентаря, поэтому продажа предмета никогда его не затирает.
+
+    Спринт 10: заодно инкрементит накопительные счётчики редкостей для
+    авто-разблокировки титулов («Ножеман» — ножи/перчатки, «Счастливчик» —
+    Covert и выше). Врезка сделана ИМЕННО здесь осознанно: эта функция уже
+    вызывается из всех 13 мест, где игрок получает предмет (кейсы, крафт,
+    контракты, апгрейдер, колесо, промокоды, Battle Pass, ежедневки,
+    ранговые кейсы), поэтому счётчики нельзя пропустить ни на одном пути.
+    Саму разблокировку тут не делаем — она требует уровень и ст��имость
+    инвентаря, поэтому живёт в cosmetics.sync_unlocks() при сборке профиля."""
+    cosmetics.register_drop(user, drop.get("rarity"))
+
     price = drop.get("price", 0) or 0
     if user.top_drop_price is None or price > user.top_drop_price:
         user.top_drop_name = drop.get("name")
         user.top_drop_price = price
         user.top_drop_rarity = drop.get("rarity")
         user.top_drop_image = drop.get("image")
+
+
+# ============================================
+# Спринт 11: уведомления администратору + авто-лента дропов в чат
+# ============================================
+async def notify_admin_telegram(text: str) -> None:
+    """Отправляет служебное уведомление администратору (config.ADMIN_TG_ID)
+    напрямую через Telegram Bot API. Используется авто-модерацией чата
+    (routers/chat.py) при авто-муте по фильтру и при скрытии сообщения по
+    3+ жалобам. Тихо проглатывает любые ошибки сети / отсутствие токена —
+    провал уведомления НЕ должен ронять основной HTTP-запрос."""
+    if not config.ADMIN_TG_ID or not config.BOT_TOKEN:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage",
+                json={"chat_id": config.ADMIN_TG_ID, "text": text, "parse_mode": "HTML"},
+            )
+    except Exception:
+        pass
+
+
+def _maybe_post_drop_to_chat(session, user: User, drop: dict) -> None:
+    """Авто-лента дропов (Спринт 11): добавляет СИСТЕМНОЕ сообщение в
+    глобальный чат ТОЛЬКО если выбитый скин дороже
+    config.CHAT_DROP_FEED_THRESHOLD (100 000 💎). Просто кладёт ChatMessage
+    в уже открытую сессию — коммит делает вызывающий эндпоинт (open_case)."""
+    price = drop.get("price", 0) or 0
+    if price <= config.CHAT_DROP_FEED_THRESHOLD:
+        return
+    name = user.first_name or user.username or "Игрок"
+    item = drop.get("name", "предмет")
+    st = "StatTrak™ " if drop.get("stattrak") else ""
+    price_str = f"{int(price):,}".replace(",", " ")
+    text = f"🔥 {name} выбил редкий предмет — {st}{item} за 💎 {price_str}!"
+    session.add(ChatMessage(user_id=user.id, text=text, is_system=True, is_hidden=False))
 
 
 async def _build_profile_payload(session, user: User) -> dict:
@@ -1198,7 +1536,7 @@ async def _build_profile_payload(session, user: User) -> dict:
     total_value = sum(i.skin_price for i in inventory) if inventory else 0
 
     # ---- Статистика P2P-реферальной системы ----
-    # Считаем количество приглашённых друзей "на лету" (а не кэшируем в
+    # Считаем количество приглашённых друзей "на лету" (а не к��шируе�� в
     # отдельной колонке), т.к. это простой COUNT по индексированному полю
     # referred_by и не требует поддерживать счётчик в актуальном состоянии
     # при каждой регистрации. Пассивный заработок, наоборот, накопительный
@@ -1208,16 +1546,50 @@ async def _build_profile_payload(session, user: User) -> dict:
     )
     referrals_count = result_ref_count.scalar() or 0
 
+    # ---- Спринт 10: уровень аккаунта, титулы/рамки, витрина ----
+    # Уровень считается из того же xp, что и ранг (см. levels.py — почему
+    # это две независимые прогрессии от одного счётчика).
+    level_info = levels.get_level_progress(user.xp or 0)
+    level = level_info["level"]
+
+    # Пересчитываем условия титулов/рамок ИМЕННО здесь: только на сборке
+    # профиля одновременно доступны и уровень, и актуальная стоимость
+    # инвентаря (нужна «Магнату»). Функция идемпотентна и заодно поднимает
+    # peak_inventory_value, поэтому вызывать её на каждом заходе безопасно.
+    newly_unlocked = cosmetics.sync_unlocks(user, level=level, inventory_value=total_value)
+
+    # sync_unlocks мутирует user (peak_inventory_value и, при разблокировке,
+    # unlocked_titles/unlocked_frames), а все три вызывающих эндпоинта
+    # (/auth/telegram, /auth/telegram/dev, /user/profile) — read-only и
+    # своего commit() не делают. Поэтому фиксируем изменения здесь, и только
+    # если они реально есть, чтобы не открывать транзакцию на каждый заход
+    # в профиль. last_seen_level синхронизируем тем же коммитом: обычно его
+    # уже обновил _award_xp, но у игрока, набравшего опыт до появления этой
+    # колонки, снимок иначе навсегда остался бы на первом уровне.
+    if user.last_seen_level != level:
+        user.last_seen_level = level
+    if session.dirty:
+        await session.commit()
+
+    # Витрина: закреплённые предметы + сколько слотов открыл уровень.
+    showcase_items = [i for i in inventory if i.is_in_showcase]
+    showcase_items.sort(key=lambda i: i.skin_price, reverse=True)
+
     return {
         "telegram_id": user.telegram_id,
         "username": user.username,
         "first_name": user.first_name,
         "photo_url": user.photo_url,
         "balance": user.balance,
+        "gold_balance": round(user.gold_balance or 0.0, 2),
         "is_vip": user.is_vip,
         "vip_expires_at": user.vip_expires_at.isoformat() if user.vip_expires_at else None,
         "lang": user.lang or "ru",
         "sound_enabled": user.sound_enabled,
+        # Спринт 12: сервер — источник истины при рассинхроне с localStorage
+        # (напр. игрок сменил фон на другом устройстве) — фронт применяет
+        # это значение поверх локального после первого успешного логина.
+        "background": user.background or DEFAULT_BACKGROUND,
         "terms_accepted": bool(user.terms_accepted),
         "total_cases_opened": user.total_cases_opened,
         "favorite_case": user.favorite_case or "—",
@@ -1228,6 +1600,26 @@ async def _build_profile_payload(session, user: User) -> dict:
         # ---- Опыт (XP) и ранг/лига (см. ranks.py) ----
         "xp": user.xp or 0,
         "rank": ranks.get_rank_progress(user.xp or 0, user.rank_level or 0),
+        # ---- Спринт 10: уровень аккаунта (та же xp, отдельная прогрессия
+        # по формуле 100 * 1.15^(N-1) — см. levels.py) ----
+        "level": level_info,
+        # Косметика профиля: полные каталоги с флагом unlocked и прогрессом
+        # по условию — фронт рисует и открытые, и ещё закрытые варианты.
+        "titles": cosmetics.serialize_titles(user, level=level),
+        "frames": cosmetics.serialize_frames(user, level=level),
+        "selected_title": user.selected_title,
+        "selected_frame": user.selected_frame,
+        "selected_title_info": cosmetics.title_public(user.selected_title),
+        "selected_frame_info": cosmetics.frame_public(user.selected_frame),
+        # Что открылось ровно этим запросом — фронт показывает уведомление.
+        "newly_unlocked": newly_unlocked,
+        # ---- Витрина лучших скинов ----
+        "showcase": {
+            "slots": level_info["showcase_slots"],
+            "max_slots": level_info["showcase_max_slots"],
+            "next_slot_level": level_info["next_showcase_slot_level"],
+            "items": [serialize_inventory_item(i) for i in showcase_items],
+        },
         "inventory_total_value": round(total_value, 0),
         "inventory_count": len(inventory),
         # "Топ дроп" — самый дорогой предмет за ВСЁ время, персистентный
@@ -1240,21 +1632,7 @@ async def _build_profile_payload(session, user: User) -> dict:
         } if user.top_drop_name else None,
         # Полный массив инвентаря — фронту не нужно делать второй запрос,
         # чтобы отрисовать вкладку "Профиль" сразу после логина.
-        "inventory": [
-            {
-                "id": i.id,
-                "name": i.skin_name,
-                "price": i.skin_price,
-                "rarity": i.rarity,
-                "quality": i.quality,
-                "quality_name": QUALITY_FULL_NAME.get(i.quality, ""),
-                "stattrak": i.stattrak,
-                "float_val": i.float_val,
-                "image": i.image_url,
-                "obtained_from_case": i.obtained_from_case,
-            }
-            for i in inventory
-        ],
+        "inventory": [serialize_inventory_item(i) for i in inventory],
     }
 
 
@@ -1283,7 +1661,7 @@ async def _get_or_create_user(
     user = result.scalar_one_or_none()
 
     if not user:
-        # Новый юзер — создаём с дефолтным балансом из config.START_BALANCE
+        # Новый юзер — создаём с дефолтным ба��ансом из config.START_BALANCE
         user = User(
             telegram_id=telegram_id,
             username=username or "Игрок",
@@ -1393,9 +1771,21 @@ async def update_settings(req: UpdateSettingsRequest):
             user.lang = req.lang
         if req.sound_enabled is not None:
             user.sound_enabled = req.sound_enabled
+        # Спринт 12: фон валидируем ТОЛЬКО против BACKGROUND_KEYS — иначе
+        # клиент мог бы записать в БД произвольную строку (в т.ч. случайно
+        # рассинхронизированную со старой версией фронта после деплоя).
+        if req.background is not None:
+            if req.background not in BACKGROUND_KEYS:
+                raise HTTPException(400, "Неизвестный фон")
+            user.background = req.background
 
         await session.commit()
-        return {"success": True, "lang": user.lang, "sound_enabled": user.sound_enabled}
+        return {
+            "success": True,
+            "lang": user.lang,
+            "sound_enabled": user.sound_enabled,
+            "background": user.background or DEFAULT_BACKGROUND,
+        }
 
 
 # ============================================
@@ -1573,184 +1963,16 @@ async def bonus_claim(req: BonusClaimRequest):
 
 
 # ============================================
-# 9c. Ежедневные награды за вход (Daily Streak, 1-7 день)
+# 9c. Ежедневные награды за вход (Daily Streak) — СПРИНТ 7
 # ============================================
-# Правила:
-# - Заходишь и забираешь награду не чаще раза в календарные UTC-сутки.
-# - Если предыдущая награда забрана ВЧЕРА — серия растёт (+1 день, до 7,
-#   дальше цикл начинается заново, серия при этом продолжает расти для статистики).
-# - Если пропустил хотя бы один день — серия сбрасывается на День 1.
-# - Награды: от 10 до 550 💎 Кристалликов, редкий скин (день 5) или
-#   эксклюзивный промокод (день 6); день 7 — джекпот (550 💎 + редкий предмет).
-DAILY_STREAK_REWARDS = [
-    {"day": 1, "type": "balance", "amount": 10},
-    {"day": 2, "type": "balance", "amount": 35},
-    {"day": 3, "type": "balance", "amount": 80},
-    {"day": 4, "type": "balance", "amount": 150},
-    {"day": 5, "type": "skin", "rarity_pool": ["Classified", "Covert"]},
-    {"day": 6, "type": "promo", "amount": 300},
-    {"day": 7, "type": "jackpot", "amount": 550, "rarity_pool": ["Covert", "Knife", "Gloves"]},
-]
-
-# Плоский пул предметов по редкости, собранный из ВСЕХ кейсов — источник
-# "редких скинов" для наград дня 5 и дня 7 (не привязан к конкретному кейсу).
-_ALL_ITEMS_BY_RARITY: dict[str, list[dict]] = {}
-for _case in CASES.values():
-    for _it in _case["items"]:
-        _ALL_ITEMS_BY_RARITY.setdefault(_it["rarity"], []).append(_it)
-
-
-def _roll_bonus_skin(rarity_pool: list[str]) -> dict:
-    available = [r for r in rarity_pool if _ALL_ITEMS_BY_RARITY.get(r)]
-    rarity = random.choice(available) if available else "Classified"
-    item = random.choice(_ALL_ITEMS_BY_RARITY[rarity])
-    quality, float_val = _roll_quality_and_float()
-    price = round(get_base_price_rub(item["name"], rarity) * QUALITY_PRICE_MULTIPLIER[quality])
-    return {
-        "name": item["name"],
-        "rarity": rarity,
-        "image": item["image"],
-        "quality": quality,
-        "quality_name": QUALITY_FULL_NAME[quality],
-        "price": price,
-        "float_val": float_val,
-        "stattrak": False,
-    }
-
-
-def _daily_day_index(streak: int) -> int:
-    """Переводит номер серии (может расти бесконечно) в день цикла 1-7."""
-    return ((streak - 1) % 7) + 1 if streak > 0 else 1
-
-
-def _grant_daily_reward(session, user: User, day_index: int) -> dict:
-    """Начисляет награду за day_index (1-7) прямо в открытой сессии/транзакции
-    и возвращает данные для отображения на фронте."""
-    reward_def = DAILY_STREAK_REWARDS[day_index - 1]
-    result: dict = {"day": day_index, "type": reward_def["type"]}
-
-    if reward_def["type"] == "balance":
-        amount = reward_def["amount"]
-        user.balance += amount
-        result["amount"] = amount
-
-    elif reward_def["type"] == "skin":
-        skin = _roll_bonus_skin(reward_def["rarity_pool"])
-        session.add(Inventory(
-            user_id=user.id,
-            skin_name=skin["name"], skin_price=skin["price"], rarity=skin["rarity"],
-            quality=skin["quality"], stattrak=skin["stattrak"], float_val=skin["float_val"],
-            image_url=skin["image"], obtained_from_case="Ежедневный бонус 🎁",
-        ))
-        result["skin"] = skin
-
-    elif reward_def["type"] == "promo":
-        amount = reward_def["amount"]
-        code = "DAILY-" + secrets.token_hex(3).upper()
-        session.add(PromoCode(
-            code=code,
-            reward_type="balance",
-            reward_value=str(amount),
-            max_activations=1,
-            expires_at=datetime.datetime.utcnow() + datetime.timedelta(days=14),
-        ))
-        result["amount"] = amount
-        result["promo_code"] = code
-
-    elif reward_def["type"] == "jackpot":
-        amount = reward_def.get("amount", 0)
-        user.balance += amount
-        skin = _roll_bonus_skin(reward_def["rarity_pool"])
-        session.add(Inventory(
-            user_id=user.id,
-            skin_name=skin["name"], skin_price=skin["price"], rarity=skin["rarity"],
-            quality=skin["quality"], stattrak=skin["stattrak"], float_val=skin["float_val"],
-            image_url=skin["image"], obtained_from_case="Ежедневный бонус 🎁 (7 день)",
-        ))
-        result["amount"] = amount
-        result["skin"] = skin
-
-    return result
-
-
-class DailyClaimRequest(BaseModel):
-    telegram_id: int
-
-
-@app.get("/api/daily-status")
-async def daily_status(telegram_id: int):
-    """Статус серии ежедневных наград + превью всех 7 дней (для интерфейса)."""
-    async with async_session() as session:
-        result = await session.execute(select(User).where(User.telegram_id == telegram_id))
-        user = result.scalar_one_or_none()
-        if not user:
-            raise HTTPException(404, "Пользователь не найден")
-
-        today = datetime.datetime.utcnow().date()
-        last = user.last_daily_claim_at.date() if user.last_daily_claim_at else None
-        claimed_today = last == today
-
-        if claimed_today:
-            upcoming_day = _daily_day_index(user.daily_streak)          # уже выдан сегодня
-        elif last == today - datetime.timedelta(days=1):
-            upcoming_day = _daily_day_index(user.daily_streak + 1)      # завтрашний день серии
-        else:
-            upcoming_day = 1                                            # серия сброшена / первый визит
-
-        rewards_preview = []
-        for reward_def in DAILY_STREAK_REWARDS:
-            preview = {"day": reward_def["day"], "type": reward_def["type"]}
-            if "amount" in reward_def:
-                preview["amount"] = reward_def["amount"]
-            if "rarity_pool" in reward_def:
-                preview["rarity_pool"] = reward_def["rarity_pool"]
-            rewards_preview.append(preview)
-
-        return {
-            "streak": user.daily_streak,
-            "claimed_today": claimed_today,
-            "current_day": upcoming_day,
-            "rewards": rewards_preview,
-        }
-
-
-@app.post("/api/daily-claim")
-async def daily_claim(req: DailyClaimRequest):
-    async with async_session() as session:
-        result = await session.execute(select(User).where(User.telegram_id == req.telegram_id))
-        user = result.scalar_one_or_none()
-        if not user:
-            raise HTTPException(404, "Пользователь не найден")
-
-        now = datetime.datetime.utcnow()
-        today = now.date()
-        last = user.last_daily_claim_at.date() if user.last_daily_claim_at else None
-
-        if last == today:
-            raise HTTPException(400, "Ежедневный бонус уже получен сегодня. Возвращайся завтра!")
-
-        if last == today - datetime.timedelta(days=1):
-            user.daily_streak += 1     # зашёл вчера и сегодня — серия продолжается
-        else:
-            user.daily_streak = 1      # первый визит или пропуск дня — серия с начала
-
-        day_index = _daily_day_index(user.daily_streak)
-        reward = _grant_daily_reward(session, user, day_index)
-        user.last_daily_claim_at = now
-
-        xp_info = await _award_xp(session, user, XP_DAILY_CLAIM)
-
-        await session.commit()
-        await session.refresh(user)
-
-        return {
-            "success": True,
-            "day": day_index,
-            "streak": user.daily_streak,
-            "new_balance": user.balance,
-            "reward": reward,
-            "xp": xp_info,
-        }
+# Реализация вын��сена в routers/streak.py (GET /api/streak/status,
+# POST /api/streak/claim) — тот же паттерн вынесения фичи в отдельный
+# роутер, что и у Колеса удачи (routers/wheel.py, Спринт 6). Старая
+# реализация (GET /api/daily-status, POST /api/daily-claim с другой
+# таблицей наград) отсюда удалена, чтобы не было двух конкурирующих
+# систем начисления на одних и тех же колонках User.daily_streak /
+# User.last_daily_claim_at / User.daily_total_claims. Если на фронте или
+# в боте где-то остались старые пути — их нужно обновить на /api/streak/*.
 
 
 # ============================================
@@ -1864,7 +2086,7 @@ def _pick_item_for_price(target_price: float) -> dict:
 
     candidates.sort(key=_item_log_distance)
     # Берём топ-12 ближайших по цене и выбираем случайно среди них — иначе
-    # результат для одной и той же целевой цены был бы всегда одинаковым.
+    # результат для одной и той же целевой цены б��л бы всегда одинаковым.
     pool = candidates[:12] or candidates
     return random.choice(pool)
 
@@ -1899,24 +2121,40 @@ def _instance_from_registry_item(entry: dict, forced_price: float) -> dict:
 
 
 @app.get("/api/items/search")
-async def search_items(q: str = "", limit: int = 30):
-    """Поиск целевого скина для Апгрейдера (используется полем поиска на
-    фронте) — обходит ВЕСЬ глобальный реестр items_data, а не только
-    предметы из кейсов."""
+async def search_items(
+    q: str = "",
+    limit: int = 30,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+):
+    """Поиск целевого скина для Апгрейдера/Синтезатора (используется полем
+    поиска на фронте) — обходит ВЕСЬ глобальный реестр items_data, а не
+    только предметы из кейсов. ��пциональные min_price/max_price фильтруют
+    по уже посчитанной цене (используется каталогом Синтезатора, спринт 4:
+    поиск по названию + диапазон цен "от/до")."""
     limit = max(1, min(limit, 60))
-    results = items_data.search_items(q, limit=limit)
-    return {
-        "results": [
-            {
-                "name": it["name"],
-                "rarity": it["rarity"],
-                "category": it["category"],
-                "image": it["image"],
-                "base_price": get_base_price_rub(it["name"], it["rarity"]),
-            }
-            for it in results
-        ]
-    }
+    # Берём с запасом до фильтрации по цене, чтобы после отсева по диапазону
+    # всё ещё оставалось до `limit` результатов (а не сильно меньше).
+    fetch_limit = limit if (min_price is None and max_price is None) else max(limit * 5, 150)
+    results = items_data.search_items(q, limit=fetch_limit)
+
+    priced = [
+        {
+            "name": it["name"],
+            "rarity": it["rarity"],
+            "category": it["category"],
+            "image": it["image"],
+            "base_price": get_base_price_rub(it["name"], it["rarity"]),
+        }
+        for it in results
+    ]
+
+    if min_price is not None:
+        priced = [it for it in priced if it["base_price"] >= min_price]
+    if max_price is not None:
+        priced = [it for it in priced if it["base_price"] <= max_price]
+
+    return {"results": priced[:limit]}
 
 
 MAX_UPGRADE_ITEMS = 6
@@ -2013,7 +2251,7 @@ async def upgrade_skin(req: UpgradeRequest):
                 },
             }
         else:
-            # Проигрыш: все выбранные предметы сгорают. Компенсация считается
+            # ��роигрыш: все выбранные предметы сгорают. Компенсация считается
             # от СУММАРНОЙ стоимости всей ставки (old_price = сумма цен всех
             # выбранных предметов, уже посчитана выше).
             for i in items:
@@ -2100,7 +2338,7 @@ async def upgrade_skin_legacy_alias(req: UpgradeRequest):
 #      ракета уже.
 #   3) Игрок жмёт "Забрать" (кнопка ручного вывода) В ЛЮБОЙ момент полёта —
 #      /minigames/crash/cashout всегда принимает вывод по РЕАЛЬНОМУ,
-#      посчитанному на сервере (не присланному клиентом) множителю на момент
+#      посчитанному на сервере (н�� присланному клиентом) множителю на момент
 #      запроса. Это работает, даже если изначально был задан авто-вывод на
 #      каком-то X: авто-вывод — это просто тот же самый вызов /cashout,
 #      сделанный клиентским таймером автоматически по достижении X, поэтому
@@ -2492,7 +2730,7 @@ async def mines_cashout(req: MinesCashoutRequest):
 
 # ============================================
 # 11d. БАШНЯ (Tower) и ЛЕСЕНКА (Ladder) — общая механика "climb"
-# Разница только в конфигурации: количество плиток на уровень / кол-во бомб / уровней.
+# Разница только в конфигурации: количество плиток на уровень / кол-во бом�� / уровней.
 # ============================================
 CLIMB_CONFIGS = {
     "tower": {"levels": 8, "tiles_per_level": 3, "bombs_per_level": 1},
@@ -2677,23 +2915,7 @@ async def get_inventory(telegram_id: int):
         )
         items = result_inv.scalars().all()
 
-        return {
-            "inventory": [
-                {
-                    "id": i.id,
-                    "name": i.skin_name,
-                    "price": i.skin_price,
-                    "rarity": i.rarity,
-                    "quality": i.quality,
-                    "quality_name": QUALITY_FULL_NAME.get(i.quality, ""),
-                    "stattrak": i.stattrak,
-                    "float_val": i.float_val,
-                    "image": i.image_url,
-                    "obtained_from_case": i.obtained_from_case,
-                }
-                for i in items
-            ]
-        }
+        return {"inventory": [serialize_inventory_item(i) for i in items]}
 
 
 # ============================================
@@ -2709,6 +2931,104 @@ async def get_inventory(telegram_id: int):
 # main) здесь безопасна и не вызывает ImportError.
 from routers.cases import router as cases_router  # noqa: E402
 app.include_router(cases_router)
+
+# ============================================
+# 14. Роутер Спринта 4: /api/upgrader/spin
+# ============================================
+# Та же схема отложенного импорта, что и у routers.cases выше — модуль
+# routers/upgrader.py делает `import main` и обращается к get_base_price_rub,
+# _instance_from_registry_item, _maybe_update_top_drop, _award_xp только
+# ВНУТРИ обработчика запроса, поэтому подключать его нужно здесь, в с��мом
+# низу файла, когда все эти имена уже определены.
+from routers.upgrader import router as upgrader_router  # noqa: E402
+app.include_router(upgrader_router)
+
+# ============================================
+# 15. Роутеры Спринта 5: /api/contracts/craft, /api/market/*
+# ============================================
+# Та же отложенная схема импорта, что и у роутеров спринтов 3-4 выше —
+# routers/contracts.py и routers/market.py делают `import main` и
+# обращаются к RARITY_ORDER, get_base_price_rub, _next_craft_rarity,
+# _instance_from_registry_item, _maybe_update_top_drop, _award_xp,
+# _credit_referral_commission, QUALITY_FULL_NAME только ВНУТРИ обработчиков
+# запросов (или, для market.py::RARITY_RANK, на этапе импорта — но уже
+# ПОСЛЕ того, как main.py полностью выполнился до этой строки, так что
+# main.RARITY_ORDER на тот момент существует).
+from routers.contracts import router as contracts_router  # noqa: E402
+app.include_router(contracts_router)
+
+from routers.market import router as market_router  # noqa: E402
+app.include_router(market_router)
+
+# ============================================
+# 16. Роутер Спринта 6: /api/wheel/spin, /api/wheel/status
+# ============================================
+# Та же отложенная схема импорта — routers/wheel.py обращается к main.CASES,
+# main.roll_item, main._maybe_update_top_drop, main.random только ВНУТРИ
+# обработчиков запросов.
+from routers.wheel import router as wheel_router  # noqa: E402
+app.include_router(wheel_router)
+
+# ============================================
+# 17. Роутеры Спринта 7: /api/streak/*, /api/tasks/*
+# ============================================
+# Та же отложенная схема импорта — routers/streak.py обращается к
+# main.CASES, main.roll_item, main._maybe_update_top_drop, main._award_xp,
+# main.XP_DAILY_CLAIM только ВНУТРИ обработчиков запросов; routers/tasks.py
+# самодостаточен (не обращается к main вообще).
+from routers.streak import router as streak_router  # noqa: E402
+app.include_router(streak_router)
+
+from routers.tasks import router as tasks_router  # noqa: E402
+app.include_router(tasks_router)
+
+# ============================================
+# 18. Роутер Спринта 8: /api/pass/* (Battle Pass, 50 уровней)
+# ============================================
+# Та же отложенная схема импорта — routers/pass.py обращается к main.CASES,
+# main.roll_item, main.get_base_price_rub, main._instance_from_registry_item,
+# main._maybe_update_top_drop только ВНУТРИ обработчиков запросов.
+from routers.pass_ import router as pass_router  # noqa: E402
+app.include_router(pass_router)
+
+# ============================================
+# 19. Роутеры Спринта 9.5: /api/promocodes/activate, /api/tournament/*
+# ============================================
+# routers/promocodes.py обращается к main.CASES, main.roll_item,
+# main._maybe_update_top_drop, main.QUALITY_FLOAT_RANGE только ВНУТРИ
+# обработчика запроса (та же отложенная схема, что и выше).
+# routers/tournament.py самодостаточен (не обращается к main вообще) —
+# читает только TournamentScore/User, которые уже пишут routers/cases.py,
+# routers/contracts.py и routers/upgrader.py.
+from routers.promocodes import router as promocodes_router  # noqa: E402
+app.include_router(promocodes_router)
+
+from routers.tournament import router as tournament_router  # noqa: E402
+app.include_router(tournament_router)
+
+
+# ============================================
+# 20. Роутеры Спринта 10: /api/profile/*, /api/friends/*
+# ============================================
+# Оба роутера обращаются к main.serialize_inventory_item только ВНУТРИ
+# обработчиков (та же отложенная схема, что и у роутеров выше) — на уровне
+# модуля они импортируют лишь database / levels / cosmetics / ranks, поэтому
+# цикл main -> routers.profile -> main не возникает.
+from routers.profile import router as profile_router  # noqa: E402
+app.include_router(profile_router)
+
+from routers.friends import router as friends_router  # noqa: E402
+app.include_router(friends_router)
+
+
+# ============================================
+# 21. Роутер Спринта 11: /api/chat/* (глобальный чат + авто-модерация)
+# ============================================
+# routers/chat.py обращается к main.notify_admin_telegram только ВНУТРИ
+# обработчиков запросов (та же отложенная схема, что и у роутеров выше),
+# поэтому подключается здесь, когда notify_admin_telegram уже определён.
+from routers.chat import router as chat_router  # noqa: E402
+app.include_router(chat_router)
 
 
 if __name__ == "__main__":

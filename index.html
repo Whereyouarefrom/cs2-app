@@ -11,13 +11,31 @@
 </head>
 <body>
 
+<!-- ==================== СПРИНТ 12: ФОН СИМУЛЯТОРА ====================
+     Фиксированный слой позади #app. Показывается (получает класс
+     "active") только когда выбран фон, отличный от классической тёмной
+     темы — см. applyBackground() в app.js. #bg-overlay даёт защиту
+     читаемости интерфейса (blur + затемнение) поверх картинки/видео и
+     под всем остальным контентом. -->
+<div id="bg-layer" aria-hidden="true">
+  <img id="bg-image" class="bg-media" alt="">
+  <video id="bg-video" class="bg-media" autoplay loop muted playsinline></video>
+  <div id="bg-overlay"></div>
+</div>
+
 <div id="app">
 
   <!-- ==================== HEADER ==================== -->
   <header class="topbar">
-    <div class="balance-pill">
-      <span class="balance-icon">💎</span>
-      <span id="balance-value">0</span>
+    <div class="topbar-left">
+      <div class="balance-pill">
+        <span class="balance-icon">💎</span>
+        <span id="balance-value">0</span>
+      </div>
+      <div class="balance-pill gold-pill">
+        <span class="balance-icon">💰</span>
+        <span id="gold-value">0</span>
+      </div>
     </div>
     <div class="topbar-right">
       <div class="vip-pill" id="vip-pill" style="display:none;">⭐ VIP</div>
@@ -32,6 +50,22 @@
     <!-- CASES SCREEN -->
     <section class="screen active" id="screen-cases">
       <h1 class="screen-title" data-i18n="cases_title">Кейсы</h1>
+
+      <!-- ==================== BATTLE PASS WIDGET (Спринт 8) ==================== -->
+      <div class="pass-widget" id="pass-widget">
+        <div class="pass-widget-icon">🎖️</div>
+        <div class="pass-widget-info">
+          <div class="pass-widget-toprow">
+            <span class="pass-widget-title">Battle Pass</span>
+            <span class="pass-widget-vip-chip" id="pass-widget-vip-chip" style="display:none;">VIP</span>
+          </div>
+          <div class="pass-widget-level" id="pass-widget-level">Уровень 1 / 50</div>
+          <div class="pass-widget-bar"><div class="pass-widget-bar-fill" id="pass-widget-bar-fill" style="width:0%"></div></div>
+          <div class="pass-widget-xp" id="pass-widget-xp">0 / 100 XP</div>
+        </div>
+        <button class="btn-primary small" id="pass-widget-open-btn">Открыть Pass</button>
+      </div>
+
       <div class="cases-grid" id="cases-grid"><!-- cards injected by JS --></div>
     </section>
 
@@ -74,14 +108,76 @@
       <h1 class="screen-title" data-i18n="profile_title">Профиль</h1>
 
       <div class="profile-card">
-        <img class="profile-avatar-img" id="profile-avatar-img" src="" alt="" style="display:none;">
-        <div class="profile-avatar" id="profile-avatar">🎮</div>
+        <!-- profile-avatar-wrap — обёртка для рамки аватара (Спринт 10):
+             box-shadow рамки ставится на неё, а не на само изображение,
+             чтобы рамка не «съезжала» при подмене src аватара. -->
+        <div class="profile-avatar-wrap" id="profile-avatar-wrap">
+          <img class="profile-avatar-img" id="profile-avatar-img" src="" alt="" style="display:none;">
+          <div class="profile-avatar" id="profile-avatar">🎮</div>
+          <div class="level-badge" id="profile-level-badge">1</div>
+        </div>
         <div class="profile-card-info">
           <div class="profile-name" id="profile-name">Игрок</div>
+          <!-- Активный титул (Спринт 10) — показывается только если выбран -->
+          <div class="profile-title-pill" id="profile-title-pill" style="display:none;"></div>
           <div class="profile-username" id="profile-username"></div>
         </div>
         <div class="vip-pill" id="profile-vip-pill" style="display:none;">⭐ VIP</div>
       </div>
+
+      <!-- ==================== УРОВЕНЬ АККАУНТА (Спринт 10) ====================
+           Отдельная от ранга/лиги прогрессия по формуле XP = 100 * 1.15^(N-1),
+           считается от того же profile.xp (см. levels.py). К уровню привязана
+           вместимость Витрины, поэтому подсказка про слоты живёт здесь же. -->
+      <div class="level-card" id="level-card">
+        <div class="level-card-top">
+          <div class="level-card-num" id="level-card-num">1</div>
+          <div class="level-card-info">
+            <div class="level-card-label" data-i18n="level_label">Уровень аккаунта</div>
+            <div class="level-xp-line" id="level-xp-line">0 / 100 XP</div>
+          </div>
+          <button class="level-info-btn" id="level-info-btn" type="button" title="Таблица уровней">?</button>
+        </div>
+        <div class="level-progress-track">
+          <div class="level-progress-fill" id="level-progress-fill" style="width:0%;"></div>
+        </div>
+        <div class="level-slots-line" id="level-slots-line"></div>
+      </div>
+
+      <!-- ==================== ВИТРИНА ЛУЧШИХ СКИНОВ (Спринт 10) ====================
+           Базово 3 слота, +1 каждые 5 уровней, максимум 10. Пустые слоты
+           рисуются как placeholder'ы, чтобы игрок видел, сколько ещё можно
+           закрепить и сколько откроется дальше. -->
+      <div class="showcase-card" id="showcase-card">
+        <div class="showcase-head">
+          <div class="ref-title" data-i18n="showcase_title">🏅 Витрина лучших скинов</div>
+          <div class="showcase-counter" id="showcase-counter">0 / 3</div>
+        </div>
+        <div class="showcase-grid" id="showcase-grid"><!-- JS --></div>
+        <div class="showcase-hint" id="showcase-hint"></div>
+      </div>
+
+      <!-- ==================== ТИТУЛЫ И РАМКИ (Спринт 10) ====================
+           Каталог отдаётся целиком (и отк����ытое, и закрытое с прогрессом) —
+           закрытые кликом показывают подсказку с условием, а не молчат. -->
+      <div class="cosmetics-card" id="cosmetics-card">
+        <div class="cosmetics-group">
+          <div class="cosmetics-label" data-i18n="titles_label">🎖️ Титул</div>
+          <div class="cosmetics-row" id="titles-row"><!-- JS --></div>
+        </div>
+        <div class="cosmetics-group">
+          <div class="cosmetics-label" data-i18n="frames_label">🖼️ Рамка аватара</div>
+          <div class="cosmetics-row" id="frames-row"><!-- JS --></div>
+        </div>
+      </div>
+
+      <!-- ==================== ДРУЗЬЯ (Спринт 10) ==================== -->
+      <button class="friends-open-btn" id="friends-open-btn" type="button">
+        <span class="friends-open-icon">👥</span>
+        <span class="friends-open-text" data-i18n="friends_title">Друзья</span>
+        <span class="friends-badge" id="friends-badge" style="display:none;">0</span>
+        <span class="friends-open-arrow">›</span>
+      </button>
 
       <!-- RANK CARD — лига/ранг игрока с прогресс-баром до следующего ранга.
            Данные приходят с бэкенда в profile.rank (см. ranks.get_rank_progress
@@ -142,6 +238,21 @@
         <div class="top-drop-empty-text" data-i18n="top_drop_empty">Пока нет ни одного дропа — открой первый кейс!</div>
       </div>
 
+      <!-- ==================== BATTLE PASS COSMETICS (Спринт 8) ==================== -->
+      <div class="pass-cosmetics-card" id="pass-cosmetics-card" style="display:none;">
+        <div class="ref-title">🎖️ Косметика Battle Pass</div>
+
+        <div class="pass-cosmetics-group">
+          <div class="pass-cosmetics-label">Рамка профиля</div>
+          <div class="pass-cosmetics-row" id="pass-frames-row"><!-- JS --></div>
+        </div>
+
+        <div class="pass-cosmetics-group">
+          <div class="pass-cosmetics-label">Цвет ника</div>
+          <div class="pass-cosmetics-row" id="pass-nick-colors-row"><!-- JS --></div>
+        </div>
+      </div>
+
       <div class="settings-block">
         <div class="ref-title" data-i18n="settings_title">⚙️ Настройки</div>
 
@@ -168,6 +279,12 @@
           <button class="sound-switch" id="sound-switch">
             <span id="sound-switch-label" data-i18n="sound_on">Вкл</span>
           </button>
+        </div>
+
+        <!-- ==================== СПРИНТ 12: ФОН СИМУЛЯТОРА ==================== -->
+        <div class="settings-row settings-row-column">
+          <span class="settings-label" data-i18n="settings_background">🖼️ Фон симулятора</span>
+          <div class="bg-picker-grid" id="bg-picker-grid"><!-- JS: renderBackgroundPicker() --></div>
         </div>
       </div>
 
@@ -203,6 +320,10 @@
           <span class="game-icon-emoji">🔺</span>
           <span class="game-icon-label" data-i18n="game_upgrader">Улучшитель</span>
         </button>
+        <button class="game-icon-card" data-game="crafter">
+          <span class="game-icon-emoji">🧪</span>
+          <span class="game-icon-label" data-i18n="game_crafter">Синтезатор</span>
+        </button>
         <button class="game-icon-card" data-game="wheel">
           <span class="game-icon-emoji">🎡</span>
           <span class="game-icon-label" data-i18n="game_wheel">Колесо</span>
@@ -235,6 +356,24 @@
         <button class="btn-primary small" id="daily-earn-btn" data-i18n="watch_btn">Смотреть</button>
       </div>
 
+      <div class="earn-card" id="open-wheel-modal-btn">
+        <div class="earn-icon">🎡</div>
+        <div class="earn-info">
+          <div class="earn-title" data-i18n="wheel_earn_title">Колесо удачи</div>
+          <div class="earn-desc" id="wheel-earn-desc" data-i18n="wheel_earn_desc">Крути раз в день бесплатно — или за 💰 Золото</div>
+        </div>
+        <button class="btn-primary small" id="wheel-earn-btn" data-i18n="watch_btn">Смотреть</button>
+      </div>
+
+      <div class="earn-card" id="open-tasks-modal-btn">
+        <div class="earn-icon">✅</div>
+        <div class="earn-info">
+          <div class="earn-title" data-i18n="tasks_earn_title">Задания</div>
+          <div class="earn-desc" data-i18n="tasks_earn_desc">Подписки и рефералы — бесплатное 💰 Золото</div>
+        </div>
+        <button class="btn-primary small" id="tasks-earn-btn" data-i18n="watch_btn">Смотреть</button>
+      </div>
+
       <div class="earn-card">
         <div class="earn-icon">💎</div>
         <div class="earn-info">
@@ -248,7 +387,7 @@
         <div class="earn-icon">📺</div>
         <div class="earn-info">
           <div class="earn-title" data-i18n="earn_ad_title">Посмотреть видео</div>
-          <div class="earn-desc" id="earn-ad-desc" data-i18n="earn_ad_desc">Получи +2000 💎 виртуального баланса</div>
+          <div class="earn-desc" id="earn-ad-desc" data-i18n="earn_ad_desc">Получи +2000 💎 виртуа��ьного баланса</div>
         </div>
         <button class="btn-primary small" id="watch-ad-btn" data-i18n="watch_btn">Смотреть</button>
       </div>
@@ -273,6 +412,32 @@
       </div>
     </section>
 
+    <!-- ==================== ЧАТ (Спринт 11) ==================== -->
+    <section class="screen" id="screen-chat">
+      <h1 class="screen-title" data-i18n="chat_title">Глобальный чат</h1>
+
+      <div class="chat-wrap">
+        <div class="chat-messages" id="chat-messages">
+          <div class="chat-empty" id="chat-empty" data-i18n="chat_empty">Сообщений пока нет. Будь первым!</div>
+        </div>
+
+        <div class="chat-status" id="chat-status" hidden></div>
+
+        <form class="chat-inputbar" id="chat-form" autocomplete="off">
+          <input
+            type="text"
+            class="chat-input"
+            id="chat-input"
+            maxlength="300"
+            data-i18n-placeholder="chat_input_ph"
+            placeholder="Написать сообщение…"
+            aria-label="Написать сообщение"
+          />
+          <button type="submit" class="btn-primary small chat-send-btn" id="chat-send-btn" data-i18n="chat_send">Отправить</button>
+        </form>
+      </div>
+    </section>
+
   </main>
 
   <!-- ==================== BOTTOM TABBAR ==================== -->
@@ -288,6 +453,9 @@
     </button>
     <button class="tab-btn" data-screen="minigames">
       <span class="tab-icon">🎮</span><span class="tab-label" data-i18n="tab_minigames">Мини-игры</span>
+    </button>
+    <button class="tab-btn" data-screen="chat">
+      <span class="tab-icon">💬</span><span class="tab-label" data-i18n="tab_chat">Чат</span>
     </button>
     <button class="tab-btn" data-screen="earn">
       <span class="tab-icon">💵</span><span class="tab-label" data-i18n="tab_earn">Заработать</span>
@@ -358,13 +526,20 @@
         <div class="roulette-track" id="roulette-track"></div>
       </div>
 
+      <!-- vertical multi-spin: N параллельных вертикальных лент (count > 1),
+           каждая крутится сверху вниз и останавливается каскадом (+150мс к
+           следующей ленте) — см. runVerticalMultiSpin() в app.js -->
+      <div class="vertical-spin-wrapper" id="vertical-spin-wrapper" style="display:none;">
+        <div class="vertical-spin-lanes" id="vertical-spin-lanes"><!-- lanes injected by JS --></div>
+      </div>
+
       <!-- multi / fast results grid -->
       <div class="multi-results-grid" id="multi-results-grid" style="display:none;"></div>
       <div class="multi-results-actions" id="multi-results-actions" style="display:none;">
         <div class="multi-results-total" id="multi-results-total"></div>
         <div class="win-actions">
-          <button class="btn-secondary" id="multi-keep-all-btn" data-i18n="keep_btn">Оставить</button>
-          <button class="btn-primary" id="multi-sell-all-btn" data-i18n="sell_all_btn">Продать всё</button>
+          <button class="btn-secondary" id="multi-keep-all-btn" data-i18n="keep_all_btn">Забрать все в инвентарь</button>
+          <button class="btn-primary" id="multi-sell-all-btn">Продать всё</button>
         </div>
       </div>
 
@@ -425,6 +600,7 @@
 
       <button class="btn-primary full" id="daily-claim-btn" data-i18n="daily_claim_btn">Забрать награду</button>
       <div class="daily-hint" id="daily-hint" data-i18n="daily_hint">Заходи каждый день, чтобы не потерять серию!</div>
+      <div class="daily-hint" id="daily-mega-hint"></div>
     </div>
   </div>
 
@@ -439,6 +615,48 @@
         <div class="daily-result-promo" id="daily-result-promo" style="display:none;"></div>
       </div>
       <button class="btn-primary full" id="daily-result-ok-btn" data-i18n="ok_btn">Отлично!</button>
+    </div>
+  </div>
+
+  <!-- ==================== DAILY WHEEL MODAL (Колесо удачи) ==================== -->
+  <div class="modal-overlay" id="wheel-modal">
+    <div class="modal-sheet wheel-sheet">
+      <button class="modal-close" id="wheel-close-btn">✕</button>
+      <div class="daily-title" data-i18n="wheel_title">🎡 Колесо удач��</div>
+
+      <div class="wheel-container">
+        <div class="wheel-pointer"></div>
+        <div class="wheel-disc" id="wheel-disc">
+          <div class="wheel-labels" id="wheel-labels"><!-- 8 с��кторов, JS --></div>
+          <div class="wheel-hub">🎡</div>
+        </div>
+      </div>
+
+      <div class="wheel-hint" id="wheel-hint">—</div>
+      <button class="btn-primary full" id="wheel-spin-btn" data-i18n="wheel_spin_btn">Крутить</button>
+    </div>
+  </div>
+
+  <!-- ==================== DAILY WHEEL RESULT MODAL ==================== -->
+  <div class="modal-overlay" id="wheel-result-modal">
+    <div class="modal-sheet win-sheet">
+      <div class="win-title" data-i18n="wheel_result_title">🎉 Приз колеса!</div>
+      <div class="win-item-card" id="wheel-result-card">
+        <div class="daily-result-icon" id="wheel-result-icon">🎁</div>
+        <div class="win-item-name" id="wheel-result-name">—</div>
+        <div class="win-item-price" id="wheel-result-value"></div>
+      </div>
+      <button class="btn-primary full" id="wheel-result-ok-btn" data-i18n="wheel_ok_btn">Отлично!</button>
+    </div>
+  </div>
+
+  <!-- ==================== SOCIAL TASKS MODAL (Спринт 7) ==================== -->
+  <div class="modal-overlay" id="tasks-modal">
+    <div class="modal-sheet daily-sheet">
+      <button class="modal-close" id="tasks-close-btn">✕</button>
+      <div class="daily-title" data-i18n="tasks_title">✅ Задания</div>
+
+      <div class="tasks-list" id="tasks-list"><!-- карточки заданий, JS --></div>
     </div>
   </div>
 
@@ -589,8 +807,200 @@
     </div>
   </div>
 
+  <!-- ==================== BATTLE PASS MODAL (Спринт 8) ==================== -->
+  <div class="modal-overlay" id="pass-modal">
+    <div class="modal-sheet pass-sheet">
+      <button class="modal-close" id="pass-close-btn">✕</button>
+      <div class="daily-title">🎖️ Battle Pass</div>
+
+      <div class="pass-header">
+        <div class="pass-header-toprow">
+          <span class="pass-header-level" id="pass-header-level">Уровень 1 / 50</span>
+          <span class="pass-widget-vip-chip" id="pass-header-vip-chip" style="display:none;">VIP Pass</span>
+        </div>
+        <div class="pass-widget-bar"><div class="pass-widget-bar-fill" id="pass-header-bar-fill" style="width:0%"></div></div>
+        <div class="pass-widget-xp" id="pass-header-xp">0 / 100 XP</div>
+      </div>
+
+      <div class="pass-actions" id="pass-actions">
+        <button class="btn-primary small" id="pass-buy-vip-btn">🌟 Купить VIP Pass — 50 💰</button>
+        <button class="btn-secondary small" id="pass-skip-btn">⏩ +1 уровень — 5 💰</button>
+      </div>
+
+      <div class="pass-tabs">
+        <button class="pass-tab-btn active" id="pass-tab-btn-tree" data-tab="tree">🎁 Награды</button>
+        <button class="pass-tab-btn" id="pass-tab-btn-tasks" data-tab="tasks">✅ Задания</button>
+      </div>
+
+      <div class="pass-tab-content" id="pass-tab-tree">
+        <div class="pass-final-chest" id="pass-final-chest" style="display:none;"></div>
+        <div class="pass-tree-list" id="pass-tree-list"><!-- уровни 1-49, JS --></div>
+      </div>
+
+      <div class="pass-tab-content" id="pass-tab-tasks" style="display:none;">
+        <div class="pass-tasks-list" id="pass-tasks-list"><!-- ежедневные задания, JS --></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== BATTLE PASS REWARD RESULT MODAL ==================== -->
+  <div class="modal-overlay" id="pass-result-modal">
+    <div class="modal-sheet win-sheet">
+      <div class="win-title" id="pass-result-title">🎉 Награда получена!</div>
+      <div class="pass-result-list" id="pass-result-list"><!-- карточки наград, JS --></div>
+      <button class="btn-primary full" id="pass-result-ok-btn">Отлично!</button>
+    </div>
+  </div>
+
+  <!-- ==================== НОВЫЙ УРОВЕНЬ АККАУНТА (Спринт 10) ====================
+       Показывается один раз на факт повышения. Строка про +1 слот витрины
+       появляется только на уровнях, кратных 5 (см. levels.py). -->
+  <div class="modal-overlay" id="levelup-modal">
+    <div class="modal-sheet win-sheet levelup-sheet">
+      <div class="win-title" data-i18n="levelup_title">Новый уровень!</div>
+      <div class="levelup-num" id="levelup-num">2</div>
+      <div class="levelup-slot-line" id="levelup-slot-line" style="display:none;"></div>
+      <div class="levelup-unlock-line" id="levelup-unlock-line" style="display:none;"></div>
+      <button class="btn-primary full" id="levelup-ok-btn" data-i18n="ok_btn">Отлично!</button>
+    </div>
+  </div>
+
+  <!-- ==================== ДРУЗЬЯ (Спринт 10) ====================
+       Полноэкранная модалка из Профиля (как Battle Pass) — нижние 5 табов
+       намеренно не трогаем. Три вкладки: список друзей, входящие/исходящие
+       заявки и поиск по TG ID / username. -->
+  <div class="modal-overlay" id="friends-modal">
+    <div class="modal-sheet friends-sheet">
+      <button class="modal-close" id="friends-close-btn">✕</button>
+      <div class="daily-title" data-i18n="friends_title">👥 Друзья</div>
+
+      <div class="friends-tabs">
+        <button class="friends-tab-btn active" data-ftab="list" data-i18n="friends_tab_list">Друзья</button>
+        <button class="friends-tab-btn" data-ftab="requests">
+          <span data-i18n="friends_tab_requests">Заявки</span>
+          <span class="friends-tab-badge" id="friends-tab-badge" style="display:none;">0</span>
+        </button>
+        <button class="friends-tab-btn" data-ftab="search" data-i18n="friends_tab_search">Поиск</button>
+      </div>
+
+      <!-- Вкладка 1: список друзей -->
+      <div class="friends-tab-content" id="friends-tab-list">
+        <div class="friends-list" id="friends-list"><!-- JS --></div>
+      </div>
+
+      <!-- Вкладка 2: заявки (входящие + исходящие) -->
+      <div class="friends-tab-content" id="friends-tab-requests" style="display:none;">
+        <div class="friends-subtitle" data-i18n="friends_incoming">Входящие</div>
+        <div class="friends-list" id="friends-incoming-list"><!-- JS --></div>
+        <div class="friends-subtitle" data-i18n="friends_outgoing">Исходящие</div>
+        <div class="friends-list" id="friends-outgoing-list"><!-- JS --></div>
+      </div>
+
+      <!-- Вкладка 3: поиск по TG ID / username -->
+      <div class="friends-tab-content" id="friends-tab-search" style="display:none;">
+        <div class="friends-search-row">
+          <input class="friends-search-input" id="friends-search-input" type="text"
+                 placeholder="TG ID или username" autocomplete="off" maxlength="64">
+          <button class="btn-primary small" id="friends-search-btn" data-i18n="friends_search_btn">Найти</button>
+        </div>
+        <div class="friends-search-hint" data-i18n="friends_search_hint">
+          Введи Telegram ID (например 123456789) или username (@nick)
+        </div>
+        <div class="friends-list" id="friends-search-results"><!-- JS --></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== ПУБЛИЧНАЯ КАРТОЧКА ПРОФИЛЯ ДРУГА (Спринт 10) ====================
+       Только публичные данные: уровень, ранг, титул, рамка, витрина и
+       безопасная статистика. Балансы и инвентарь целиком не отдаются. -->
+  <div class="modal-overlay" id="friend-profile-modal">
+    <div class="modal-sheet friend-profile-sheet">
+      <button class="modal-close" id="friend-profile-close-btn">✕</button>
+      <div class="friend-prof-head">
+        <div class="profile-avatar-wrap" id="friend-prof-avatar-wrap">
+          <img class="profile-avatar-img" id="friend-prof-avatar-img" src="" alt="" style="display:none;">
+          <div class="profile-avatar" id="friend-prof-avatar">🎮</div>
+          <div class="level-badge" id="friend-prof-level">1</div>
+        </div>
+        <div class="friend-prof-names">
+          <div class="profile-name" id="friend-prof-name">Игрок</div>
+          <div class="profile-title-pill" id="friend-prof-title" style="display:none;"></div>
+          <div class="profile-username" id="friend-prof-username"></div>
+          <div class="friend-prof-rank" id="friend-prof-rank"></div>
+        </div>
+      </div>
+
+      <div class="friend-prof-stats" id="friend-prof-stats"><!-- JS --></div>
+
+      <div class="friend-prof-section-title" data-i18n="showcase_title">🏅 Витрина лучших скинов</div>
+      <div class="showcase-grid" id="friend-prof-showcase"><!-- JS --></div>
+
+      <div class="friend-prof-actions" id="friend-prof-actions"><!-- JS --></div>
+    </div>
+  </div>
+
+  <!-- ==================== ТАБЛИЦА УРОВНЕЙ (Спринт 10) ==================== -->
+  <div class="modal-overlay" id="level-table-modal">
+    <div class="modal-sheet level-table-sheet">
+      <button class="modal-close" id="level-table-close-btn">✕</button>
+      <div class="daily-title" data-i18n="level_table_title">📈 Уровни аккаунта</div>
+      <div class="level-table-formula">XP для уровня N = 100 × 1.15<sup>N−1</sup></div>
+      <div class="level-table-list" id="level-table-list"><!-- JS --></div>
+    </div>
+  </div>
+
+  <!-- ==================== КАРТОЧКА ПРЕДМЕТА (Спринт 10) ====================
+       Открывается тапом по скину в инвентаре. Здесь живут точный Float,
+       категория качества и счётчик StatTrak™, а также закрепление в Витрину. -->
+  <div class="modal-overlay" id="item-detail-modal">
+    <div class="modal-sheet item-detail-sheet">
+      <button class="modal-close" id="item-detail-close-btn">✕</button>
+      <div class="item-detail-imgwrap" id="item-detail-imgwrap">
+        <img id="item-detail-image" src="" alt="">
+      </div>
+      <div class="item-detail-st" id="item-detail-st" style="display:none;">
+        <span class="st-tag">StatTrak™</span>
+        <span class="st-count" id="item-detail-st-count">0</span>
+      </div>
+      <div class="item-detail-name" id="item-detail-name">—</div>
+      <div class="item-detail-rarity" id="item-detail-rarity"></div>
+
+      <div class="item-detail-rows">
+        <div class="item-detail-row">
+          <span data-i18n="item_quality">Качество</span>
+          <span id="item-detail-quality">—</span>
+        </div>
+        <div class="item-detail-row">
+          <span>Float</span>
+          <span class="item-detail-float" id="item-detail-float">—</span>
+        </div>
+        <div class="item-detail-row">
+          <span data-i18n="item_price">Цена</span>
+          <span id="item-detail-price">0 💎</span>
+        </div>
+      </div>
+
+      <!-- Полоса Float: визуальная позиция значения на шкале 0..1 с
+           границами категорий качества -->
+      <div class="float-bar-wrap">
+        <div class="float-bar">
+          <div class="float-seg fn"></div><div class="float-seg mw"></div>
+          <div class="float-seg ft"></div><div class="float-seg ww"></div>
+          <div class="float-seg bs"></div>
+          <div class="float-marker" id="item-detail-float-marker" style="left:0%;"></div>
+        </div>
+        <div class="float-bar-legend"><span>0.00</span><span>1.00</span></div>
+      </div>
+
+      <button class="btn-primary full" id="item-detail-showcase-btn">🏅 В витрину</button>
+    </div>
+  </div>
+
 </div>
 
+<script src="pass.js"></script>
+<script src="friends.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
