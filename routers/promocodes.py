@@ -120,7 +120,7 @@ async def activate_promocode(req: PromoActivateRequest):
                 rarity=rarity,
                 quality="FT",
                 stattrak=False,
-                float_val=round(random.uniform(*main.QUALITY_FLOAT_RANGE["FT"]), 4),
+                float_val=main._roll_float_in_range(*main.QUALITY_FLOAT_RANGE["FT"]),
                 obtained_from_case="Промокод",
             )
             session.add(item_record)

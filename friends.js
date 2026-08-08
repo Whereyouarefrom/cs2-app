@@ -213,7 +213,11 @@ async function doFriendSearch() {
   const box = document.getElementById("friends-search-results");
   box.innerHTML = `<div class="empty-state">${t("friends_loading")}</div>`;
   try {
-    const res = await apiPost("/friends/search", { telegram_id: state.telegramId, query: q });
+    // Эндпоинт /api/friends/search — GET с query-параметрами (telegram_id, q),
+    // а не POST с телом: раньше здесь был apiPost({query: q}), из-за чего
+    // метод и имя параметра не совпадали с бэкендом и запрос всегда падал.
+    const params = new URLSearchParams({ telegram_id: state.telegramId, q });
+    const res = await apiGet(`/friends/search?${params.toString()}`);
     friendsState.searchResults = res.results || [];
     renderFriendSearchResults();
   } catch (e) {
@@ -274,7 +278,7 @@ async function openFriendProfile(targetId) {
   document.getElementById("friend-prof-actions").innerHTML = "";
 
   try {
-    const p = await apiGet(`/friends/profile/${targetId}?telegram_id=${state.telegramId}`);
+    const p = await apiGet(`/friends/profile?telegram_id=${state.telegramId}&target_telegram_id=${targetId}`);
     renderFriendProfile(p);
   } catch (e) {
     document.getElementById("friend-prof-name").textContent = t("friends_profile_error");
@@ -284,7 +288,11 @@ async function openFriendProfile(targetId) {
 }
 
 function renderFriendProfile(p) {
-  document.getElementById("friend-prof-name").textContent = p.display_name || "Игрок";
+  // Поля приходят из routers/friends.py:_user_card() + public_profile() —
+  // display_name/title/frame/relation/showcase[] тут НЕТ, есть
+  // first_name/username, title_info/frame_info, relation_state,
+  // showcase.items, is_self. Мапим аккуратно, а не по воображаемой схеме.
+  document.getElementById("friend-prof-name").textContent = p.first_name || p.username || "Игрок";
   document.getElementById("friend-prof-username").textContent = p.username ? `@${p.username}` : "";
   document.getElementById("friend-prof-level").textContent = p.level || 1;
 
@@ -298,17 +306,19 @@ function renderFriendProfile(p) {
   }
 
   // Титул и рамка — та же логика оформления, что и в своём профиле
-  applyTitlePill(document.getElementById("friend-prof-title"), p.title);
-  applyAvatarFrame(document.getElementById("friend-prof-avatar-wrap"), p.frame);
+  applyTitlePill(document.getElementById("friend-prof-title"), p.title_info);
+  applyAvatarFrame(document.getElementById("friend-prof-avatar-wrap"), p.frame_info);
 
+  const rank = p.rank || {};
   const rankEl = document.getElementById("friend-prof-rank");
-  rankEl.textContent = p.rank_name ? `${p.rank_icon || ""} ${p.rank_name}`.trim() : "";
+  const rankName = rank.name ? rankLocalizedName(rank, "name") : "";
+  rankEl.textContent = rankName ? `${rank.icon || ""} ${rankName}`.trim() : "";
 
   // Публичная статистика (без балансов — их бэкенд не отдаёт)
   const st = p.stats || {};
   document.getElementById("friend-prof-stats").innerHTML = [
     [t("stat_cases"), fmtNumber2(st.total_cases_opened)],
-    [t("stat_inv_value"), fmt(st.inventory_value || 0)],
+    [t("stat_inv_value"), fmt(st.inventory_total_value || 0)],
     [t("friends_stat_items"), fmtNumber2(st.inventory_count)],
     [t("friends_stat_knives"), fmtNumber2(st.knife_drops_count)],
   ].map(([label, value]) => `
@@ -319,23 +329,24 @@ function renderFriendProfile(p) {
 
   // Витрина друга — только занятые слоты, пустые/закрытые не показываем:
   // чужие нереализованные слоты игроку не интересны.
-  const showcase = p.showcase || [];
-  document.getElementById("friend-prof-showcase").innerHTML = showcase.length
-    ? showcase.map(showcaseSlotHtml).join("")
+  const showcaseItems = (p.showcase && p.showcase.items) || [];
+  document.getElementById("friend-prof-showcase").innerHTML = showcaseItems.length
+    ? showcaseItems.map(showcaseSlotHtml).join("")
     : `<div class="empty-state">${t("showcase_empty_friend")}</div>`;
 
-  // Действие зависит от связи: друга можно удалить, незнакомцу — отправить заявку
+  // Действие зависит от связи: друга можно удалить, незнакомцу — отправить
+  // заявку. relation_state: none|friends|request_sent|request_incoming.
   const actions = document.getElementById("friend-prof-actions");
-  if (p.relation === "friend") {
-    actions.innerHTML = `<button class="btn-secondary full" data-friend-remove="${p.telegram_id}">${t("friends_remove")}</button>`;
-  } else if (p.relation === "incoming") {
-    actions.innerHTML = `<button class="btn-primary full" data-friend-accept="${p.telegram_id}">${t("friends_accept")}</button>`;
-  } else if (p.relation === "outgoing") {
-    actions.innerHTML = `<div class="friends-search-hint">${t("friends_pending")}</div>`;
-  } else if (p.relation !== "self") {
-    actions.innerHTML = `<button class="btn-primary full" data-friend-add="${p.telegram_id}">+ ${t("friends_add")}</button>`;
-  } else {
+  if (p.is_self) {
     actions.innerHTML = "";
+  } else if (p.relation_state === "friends") {
+    actions.innerHTML = `<button class="btn-secondary full" data-friend-remove="${p.telegram_id}">${t("friends_remove")}</button>`;
+  } else if (p.relation_state === "request_incoming") {
+    actions.innerHTML = `<button class="btn-primary full" data-friend-accept="${p.telegram_id}">${t("friends_accept")}</button>`;
+  } else if (p.relation_state === "request_sent") {
+    actions.innerHTML = `<div class="friends-search-hint">${t("friends_pending")}</div>`;
+  } else {
+    actions.innerHTML = `<button class="btn-primary full" data-friend-add="${p.telegram_id}">+ ${t("friends_add")}</button>`;
   }
 }
 

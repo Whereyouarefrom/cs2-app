@@ -117,7 +117,7 @@ async def open_case_multi(req: CaseOpenRequest):
 
         # ---- Списание баланса ----
         user.balance -= total_price
-        await main._credit_referral_commission(session, user, total_price)
+        main._track_wagered(user, total_price)
         user.total_cases_opened += req.count
         user.favorite_case = main.CASES[req.case_id]["name"]
 
@@ -142,6 +142,12 @@ async def open_case_multi(req: CaseOpenRequest):
             item_records.append(item_record)
             main._maybe_update_top_drop(user, drop)
 
+        # ПРАВКИ В ТЗ №13: реферальная комиссия с кейсов — по совокупному
+        # исходу всего мульти-спина за этот запрос (total_price против
+        # суммарной цены всех выпавших скинов), а не по факту самой траты.
+        drops_total_value = round(sum(d.get("price", 0) or 0 for d in drops), 2)
+        await main._credit_referral_round_outcome(session, user, total_price, drops_total_value, source="case")
+
         # ---- XP + очки турнира ----
         xp_gain = req.count * XP_PER_CASE_SPRINT3
         xp_info = await main._award_xp(session, user, xp_gain)
@@ -150,6 +156,17 @@ async def open_case_multi(req: CaseOpenRequest):
         tournament_points_total = await _add_tournament_points(
             session, user, tournament_points_gained
         )
+
+        # ПРАВКИ В ТЗ №12, п.4: моментальный автозачёт ежедневных заданий
+        # Battle Pass (напр. "Открой 1/3/5 кейсов") прямо в момент открытия
+        # кейса — счётчик user.total_cases_opened уже обновлён выше, так
+        # что если условие задания выполнилось именно сейчас, XP пропуска
+        # начисляется тут же, в той же транзакции, без ожидания, пока
+        # игрок сам откроет вкладку "Задания". Ленивый импорт — см.
+        # docstring routers.pass_.sync_daily_tasks про порядок подключения
+        # роутеров в main.py.
+        from routers.pass_ import sync_daily_tasks
+        await sync_daily_tasks(session, user)
 
         await session.commit()
         for item_record in item_records:

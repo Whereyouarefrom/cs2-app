@@ -7,7 +7,7 @@ import secrets
 import datetime
 from sqlalchemy import (
     Column, Integer, String, Float, Boolean, ForeignKey, DateTime, BigInteger, Date,
-    UniqueConstraint, inspect, text,
+    UniqueConstraint, inspect, text, select,
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -32,7 +32,14 @@ class User(Base):
     vip_expires_at = Column(DateTime, nullable=True) # None = навсегда, если is_vip=True и это не задано
 
     lang = Column(String, default="ru")               # ru / en / uk
-    sound_enabled = Column(Boolean, default=True)      # звук вкл/выкл
+    sound_enabled = Column(Boolean, default=True)      # звуковые эффекты вкл/выкл
+    # ---- ПРАВКИ В ТЗ №5: Настройки уведомлений ----
+    # Отдельно от sound_enabled: управляет показом всплывающих уведомлений
+    # (tg.showAlert / toast) о событиях — новый ранг/уровень, разблокировка
+    # косметики, входящая заявка в друзья и т.п. Сами события (начисление
+    # XP, награды) всегда происходят на бэкенде независимо от этого флага —
+    # он влияет ТОЛЬКО на то, показывает ли фронт всплывающее окно.
+    notifications_enabled = Column(Boolean, default=True)
 
     # ---- Спринт 12: кастомизация фона симулятора (Профиль → Настройки) ----
     # Ключ выбранного фона из BACKGROUND_OPTIONS (main.py) — "dark" (обычная
@@ -57,6 +64,22 @@ class User(Base):
 
     total_cases_opened = Column(Integer, default=0)
     favorite_case = Column(String, nullable=True)
+
+    # ---- ПРАВКИ В ТЗ №5: «Общий профит» и «Статистика мини-игр» в Профиле ----
+    # Сквозной, единый учёт по всем "азартным" активностям (кейсы, апгрейдер,
+    # крафт, мини-игры Crash/Mines/Tower/Ladder/Wheel-bet):
+    #   total_wagered  — суммарно списано с баланса на эти активности
+    #   total_returned — суммарно получено обратно: цена выигранных предметов
+    #                    (учитывается ЦЕНТРАЛИЗОВАННО в main._maybe_update_top_drop —
+    #                    это единая воронка всех 13 мест выдачи предмета) +
+    #                    денежные выигрыши мини-игр, зачисленные на баланс.
+    # «Общий профит» = total_returned - total_wagered (может быть отрицательным).
+    total_wagered = Column(Float, default=0.0)
+    total_returned = Column(Float, default=0.0)
+
+    # minigames_played — счётчик сыгранных раундов мини-игр (без учёта
+    # открытия кейсов) для блока «Статистика мини-игр» в профиле.
+    minigames_played = Column(Integer, default=0)
 
     # ---- Система опыта (XP) и лиг/рангов (см. ranks.py) ----
     # xp — суммарный, никогда не уменьшающийся опыт за активность
@@ -94,6 +117,14 @@ class User(Base):
     # текущий ВЫБОР, а эти — из чего игроку разрешено выбирать.
     unlocked_titles = Column(String, default="[]")
     unlocked_frames = Column(String, default="[]")
+
+    # ---- ПРАВКИ В ТЗ №5: эксклюзивные фоны профиля, выдаваемые наградой
+    # за достижение ранга (см. ranks.py::RANKS[i]["background_key"] и
+    # cosmetics.py::grant_background). Формат — тот же JSON-массив ключей,
+    # что и unlocked_titles/unlocked_frames. Фоны, НЕ входящие в этот
+    # список и помеченные unlock!=None в BACKGROUND_OPTIONS (main.py),
+    # недоступны для выбора игроком, пока не будут туда добавлены.
+    unlocked_backgrounds = Column(String, default="[]")
 
     # ---- Пользовательское соглашение (Terms of Service) ----
     terms_accepted = Column(Boolean, default=False)
@@ -144,6 +175,19 @@ class User(Base):
     mute_until = Column(DateTime, nullable=True)     # None при is_muted=True = мут навсегда
     mute_reason = Column(String, nullable=True)
     is_chat_banned = Column(Boolean, default=False)  # полный бан написания в чат (жёстче мута)
+
+    # ---- ПРАВКИ В ТЗ №15: полный бан доступа к приложению (жёстче
+    # is_chat_banned — тот запрещает только писать в глобальный чат, этот
+    # блокирует вход/использование приложения целиком, см. auth.py). ----
+    is_banned = Column(Boolean, default=False)
+    ban_reason = Column(String, nullable=True)
+    banned_at = Column(DateTime, nullable=True)
+
+    # ---- ПРАВКИ В ТЗ №15: кастомный визуальный префикс в чате, выдаётся
+    # админом через /set_prefix (напр. "[VIP]", "[Design]", "[MODER]"),
+    # виден всем игрокам рядом с ником автора сообщения (см. routers/chat.py
+    # _serialize_messages -> author_prefix, app.js renderChatMessage). ----
+    chat_prefix = Column(String, nullable=True)
 
     # ---- Глобальный чат (Спринт 11, см. routers/chat.py) ----
     # last_chat_message_at — время ПОСЛЕДНЕГО успешно отправленного
@@ -256,6 +300,45 @@ class WheelSpin(Base):
 
 
 # ---------------------------------------------------
+# ПРАВКИ В ТЗ №15: Глобальные настройки приложения (key-value)
+# ---------------------------------------------------
+# Универсальная таблица настроек уровня всего приложения, а не одного
+# пользователя — нужна там, где раньше пришлось бы заводить in-memory
+# module-level переменную. In-memory не подходит, т.к. bot.py (Aiogram) и
+# main.py (FastAPI/uvicorn) — ОТДЕЛЬНЫЕ процессы, обращающиеся к одной и
+# той же БД; переменная в памяти одного процесса не видна другому.
+# Используется, например, для /mute_chat (глобальный read-only режим
+# чата — chat_locked) и /roll_event (временный множитель XP —
+# event_xp_multiplier / event_xp_expires_at).
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
+async def get_setting(session, key: str, default: str | None = None) -> str | None:
+    """Читает значение настройки по ключу (сырой string) или default,
+    если ключ ещё не был установлен."""
+    result = await session.execute(select(AppSetting).where(AppSetting.key == key))
+    row = result.scalar_one_or_none()
+    return row.value if row is not None else default
+
+
+async def set_setting(session, key: str, value: str | None) -> None:
+    """Устанавливает (или создаёт) значение настройки. Не коммитит сама —
+    вызывающий код должен сам сделать session.commit()."""
+    result = await session.execute(select(AppSetting).where(AppSetting.key == key))
+    row = result.scalar_one_or_none()
+    if row is None:
+        session.add(AppSetting(key=key, value=value))
+    else:
+        row.value = value
+        row.updated_at = datetime.datetime.utcnow()
+
+
+# ---------------------------------------------------
 # Еженедельный турнир активности
 # ---------------------------------------------------
 class TournamentScore(Base):
@@ -299,6 +382,13 @@ class Task(Base):
     action_url = Column(String, nullable=True)
     task_type = Column(String, nullable=False)  # 'telegram_channel' | 'telegram_chat' | 'referrals' | 'profile'
     is_active = Column(Boolean, default=True)
+    # ПРАВКИ В ТЗ №6: момент создания задания в БД — нужен только для того,
+    # чтобы фронт мог показать мигающую плашку "NEW" рядом со свежедобавленными
+    # через админку заданиями (см. routers/tasks.py: TASK_NEW_BADGE_DAYS).
+    # У заданий, засеянных ДО этой правки, колонка добавится автомигацией
+    # (_auto_migrate_columns) и забэкфилится текущим моментом — это ок, они
+    # просто перестанут быть "NEW" через TASK_NEW_BADGE_DAYS дней, как и должно быть.
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
 class UserTaskCompletion(Base):
@@ -355,9 +445,24 @@ class ChatMessage(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     text = Column(String, nullable=False)
     is_system = Column(Boolean, default=False)   # системное сообщение (авто-лента дропов)
-    is_hidden = Column(Boolean, default=False)    # скрыто авто-фильтром/жалобами
-    hide_reason = Column(String, nullable=True)   # "auto_filter" | "reports" | None
+    is_hidden = Column(Boolean, default=False)    # скрыто авто-фильтром/жалобами/автором/PII
+    hide_reason = Column(String, nullable=True)   # "auto_filter" | "reports" | "pii" | "deleted_by_author" | None
     created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+
+    # ---- Правки в ТЗ №3: момент скрытия сообщения ----
+    # Проставляется, когда сообщение УЖЕ было видно в чате и его скрыли
+    # (жалобы или удаление автором) — используется, чтобы разослать уже
+    # открывшим чат клиентам список "исчезнувших" id при следующем polling'е
+    # (см. routers/chat.py: removed_ids). Для сообщений, заблокированных
+    # авто-фильтром/PII ДО показа, не нужен (они никогда не рендерились),
+    # но выставляется тоже — для единообразия и истории модерации.
+    hidden_at = Column(DateTime, nullable=True)
+
+    # ---- ПРАВКИ В ТЗ №15: /admin_msg — объявление от лица администрации.
+    # Отдельно от is_system (та же строка живёт в общей ленте, как и
+    # системные сообщения о дропах), чтобы фронт мог отрисовать другую
+    # плашку/цвет ("Администрация") вместо нейтрального системного стиля. ----
+    is_admin_announcement = Column(Boolean, default=False)
 
 
 # ---------------------------------------------------
@@ -434,6 +539,34 @@ class Friendship(Base):
 
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     responded_at = Column(DateTime, nullable=True)   # когда заявку приняли/отклонили
+
+
+# ---------------------------------------------------
+# ПРАВКИ В ТЗ №6: журнал реферальных начислений
+# ---------------------------------------------------
+# До этой правки пассивная комиссия рефереру (см. main._credit_referral_commission
+# / _credit_referral_loss / _credit_referral_win) начислялась
+# ТОЛЬКО в агрегат (User.balance + User.ref_earnings_total) — не было способа
+# узнать, СКОЛЬКО именно принёс рефереру конкретный реферал. Модалка "Мои
+# рефералы" (вкладка "Заработать") должна показывать по каждому приглашённому
+# другу его вклад и % от общего профита, поэтому нужен построчный журнал.
+# Одна строка = одно начисление комиссии в момент, когда оно происходит;
+# GET /api/referrals/list агрегирует эти строки по referred_id на лету.
+#
+# ПРАВКИ В ТЗ №13: source теперь пишется для ЛЮБОЙ механики с риском/
+# балансом — не только Апгрейдера. Формат: '<источник>_loss' / '<источник>_win'
+# (например 'case_loss', 'minigame_crash_win', 'upgrader_loss', 'contract_win'),
+# плюс 'spend' — для не-азартных трат (см. main._credit_referral_commission:
+# /api/craft, покупка на P2P-маркете).
+class ReferralEarning(Base):
+    __tablename__ = "referral_earnings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    referrer_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)  # кому начислено
+    referred_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)  # чья активность принесла профит
+    amount = Column(Float, nullable=False)
+    source = Column(String, nullable=False)  # 'spend' | '<источник>_loss' | '<источник>_win'
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
 
 # ---------------------------------------------------

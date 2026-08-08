@@ -161,6 +161,14 @@ async def contracts_craft(req: ContractCraftRequest):
         session.add(new_item)
         main._maybe_update_top_drop(user, won_instance)
 
+        # ПРАВКИ В ТЗ №13: реферальная комиссия с контракта обмена — staked
+        # это суммарная цена всех 10 сожжённых предметов, returned — цена
+        # полученного предмета следующей редкости. Почти всегда staked >
+        # returned (10 предметов сгорают ради 1), поэтому обычно списывается
+        # как проигрыш; если когда-либо returned окажется больше — как выигрыш.
+        staked_value = sum(i.skin_price for i in source_items)
+        await main._credit_referral_round_outcome(session, user, staked_value, target_price, source="contract")
+
         xp_info = await main._award_xp(session, user, CONTRACT_XP)
 
         score = await _get_or_create_tournament_score(session, user)

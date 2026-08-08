@@ -41,3 +41,9 @@ def format_balance(value: float | int, decimals: int = 2) -> str:
 def format_balance_with_icon(value: float | int, decimals: int = 2) -> str:
     """То же самое, но сразу с иконкой кристалла — для текстов сообщений бота."""
     return f"{format_balance(value, decimals)} 💎"
+
+
+def format_gold_with_icon(value: float | int, decimals: int = 2) -> str:
+    """То же самое, но для 💰 Золота (отдельная от Кристалликов премиум-валюта,
+    не пересчитывается по курсу — см. currency.py) — для текстов бота."""
+    return f"{format_balance(value, decimals)} 💰"

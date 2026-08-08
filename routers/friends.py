@@ -25,6 +25,7 @@ from __future__ import annotations
 import datetime
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 
@@ -139,34 +140,59 @@ async def search_players(telegram_id: int, q: str, limit: int = SEARCH_LIMIT):
 
     limit = max(1, min(limit, SEARCH_LIMIT))
 
-    async with async_session() as session:
-        me = await _get_user(session, telegram_id)
+    try:
+        async with async_session() as session:
+            me = await _get_user(session, telegram_id)
 
-        conditions = [
-            func.lower(User.username).like(f"%{q.lower()}%"),
-            func.lower(User.first_name).like(f"%{q.lower()}%"),
-        ]
-        # Числовой запрос трактуем ТАКЖЕ как точный поиск по Telegram ID —
-        # по ТЗ поиск идёт «по TG ID / Username», поэтому одно поле ввода
-        # обслуживает оба случая.
-        if q.isdigit():
-            conditions.append(User.telegram_id == int(q))
+            # Регистронезависимый поиск по подстроке (LOWER + LIKE — эквивалент
+            # ILIKE, но переносится на любой диалект SQL без сюрпризов).
+            q_lower = q.lower()
+            conditions = [
+                func.lower(User.username).like(f"%{q_lower}%"),
+                func.lower(User.first_name).like(f"%{q_lower}%"),
+            ]
 
-        result = await session.execute(
-            select(User).where(or_(*conditions), User.id != me.id).limit(limit)
+            # Числовой запрос трактуем ТАКЖЕ как точный поиск по Telegram ID —
+            # по ТЗ поиск идёт «по TG ID / Username», поэтому одно поле ввода
+            # обслуживает оба случая. telegram_id в БД — BigInteger, поэтому
+            # приводим строку явно и отдельным try, чтобы переполнение или
+            # мусор в запросе (например "12abc") не валили весь эндпоинт —
+            # просто не участвует в условии поиска по ID.
+            q_digits = q.lstrip("+-")
+            if q_digits.isdigit():
+                try:
+                    conditions.append(User.telegram_id == int(q))
+                except (ValueError, OverflowError):
+                    pass
+
+            result = await session.execute(
+                select(User).where(or_(*conditions), User.id != me.id).limit(limit)
+            )
+            found = result.scalars().all()
+
+            cards = []
+            for user in found:
+                link = await _relation(session, me, user.id)
+                cards.append({
+                    **_user_card(user),
+                    "relation_state": _relation_state(link, me.id),
+                    "request_id": link.id if link and link.status == STATUS_PENDING else None,
+                })
+
+            return {"query": q, "results": cards}
+    except HTTPException:
+        # Осознанные 400/404 (нет символов, юзер не найден) пробрасываем как есть.
+        raise
+    except Exception as exc:
+        # Любая непредвиденная ошибка (обрыв соединения с БД, парсинг и т.п.)
+        # раньше улетала наверх как raw 500 без тела — фронт получал пустой
+        # ответ и падал на res.json(). Теперь всегда отдаём валидный JSON.
+        import logging
+        logging.getLogger(__name__).exception("friends/search failed: %s", exc)
+        return JSONResponse(
+            status_code=200,
+            content={"query": q, "results": [], "error": "Не удалось выполнить поиск, попробуйте ещё раз"},
         )
-        found = result.scalars().all()
-
-        cards = []
-        for user in found:
-            link = await _relation(session, me, user.id)
-            cards.append({
-                **_user_card(user),
-                "relation_state": _relation_state(link, me.id),
-                "request_id": link.id if link and link.status == STATUS_PENDING else None,
-            })
-
-        return {"query": q, "results": cards}
 
 
 # ---------------------------------------------------------------

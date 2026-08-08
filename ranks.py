@@ -2,8 +2,27 @@
 # CS2 Case Simulator — Система опыта (XP) и лиг/рангов
 # ============================================
 #
-# Лестница рангов — по аналогии с делением сообщества CS2 на "лиги":
-# Сильвер → Голд Нова → Калаш → Двойной Калаш → Бигстар → Лем → Суприм → Глобал.
+# ПРАВКИ В ТЗ №5 — полная переработка лестницы рангов:
+#
+#   1) Названия рангов приведены к канонической лестнице CS2/CS:GO:
+#      Сильвер → Голд Нова → Мастер Гвардиан → DMG (Дистингвишед Мастер
+#      Гвардиан) → Легендарный Игл → Суприм → Глобал Элит.
+#
+#   2) Пороги XP больше не подобраны "на глаз", а считаются формулой
+#      геометрической прогрессии (см. _min_xp_for_rank ниже) — тот же
+#      принцип, что и у уровня аккаунта в levels.py (100 * 1.15^(N-1)),
+#      только с собственными константами. Это гарантирует, что КАЖДЫЙ
+#      следующий ранг требует строго больше XP, чем предыдущий, причём
+#      разрыв между рангами растёт (не линейно, а экспоненциально) —
+#      прогрессия ощутимо длиннее прежней (Глобал Элит теперь на 103 000
+#      XP вместо прежних 30 000 у "Глобала").
+#
+#   3) Награды за ранг стали разнообразнее: помимо кристаллов и
+#      рангового кейса (было раньше), теперь начиная с середины лестницы
+#      выдаются секретные скины (гарантированный дроп ножа/перчаток в
+#      обход обычных весов кейса), эксклюзивные рамки аватара и
+#      эксклюзивные фоны профиля — см. поля secret_skin / frame_key /
+#      background_key. Актуальная логика выдачи — в main.py::_award_xp.
 #
 # Как это работает:
 #   - Игрок получает XP за активность (открытие кейсов, ставки в мини-играх,
@@ -12,106 +31,89 @@
 #   - Как только накопленный user.xp достигает min_xp следующего ранга —
 #     ранг повышается (user.rank_level += 1).
 #   - За КАЖДЫЙ новый достигнутый ранг игрок разово получает bonus_crystals
-#     💎 на баланс. Начиная с ранга "Калаш" дополнительно открывается
-#     доступ к специальному РАНГОВОМУ КЕЙСУ (см. RANK_CASE_WEIGHTS) —
-#     он тут же один раз "открывается" для игрока как часть награды за ранг
-#     (реальный предмет с реальной ценой/картинкой, взятый из общего пула
-#     предметов всех кейсов — см. _roll_rank_case_item в main.py).
-#
-# Пороги XP подобраны так, чтобы путь Сильвер → Глобал ощущался как
-# полноценная прогрессия (десятки открытий кейсов и раундов мини-игр),
-# а не разовое достижение за один сеанс.
+#     💎 на баланс, а также (в зависимости от ранга) ранговый кейс,
+#     секретный скин, эксклюзивную рамку и/или эксклюзивный фон профиля.
 
-RANKS = [
-    {
-        "level": 0,
-        "key": "silver",
-        "name": "Сильвер",
-        "name_en": "Silver",
-        "name_uk": "Сільвер",
-        "icon": "🔰",
-        "min_xp": 0,
-        "bonus_crystals": 0,      # стартовый ранг — награды нет, это точка отсчёта
-        "case_key": None,
-    },
-    {
-        "level": 1,
-        "key": "gold_nova",
-        "name": "Голд Нова",
-        "name_en": "Gold Nova",
-        "name_uk": "Голд Нова",
-        "icon": "⭐",
-        "min_xp": 500,
-        "bonus_crystals": 800,
-        "case_key": None,
-    },
-    {
-        "level": 2,
-        "key": "kalash",
-        "name": "Калаш",
-        "name_en": "Kalash",
-        "name_uk": "Калаш",
-        "icon": "🔫",
-        "min_xp": 1500,
-        "bonus_crystals": 1500,
-        "case_key": "rank_kalash",
-    },
-    {
-        "level": 3,
-        "key": "double_kalash",
-        "name": "Двойной Калаш",
-        "name_en": "Double Kalash",
-        "name_uk": "Подвійний Калаш",
-        "icon": "🔫🔫",
-        "min_xp": 3200,
-        "bonus_crystals": 2500,
-        "case_key": "rank_double_kalash",
-    },
-    {
-        "level": 4,
-        "key": "bigstar",
-        "name": "Бигстар",
-        "name_en": "Bigstar",
-        "name_uk": "Бігстар",
-        "icon": "🌟",
-        "min_xp": 6000,
-        "bonus_crystals": 4000,
-        "case_key": "rank_bigstar",
-    },
-    {
-        "level": 5,
-        "key": "lem",
-        "name": "Лем",
-        "name_en": "Lem",
-        "name_uk": "Лем",
-        "icon": "🦅",
-        "min_xp": 11000,
-        "bonus_crystals": 7000,
-        "case_key": "rank_lem",
-    },
-    {
-        "level": 6,
-        "key": "supreme",
-        "name": "Суприм",
-        "name_en": "Supreme",
-        "name_uk": "Супрім",
-        "icon": "👑",
-        "min_xp": 19000,
-        "bonus_crystals": 12000,
-        "case_key": "rank_supreme",
-    },
-    {
-        "level": 7,
-        "key": "global",
-        "name": "Глобал",
-        "name_en": "Global Elite",
-        "name_uk": "Глобал",
-        "icon": "🌍",
-        "min_xp": 30000,
-        "bonus_crystals": 20000,
-        "case_key": "rank_global",
-    },
+# ---------------------------------------------------------------
+# Формула порогов XP: min_xp(i) = RANK_BASE_XP * RANK_GROWTH^(i-1) для i>=1,
+# min_xp(0) = 0 (стартовый ранг "Сильвер" — точка отсчёта, награды нет).
+# RANK_GROWTH > GROWTH уровня аккаунта (1.15) намеренно: рангов всего 7 (а
+# не 200), поэтому чтобы путь Сильвер → Глобал Элит ощущался как долгая
+# прогрессия, а не проходился за пару вечеров, разрыв между СОСЕДНИМИ
+# рангами должен расти заметно быстрее.
+# ---------------------------------------------------------------
+RANK_BASE_XP = 2000.0
+RANK_GROWTH = 2.2
+
+
+def _min_xp_for_rank(index: int) -> int:
+    """Минимальный накопленный XP, необходимый для ранга с индексом
+    `index` (0 = Сильвер). Чистая формула — используется один раз при
+    построении таблицы RANKS ниже, чтобы пороги нельзя было случайно
+    рассинхронизировать при правке констант."""
+    if index <= 0:
+        return 0
+    return int(round(RANK_BASE_XP * (RANK_GROWTH ** (index - 1))))
+
+
+def _bonus_crystals_for_rank(index: int) -> int:
+    """Разовая награда 💎 за достижение ранга — тоже экспоненциальная
+    (база 1000, рост x2 за ранг), чтобы награда ощущалась пропорционально
+    возросшей длительности прогрессии."""
+    if index <= 0:
+        return 0
+    return int(1000 * (2 ** (index - 1)))
+
+
+# Каноническая лестница рангов CS2. icon — эмодзи-заглушка (реальных
+# иконок рангов Valve в проекте нет и не должно быть — это чужой копирайт).
+_RANK_DEFS = [
+    # (key, name_ru, name_en, name_uk, icon)
+    ("silver", "Сильвер", "Silver", "Сільвер", "🔰"),
+    ("gold_nova", "Голд Нова", "Gold Nova", "Голд Нова", "⭐"),
+    ("master_guardian", "Мастер Гвардиан", "Master Guardian", "Майстер Гвардіан", "🛡️"),
+    ("dmg", "Дистингвишед Мастер Гвардиан", "Distinguished Master Guardian", "Видатний Майстер Гвардіан", "⚔️"),
+    ("legendary_eagle", "Легендарный Игл", "Legendary Eagle", "Легендарний Ігл", "🦅"),
+    ("supreme", "Суприм", "Supreme Master First Class", "Супрім Майстер", "👑"),
+    ("global_elite", "Глобал Элит", "Global Elite", "Глобал Еліт", "🌍"),
 ]
+
+# case_key — ранговый кейс (см. RANK_CASE_WEIGHTS ниже), появляется начиная
+# с "Мастер Гвардиан", чтобы первый ранг-другой прогрессии не заваливал
+# игрока предметами и кейс воспринимался как значимая награда.
+# secret_skin — гарантированный (не по кейсовым весам) дроп ножа/перчаток
+# в обход обычной вероятности, начиная с "Легендарного Игла".
+# frame_key / background_key — ключи эксклюзивной косметики (см.
+# cosmetics.py::FRAMES и main.py::BACKGROUND_OPTIONS), None если для
+# этого ранга косметика не положена.
+_RANK_REWARDS = {
+    "silver":          {"case_key": None,                  "secret_skin": False, "frame_key": None,                  "background_key": None},
+    "gold_nova":       {"case_key": None,                  "secret_skin": False, "frame_key": None,                  "background_key": None},
+    "master_guardian": {"case_key": "rank_master_guardian", "secret_skin": False, "frame_key": "rank_master_guardian", "background_key": None},
+    "dmg":              {"case_key": "rank_dmg",             "secret_skin": False, "frame_key": None,                  "background_key": None},
+    "legendary_eagle": {"case_key": "rank_legendary_eagle", "secret_skin": True,  "frame_key": "rank_legendary_eagle", "background_key": None},
+    "supreme":         {"case_key": "rank_supreme",         "secret_skin": False, "frame_key": None,                  "background_key": "bg_rank_supreme"},
+    "global_elite":    {"case_key": "rank_global_elite",    "secret_skin": True,  "frame_key": "rank_global_elite",    "background_key": "bg_rank_global_elite"},
+}
+
+RANKS = []
+for _i, (_key, _name, _name_en, _name_uk, _icon) in enumerate(_RANK_DEFS):
+    _rewards = _RANK_REWARDS[_key]
+    RANKS.append({
+        "level": _i,
+        "key": _key,
+        "name": _name,
+        "name_en": _name_en,
+        "name_uk": _name_uk,
+        "icon": _icon,
+        "min_xp": _min_xp_for_rank(_i),
+        "bonus_crystals": _bonus_crystals_for_rank(_i),
+        "case_key": _rewards["case_key"],
+        "secret_skin": _rewards["secret_skin"],
+        "frame_key": _rewards["frame_key"],
+        "background_key": _rewards["background_key"],
+    })
+del _i, _key, _name, _name_en, _name_uk, _icon, _rewards
 
 MAX_RANK_LEVEL = len(RANKS) - 1
 
@@ -122,31 +124,31 @@ MAX_RANK_LEVEL = len(RANKS) - 1
 # ранг, тем сильнее пул смещён к Covert/Gloves/Knife.
 # ---------------------------------------------------------------
 RANK_CASE_WEIGHTS = {
-    "rank_kalash": {
-        "name": "Кейс ранга «Калаш»",
+    "rank_master_guardian": {
+        "name": "Кейс ранга «Мастер Гвардиан»",
         "weights": {"Restricted": 55, "Classified": 35, "Covert": 10},
     },
-    "rank_double_kalash": {
-        "name": "Кейс ранга «Двойной Калаш»",
+    "rank_dmg": {
+        "name": "Кейс ранга «DMG»",
         "weights": {"Restricted": 35, "Classified": 45, "Covert": 20},
     },
-    "rank_bigstar": {
-        "name": "Кейс ранга «Бигстар»",
-        "weights": {"Classified": 45, "Covert": 45, "Gloves": 10},
-    },
-    "rank_lem": {
-        "name": "Кейс ранга «Лем»",
-        "weights": {"Classified": 25, "Covert": 55, "Gloves": 15, "Knife": 5},
+    "rank_legendary_eagle": {
+        "name": "Кейс ранга «Легендарный Игл»",
+        "weights": {"Classified": 30, "Covert": 55, "Gloves": 15},
     },
     "rank_supreme": {
         "name": "Кейс ранга «Суприм»",
         "weights": {"Covert": 55, "Gloves": 30, "Knife": 15},
     },
-    "rank_global": {
-        "name": "Кейс ранга «Глобал»",
+    "rank_global_elite": {
+        "name": "Кейс ранга «Глобал Элит»",
         "weights": {"Covert": 30, "Gloves": 35, "Knife": 35},
     },
 }
+
+# Веса "секретного скина" (rank_def["secret_skin"] = True) — гарантированный
+# дроп в обход кейсовых весов, всегда только Gloves/Knife.
+SECRET_SKIN_WEIGHTS = {"Gloves": 50, "Knife": 50}
 
 
 def rank_by_level(level: int) -> dict:
@@ -156,7 +158,7 @@ def rank_by_level(level: int) -> dict:
 
 def get_rank_progress(xp: int, rank_level: int) -> dict:
     """Собирает данные для прогресс-бара ранга в профиле: текущий ранг,
-    следующий ранг, % прогресса до него (100%, если уже Глобал)."""
+    следующий ранг, % прогресса до него (100%, если уже Глобал Элит)."""
     rank_level = max(0, min(rank_level, MAX_RANK_LEVEL))
     current = RANKS[rank_level]
     next_rank = RANKS[rank_level + 1] if rank_level < MAX_RANK_LEVEL else None

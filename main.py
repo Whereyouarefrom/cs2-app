@@ -13,15 +13,22 @@ import logging
 import traceback
 from typing import Optional, List
 
+import html as html_lib
+
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy import select, func
 
-from database import async_session, init_db, close_db, User, Inventory, PromoCode, ChatMessage
+from database import (
+    async_session, init_db, close_db, User, Inventory, PromoCode, ChatMessage,
+    ReferralEarning, AppSetting, get_setting, set_setting,
+)
 from cases_data import CASES
 import items_data
+import price_tiers
 import currency
 import ranks
 import levels
@@ -44,6 +51,80 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ============================================
+# ПРАВКИ В ТЗ №14: "Поделиться дропом" — публичная share-страница
+# ============================================
+# Реферальная диплинк-ссылка t.me/BOT?start=ref_ID сама по себе не может
+# нести картинку/заголовок в превью Telegram (диплинки на ботов не отдают
+# OG-теги), поэтому кнопка "Поделиться" на фронте шарит ссылку НЕ на бота
+# напрямую, а на эту страницу — у неё есть og:image/og:title/og:description
+# с картинкой и названием выпавшего предмета, и она сама мгновенно
+# перекидывает получателя в бота по персональной реферальной ссылке
+# ВЛАДЕЛЬЦА предмета (т.е. того, кто им поделился).
+_SHARE_CATEGORY_RU = {
+    "Knife": "нож",
+    "Gloves": "перчатки",
+    # Наклеек как отдельной категории предметов в каталоге сейчас нет —
+    # если она появится (item.rarity/category == "Stickers"), достаточно
+    # добавить сюда соответствующую запись.
+    "Stickers": "наклейка",
+}
+
+
+def _share_category_word(rarity: str) -> str:
+    return _SHARE_CATEGORY_RU.get(rarity, "скин")
+
+
+@app.get("/share/{inventory_id}", response_class=HTMLResponse)
+async def share_drop_page(inventory_id: int):
+    async with async_session() as session:
+        result = await session.execute(
+            select(Inventory, User).join(User, Inventory.user_id == User.id).where(Inventory.id == inventory_id)
+        )
+        row = result.first()
+
+    bot_link = f"https://t.me/{config.BOT_USERNAME.lstrip('@')}"
+
+    if not row:
+        # Предмет не найден (продан/удалён/битая ссылка) — просто отправляем
+        # в бота без персональной реферальной метки, ничего не падает.
+        return HTMLResponse(
+            f"<!DOCTYPE html><html><head><meta http-equiv=\"refresh\" content=\"0; url={bot_link}\">"
+            f"</head><body>Redirecting… <a href=\"{bot_link}\">{bot_link}</a></body></html>"
+        )
+
+    item, owner = row
+    ref_link = f"{bot_link}?start=ref_{owner.telegram_id}"
+    category = _share_category_word(item.rarity)
+    title = html_lib.escape(item.skin_name)
+    price_txt = html_lib.escape(format_balance_with_icon(item.skin_price))
+    description = html_lib.escape(
+        f"Выпал {category}: {item.skin_name} ({price_txt}) — заходи в CS2 Case Simulator и попробуй сам!"
+    )
+    image = html_lib.escape(item.image_url or "")
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title}</title>
+<meta property="og:title" content="{title}">
+<meta property="og:description" content="{description}">
+<meta property="og:image" content="{image}">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta http-equiv="refresh" content="0; url={ref_link}">
+</head>
+<body style="font-family:sans-serif;background:#0f1420;color:#fff;text-align:center;padding:40px;">
+  <img src="{image}" style="max-width:220px;border-radius:12px;" alt="">
+  <h2 style="margin:16px 0 4px;">{title}</h2>
+  <p style="color:#8b93a1;">{description}</p>
+  <p><a href="{ref_link}" style="color:#4a9eff;">Открыть в Telegram →</a></p>
+</body>
+</html>""")
 
 
 _bot_polling_task: Optional[asyncio.Task] = None
@@ -135,9 +216,14 @@ RARITY_ORDER = [
     "Classified", "Covert", "Gloves", "Knife",
 ]
 
-# Верхний тик редкости — "Тайное" + "Особо редкое" (ножи/перчатки).
-# Их суммарный шанс всегда фиксирован в 1-2%, независимо от состава кейса.
-RARE_TIER = {"Covert", "Knife", "Gloves"}
+# "Особо редкое" — ножи/перчатки (Extraordinary/Special). Их суммарный шанс
+# всегда фиксирован в 1.0-2.0%, независимо от состава кейса. Тайное (Covert)
+# считается ОТДЕЛЬНО от ножей/перчаток — см. build_dynamic_weights ниже
+# (ПРАВКИ В ТЗ №1, п.2: у Covert собственная сетка 2.5-3.0%, а не общая с
+# ножами/перчатками).
+KNIFE_GLOVES_TIER = {"Knife", "Gloves"}
+# Оставлено для обратной совместимости импортов из других модулей.
+RARE_TIER = KNIFE_GLOVES_TIER
 
 # ---------------------------------------------------------------
 # ЦЕНЫ ПРЕДМЕТОВ: реальные цены Steam Market + fallback по редкости
@@ -179,11 +265,21 @@ def _fallback_base_price_rub(rarity: str) -> float:
 
 def get_base_price_rub(name: str, rarity: str, stattrak: bool = False) -> float:
     """Главная точка входа для цены предмета в 💎/₽: реальная цена со Steam
-    Market (если для этого имени она уже засинкана), иначе — консервативный
-    fallback по редкости. При stattrak=True сначала пробуем реальную
-    StatTrak-цену конкретного предмета (если засинкана) — и только если её
-    нет, применяем общий множитель STATTRAK_MULTIPLIER к обычной цене
-    (см. _roll_item_instance)."""
+    Market (если для этого имени она уже засинкана), иначе — индивидуальный
+    (не плоский по редкости) fallback. При stattrak=True сначала пробуем
+    реальную StatTrak-цену конкретного предмета (если засинкана) — и только
+    если её нет, применяем общий множитель STATTRAK_MULTIPLIER к обычной
+    цене (см. _roll_item_instance).
+
+    Порядок для fallback (когда реальной цены со Steam Market ещё нет):
+      1) ножи/перчатки — тиражированная по типу+фазе оценка (price_tiers.
+         tiered_fallback_usd) — Karambit | Doppler и Gut Knife | Safari Mesh
+         больше НЕ получают одинаковую базовую цену;
+      2) обычные скины — базовое значение редкости (FALLBACK_USD_BY_RARITY),
+         детерминированно "раздроблен��ое" по имени (price_tiers.
+         skin_fallback_jitter), чтобы разные скины одной редкости в одном
+         кейсе тоже не показывали буквально одно и то же число.
+    """
     item = items_data.get_item(name)
     usd = None
     if item:
@@ -191,7 +287,17 @@ def get_base_price_rub(name: str, rarity: str, stattrak: bool = False) -> float:
             return currency.usd_to_rub(item["usd_price_stattrak"])
         usd = item.get("usd_price")
     if usd is None:
-        usd = FALLBACK_USD_BY_RARITY.get(rarity, 1.0)
+        # ПРАВКИ В ТЗ №2, п.2: явно перечисленные топовые именные скины
+        # (Dragon Lore, Gungnir, Medusa, Wild Lotus, Fire Serpent, Gold
+        # Arabesque и т.д.) получают собственный высокий якорный прайс
+        # ДО того, как предмет попадёт в плоский fallback по редкости —
+        # иначе они бы стоили ровно как любой другой Covert-скин ($45).
+        usd = price_tiers.legendary_fallback_usd(name)
+    if usd is None:
+        usd = price_tiers.tiered_fallback_usd(name, rarity)
+    if usd is None:
+        base_rarity_usd = FALLBACK_USD_BY_RARITY.get(rarity, 1.0)
+        usd = price_tiers.skin_fallback_jitter(name, base_rarity_usd)
     return currency.usd_to_rub(usd)
 
 QUALITIES = ["FN", "MW", "FT", "WW", "BS"]
@@ -219,6 +325,41 @@ QUALITY_FLOAT_RANGE = {
     "BS": (0.45, 1.00),
 }
 
+# ПРАВКИ В ТЗ №9.5: генератор Float Value БЕЗ округления/принудительных
+# нулей на конце — раньше здесь стоял round(random.uniform(lo, hi), 4),
+# из-за чего КАЖДЫЙ флот в игре обрывался на "...000" (0.1540000,
+# 0.2921000) — а это ровно противоположность настоящей механике CS2, где
+# float — непрерывное число двойной точности с 8-14+ значащими цифрами
+# после запятой.
+#
+# Плюс отдельный "коллекционный" механизм: экстремально низкий float
+# внутри диапазона качества (близко к его нижней границе — аналог
+# "Low Float"/"Triple Zero" скинов в реальном CS2) должен выпадать редко,
+# а не наравне с любым другим значением диапазона. Обычный
+# random.random() * span и без того почти никогда не заезжает в первые
+# доли процента диапазона сам по себе, но здесь это явно закреплено
+# отдельной низковероятностной веткой, а не оставлено на волю случая.
+LOW_FLOAT_CHANCE = 0.0005   # 0.05% роллов — «повезло с коллекционным флотом»
+LOW_FLOAT_BAND_FRACTION = 0.0005  # низкий флот живёт в первых 0.05% диапазона качества
+
+
+def _roll_float_in_range(lo: float, hi: float) -> float:
+    """Настоящее непрерывное случайное число в [lo, hi) — БЕЗ round().
+    Питоновский float — это double (IEEE 754), т.е. ~15-17 значащих цифр
+    сами по себе, этого с запасом хватает на требуемые ТЗ 8-14 знаков
+    после запятой; хранить/отдавать его нужно как есть, только на выходе
+    в API аккуратно урезаем до 10 знаков (main.serialize_inventory_item) —
+    просто чтобы убрать "мусорный хвост" двоичного округления (вроде
+    ...399999999999998), а не для маскировки под красивое число.
+    """
+    span = hi - lo
+    if span <= 0:
+        return lo
+    if random.random() < LOW_FLOAT_CHANCE:
+        micro_span = span * LOW_FLOAT_BAND_FRACTION
+        return lo + random.random() * micro_span
+    return lo + random.random() * span
+
 
 def _roll_quality_and_float() -> tuple[str, float]:
     """Сначала роллим качество по QUALITY_WEIGHTS (сохраняет заданное
@@ -229,7 +370,7 @@ def _roll_quality_and_float() -> tuple[str, float]:
     Valve (BS ~55%), а не заданными весами игры."""
     quality = random.choices(QUALITIES, weights=[QUALITY_WEIGHTS[q] for q in QUALITIES])[0]
     lo, hi = QUALITY_FLOAT_RANGE[quality]
-    float_val = round(random.uniform(lo, hi), 4)
+    float_val = _roll_float_in_range(lo, hi)
     return quality, float_val
 
 
@@ -245,9 +386,12 @@ def serialize_inventory_item(item) -> dict:
     Field-Tested и т.д.) и счётчик StatTrak™, поэтому единая точка стала
     обязательной.
 
-    float_val округляем до 6 знаков и отдаём как есть — карточка скина в
-    инвентаре показывает ТОЧНОЕ значение (напр. Float: 0.013412), а не
-    только категорию качества."""
+    float_val округляем только на выходе в API до 10 знаков (не 6, как
+    раньше) — исключительно чтобы срезать бинарный "мусорный хвост"
+    IEEE754 double (вроде ...399999999999998), а не для того, чтобы
+    сделать флот "красивым". Внутри при генерации (см. _roll_float_in_range)
+    round() не применяется вообще — карточка скина показывает ПОЛНУЮ
+    точность вида 0.15482914xx (требование ТЗ №9.5)."""
     float_val = item.float_val
     return {
         "id": item.id,
@@ -259,13 +403,19 @@ def serialize_inventory_item(item) -> dict:
         # категории качества требует ТЗ Спринта 10).
         "quality": item.quality,
         "quality_name": QUALITY_FULL_NAME.get(item.quality, ""),
-        "float_val": round(float_val, 6) if float_val is not None else None,
+        "float_val": round(float_val, 10) if float_val is not None else None,
         "stattrak": bool(item.stattrak),
         "stattrak_count": item.stattrak_count or 0,
         "image": item.image_url,
         "obtained_from_case": item.obtained_from_case,
         "is_in_showcase": bool(item.is_in_showcase),
         "is_on_market": bool(item.is_on_market),
+        # ПРАВКИ В ТЗ №9, п.2: дата получения предмета — нужна фронту для
+        # сортировки инвентаря "Сначала новые / Сначала старые". Отдаём
+        # ISO-строку (UTC) и совместимый unix-timestamp в мс, чтобы JS не
+        # зависел от парсинга формата даты.
+        "obtained_at": item.obtained_at.isoformat() if item.obtained_at else None,
+        "obtained_at_ts": item.obtained_at.timestamp() * 1000 if item.obtained_at else 0,
     }
 
 
@@ -278,25 +428,30 @@ STATTRAK_ELIGIBLE_RARITIES = set(RARITY_ORDER) - {"Gloves"}
 def build_dynamic_weights(items: list[dict]) -> dict[str, float]:
     """Строит проценты выпадения по редкостям под конкретный состав кейса.
 
-    Правила:
-    - 🟥 Тайное / ★ Особо редкое (Covert + Knife/Gloves): фиксированно 1-2%
-      суммарно, независимо от кейса.
-    - 🟪 Запрещённое (Restricted): ~15-18%
-    - 🟖 Засекреченное (Classified): ~5-6%
-    - Оставшийся процент (~70-80%) делится между Ширпотребом (Consumer),
-      Промышленным (Industrial) и Армейским (Mil-Spec), которые реально
-      есть в кейсе. Если Ширпотреба и Промышленного в кейсе нет —
-      весь этот остаток (~75-80%) уходит Армейскому (Mil-Spec).
-    """
+    Сетка (ПРАВКИ В ТЗ №1, п.2 — Drop Rates Config):
+    - ★ Ножи/Перчатки (Extraordinary/Special): 1.0-2.0% суммарно на всю
+      категорию, независимо от кейса.
+    - 🟥 Тайное (Covert / Red): 2.5-3.0% суммарно — СЧИТАЕТСЯ ОТДЕЛЬНО от
+      ножей/перчаток (раньше делили один и тот же пул на троих — из-за
+      этого Covert-скины были искусственно ре��че, чем нужно).
+    - 🟖 Засекреченное (Classified / Pink): 10.0-15.0% суммарно.
+    - 🟪 Запрещённое (Restricted / Purple): 10.0-15.0% суммарно.
+    - Армейское/Ширпотреб (Mil-Spec/Industrial/Consumer): весь оставшийся
+      процент (~65-75% в обычном случае), поделённый между теми из них,
+      что реально есть в кейсе.
+
+    Внутри одной категории процент делится РАВНОМЕРНО между всеми
+    предметами этой категории (см. get_item_drop_chances)."""
     present = {i["rarity"] for i in items}
     weights: dict[str, float] = {}
 
     rare_total = random.uniform(1.0, 2.0)
-    classified_total = random.uniform(5.0, 6.0) if "Classified" in present else 0.0
-    restricted_total = random.uniform(15.0, 18.0) if "Restricted" in present else 0.0
+    covert_total = random.uniform(2.5, 3.0) if "Covert" in present else 0.0
+    classified_total = random.uniform(10.0, 15.0) if "Classified" in present else 0.0
+    restricted_total = random.uniform(10.0, 15.0) if "Restricted" in present else 0.0
 
-    used = rare_total + classified_total + restricted_total
-    base_pool = max(0.0, 100.0 - used)  # ~70-80% в обычном случае
+    used = rare_total + covert_total + classified_total + restricted_total
+    base_pool = max(0.0, 100.0 - used)  # ~65-75% в обычном случае
 
     have_consumer = "Consumer" in present
     have_industrial = "Industrial" in present
@@ -319,8 +474,10 @@ def build_dynamic_weights(items: list[dict]) -> dict[str, float]:
         weights["Restricted"] = restricted_total
     if classified_total:
         weights["Classified"] = classified_total
+    if covert_total:
+        weights["Covert"] = covert_total
 
-    rare_present = [r for r in RARE_TIER if r in present]
+    rare_present = [r for r in KNIFE_GLOVES_TIER if r in present]
     if rare_present:
         share = rare_total / len(rare_present)
         for r in rare_present:
@@ -618,6 +775,7 @@ async def craft_item(req: CraftRequest):
         # эти 5 предметов, затем начисляем целевой — атомарно в одной
         # транзакции, без промежуточных состояний.
         user.balance -= fee
+        _track_wagered(user, fee)
         await _credit_referral_commission(session, user, fee)
         for item in source_items:
             await session.delete(item)
@@ -676,6 +834,25 @@ XP_DAILY_CLAIM = 8            # забрал ежедневную награду
 XP_AD_REWARD = 4              # посмотрел рекламу за 💎
 XP_BONUS_CLAIM = 4            # нажал кнопку "Бонус"
 
+# ============================================
+# ПРАВКИ В ТЗ №5: награды за УРОВЕНЬ аккаунта (не за ранг)
+# ============================================
+# Раньше повышение уровня аккаунта (levels.py) не давало ничего, кроме
+# слотов Витрины. Теперь на круглых уровнях выдаются кристаллы, а на
+# более редких вехах — ещё и бесплатный кейс (роллится через тот же
+# _roll_weighted_item, что и ранговые кейсы, весами покруче на более
+# поздних вехах). Ключ — уровень аккаунта, на котором выдаётся награда.
+LEVEL_MILESTONE_REWARDS = {
+    10:  {"crystals": 500,   "case_weights": None},
+    20:  {"crystals": 1000,  "case_weights": {"Restricted": 60, "Classified": 35, "Covert": 5}},
+    30:  {"crystals": 1500,  "case_weights": None},
+    50:  {"crystals": 3000,  "case_weights": {"Restricted": 40, "Classified": 40, "Covert": 20}},
+    75:  {"crystals": 5000,  "case_weights": None},
+    100: {"crystals": 10000, "case_weights": {"Classified": 35, "Covert": 45, "Gloves": 15, "Knife": 5}},
+    150: {"crystals": 20000, "case_weights": {"Covert": 45, "Gloves": 30, "Knife": 25}},
+    200: {"crystals": 50000, "case_weights": {"Covert": 30, "Gloves": 35, "Knife": 35}},
+}
+
 
 def _xp_for_case_open(case_price: float, count: int) -> int:
     """XP за открытие кейса(ов): чем дороже кейс, тем больше опыта за одно
@@ -685,18 +862,15 @@ def _xp_for_case_open(case_price: float, count: int) -> int:
     return per_case * count
 
 
-def _roll_rank_case_item(case_key: str) -> Optional[dict]:
-    """Ролл предмета для рангового кейса — использует общий каталог
-    предметов (все кейсы сразу, реальные картинки/базовые цены Steam, см.
-    _craft_catalog_by_rarity), но с собственным набором весов редкости для
-    каждого ранга (ranks.RANK_CASE_WEIGHTS) — старшие ранги смещены в
-    сторону Covert/Gloves/Knife сильнее, чем обычные кейсы."""
-    case_def = ranks.RANK_CASE_WEIGHTS.get(case_key)
-    if not case_def:
-        return None
-
+def _roll_weighted_item(weights: dict) -> Optional[dict]:
+    """Общий ролл предмета по произвольным весам редкости — использует
+    общий каталог предметов (все кейсы сразу, реальные картинки/базовые
+    цены Steam, см. _craft_catalog_by_rarity). Вынесено из
+    _roll_rank_case_item в отдельную функцию, чтобы её же переиспользовать
+    для наград за уровень аккаунта (см. LEVEL_MILESTONE_REWARDS) и для
+    "секретных скинов" (ranks.SECRET_SKIN_WEIGHTS) — раньше у каждого
+    такого места был свой копипаст цикла взвешенного выбора."""
     catalog = _craft_catalog_by_rarity()
-    weights = case_def["weights"]
     available = [r for r in weights if catalog.get(r)]
     if not available:
         return None
@@ -713,6 +887,44 @@ def _roll_rank_case_item(case_key: str) -> Optional[dict]:
 
     chosen = random.choice(catalog[chosen_rarity])
     return _roll_item_instance(chosen["name"], chosen_rarity, chosen["image"])
+
+
+def _roll_rank_case_item(case_key: str) -> Optional[dict]:
+    """Ролл предмета для рангового кейса — весов�� редкости берутся из
+    ranks.RANK_CASE_WEIGHTS: старшие ранги смещены в сторону
+    Covert/Gloves/Knife сильнее, чем обычные кейсы."""
+    case_def = ranks.RANK_CASE_WEIGHTS.get(case_key)
+    if not case_def:
+        return None
+    return _roll_weighted_item(case_def["weights"])
+
+
+def _roll_secret_skin_item() -> Optional[dict]:
+    """ПРАВКИ В ТЗ №5: «секретный скин» — гарантированный (в обход обычных
+    кейсовых весов) дроп ножа или перчаток, выдаётся ДОПОЛНИТЕЛЬНО к
+    ранговому кейсу на рангах, где ranks.RANKS[i]["secret_skin"] = True
+    (сейчас — «Легендарный Игл» и «Глобал Элит»)."""
+    return _roll_weighted_item(ranks.SECRET_SKIN_WEIGHTS)
+
+
+def _inventory_entry_from_drop(user: User, drop: dict, source_label: str) -> Inventory:
+    """Собирает строку Inventory из результата _roll_weighted_item и сразу
+    обновляет счётчики топ-дропа/титулов через _maybe_update_top_drop —
+    общий хелпер, чтобы не дублировать одни и те же 9 полей в нескольких
+    местах выдачи ранговых наград (кейс + секретный скин)."""
+    item = Inventory(
+        user_id=user.id,
+        skin_name=drop["name"],
+        skin_price=drop["price"],
+        rarity=drop["rarity"],
+        quality=drop["quality"],
+        stattrak=drop["stattrak"],
+        float_val=drop["float_val"],
+        image_url=drop["image"],
+        obtained_from_case=source_label,
+    )
+    _maybe_update_top_drop(user, drop)
+    return item
 
 
 async def _credit_referral_commission(session, spender: User, spent_amount: float) -> None:
@@ -746,6 +958,9 @@ async def _credit_referral_commission(session, spender: User, spent_amount: floa
 
     referrer.balance += commission
     referrer.ref_earnings_total = round((referrer.ref_earnings_total or 0.0) + commission, 2)
+    session.add(ReferralEarning(
+        referrer_id=referrer.id, referred_id=spender.id, amount=commission, source="spend",
+    ))
 
 
 async def _find_referrer(session, spender: User) -> Optional[User]:
@@ -757,51 +972,99 @@ async def _find_referrer(session, spender: User) -> Optional[User]:
     return result.scalar_one_or_none()
 
 
-async def _credit_referral_upgrader_loss(session, spender: User, lost_amount: float) -> None:
-    """Спринт 9.5: пожизненное отчисление рефереру — config.REF_UPGRADER_LOSS_COMMISSION_PERCENT
-    (5%) от ставки, ПРОИГРАННОЙ рефералом в Апгрейдере (routers/upgrader.py,
-    результат 'lose'). lost_amount — это staked_value (стоимость сгоревших
-    предметов + добавленных Кристаллов), т.е. вся сгоревшая ставка целиком.
+async def _credit_referral_loss(session, spender: User, lost_amount: float, source: str = "loss") -> None:
+    """ПРАВКИ В ТЗ №13: пожизненное отчисление рефереру — config.REF_LOSS_COMMISSION_PERCENT
+    (5%) от суммы, ПРОИГРАННОЙ рефералом за один раунд любой азартной
+    механики (кейс, где скин дешевле цены кейса; проигранная ставка в
+    мини-игре; проигрыш в Апгрейдере; отрицательный исход Контракта обмена
+    и т.д.) — lost_amount = staked - returned.
 
-    Отдельная функция от _credit_referral_commission (общие траты) — так как
-    у Апгрейдера, в отличие от открытия кейса/крафта, есть явный исход
-    (выигрыш/проигрыш), комиссия здесь считается от исхода, а не от факта
-    самой ставки. Ничего не коммитит сама — вызывается внутри уже открытой
-    транзакции эндпоинта, рядом с остальными начислениями."""
+    Отдельная функция от _credit_referral_commission (не-азартные траты
+    вроде /api/craft и покупки на маркете) — так как у азартных механик
+    есть явный исход (выигрыш/проигрыш), комиссия здесь считается от
+    исхода, а не от факта самой ставки/платы. Ничего не коммитит сама —
+    вызывается внутри уже открытой транзакции эндпоинта, рядом с
+    остальными начислениями. source — метка происхождения для
+    ReferralEarning.source (например "case", "minigame_crash",
+    "upgrader", "contract")."""
     if lost_amount <= 0:
         return
     referrer = await _find_referrer(session, spender)
     if not referrer:
         return
 
-    commission = round(lost_amount * config.REF_UPGRADER_LOSS_COMMISSION_PERCENT, 2)
+    commission = round(lost_amount * config.REF_LOSS_COMMISSION_PERCENT, 2)
     if commission <= 0:
         return
 
     referrer.balance += commission
     referrer.ref_earnings_total = round((referrer.ref_earnings_total or 0.0) + commission, 2)
+    session.add(ReferralEarning(
+        referrer_id=referrer.id, referred_id=spender.id, amount=commission, source=f"{source}_loss",
+    ))
 
 
-async def _credit_referral_upgrader_win(session, spender: User, net_win: float) -> None:
-    """Спринт 9.5: пожизненное отчисление рефереру — config.REF_UPGRADER_WIN_COMMISSION_PERCENT
-    (2%) от ЧИСТОГО выигрыша реферала в Апгрейдере (результат 'win').
-    net_win — это (target_value - staked_value), т.е. только "навар" сверх
-    той ставки, что уже сгорела в предмет, а НЕ вся стоимость выигранного
-    предмета целиком. Если по какой-то причине net_win <= 0 (не должно
-    случаться при победе, т.к. цель всегда дороже шанса на неё), комиссия
-    просто не начисляется. Ничего не коммитит сама — см. _credit_referral_upgrader_loss."""
+async def _credit_referral_win(session, spender: User, net_win: float, source: str = "win") -> None:
+    """ПРАВКИ В ТЗ №13: пожизненное отчисление рефереру — config.REF_WIN_COMMISSION_PERCENT
+    (2%) от ЧИСТОГО выигрыша реферала за один раунд любой азартной механики.
+    net_win — это (returned - staked), т.е. только "навар" сверх суммы,
+    которая была поставлена/потрачена на вход, а НЕ вся сумма возврата
+    целиком. Если net_win <= 0, комиссия просто не начисляется. Ничего не
+    коммитит сама — см. _credit_referral_loss."""
     if net_win <= 0:
         return
     referrer = await _find_referrer(session, spender)
     if not referrer:
         return
 
-    commission = round(net_win * config.REF_UPGRADER_WIN_COMMISSION_PERCENT, 2)
+    commission = round(net_win * config.REF_WIN_COMMISSION_PERCENT, 2)
     if commission <= 0:
         return
 
     referrer.balance += commission
     referrer.ref_earnings_total = round((referrer.ref_earnings_total or 0.0) + commission, 2)
+    session.add(ReferralEarning(
+        referrer_id=referrer.id, referred_id=spender.id, amount=commission, source=f"{source}_win",
+    ))
+
+
+async def _credit_referral_round_outcome(
+    session, spender: User, staked: float, returned: float, source: str
+) -> None:
+    """ПРАВКИ В ТЗ №13: универсальный разбор исхода одного "раунда" любой
+    азартной механики (кейс/мини-игра/Апгрейдер/Контракт) — staked это то,
+    что реферал поставил/потратил на вход (цена кейса, сумма ставки, цена
+    сожжённых в контракте предметов), returned — то, что реально вернулось
+    (цена выпавшего скина, выигрыш мини-игры, цена предмета с контракта).
+    Начисляет рефереру ЛИБО % с проигрыша, ЛИБО % с чистого выигрыша —
+    никогда оба сразу, т.к. они взаимоисключающие исходы одного раунда."""
+    net = round(returned - staked, 2)
+    if net < 0:
+        await _credit_referral_loss(session, spender, -net, source=source)
+    elif net > 0:
+        await _credit_referral_win(session, spender, net, source=source)
+
+
+async def _active_event_xp_multiplier(session) -> float:
+    """ПРАВКИ В ТЗ №15: /roll_event <multiplier> <duration_hours> — читает
+    активный временный множитель XP из AppSetting (event_xp_multiplier /
+    event_xp_expires_at). Возвращает 1.0, если события нет либо оно уже
+    истекло по времени (истёкшее событие НЕ снимается здесь автоматически —
+    просто перестаёт применяться; следующий /roll_event его перезапишет)."""
+    expires_raw = await get_setting(session, "event_xp_expires_at")
+    if not expires_raw:
+        return 1.0
+    try:
+        expires_at = datetime.datetime.fromisoformat(expires_raw)
+    except ValueError:
+        return 1.0
+    if datetime.datetime.utcnow() >= expires_at:
+        return 1.0
+    mult_raw = await get_setting(session, "event_xp_multiplier", "1")
+    try:
+        return max(0.0, float(mult_raw))
+    except (TypeError, ValueError):
+        return 1.0
 
 
 async def _award_xp(session, user: User, amount: int) -> dict:
@@ -825,6 +1088,13 @@ async def _award_xp(session, user: User, amount: int) -> dict:
             "level": levels.level_from_xp(user.xp or 0),
         }
 
+    # ---- ПРАВКИ В ТЗ №15: /roll_event — временный множитель XP,
+    # выставленный админом (хранится в AppSetting, т.к. bot.py и main.py —
+    # разные процессы). Применяется здесь централизованно — единая
+    # воронка начисления XP (см. докстринг выше), поэтому событие
+    # автоматически покрывает и кейсы, и все мини-игры, и апгрейдер и т.д.
+    amount = round(amount * await _active_event_xp_multiplier(session))
+
     # Уровень аккаунта ДО начисления — по нему потом определяем, какие
     # уровни игрок перешагнул этим начислением (см. конец функции).
     level_before = levels.level_from_xp(user.xp or 0)
@@ -843,18 +1113,7 @@ async def _award_xp(session, user: User, amount: int) -> dict:
         if rank_def["case_key"]:
             drop = _roll_rank_case_item(rank_def["case_key"])
             if drop:
-                session.add(Inventory(
-                    user_id=user.id,
-                    skin_name=drop["name"],
-                    skin_price=drop["price"],
-                    rarity=drop["rarity"],
-                    quality=drop["quality"],
-                    stattrak=drop["stattrak"],
-                    float_val=drop["float_val"],
-                    image_url=drop["image"],
-                    obtained_from_case=f"Ранговый кейс «{rank_def['name']}»",
-                ))
-                _maybe_update_top_drop(user, drop)
+                session.add(_inventory_entry_from_drop(user, drop, f"Ранговый кейс «{rank_def['name']}»"))
                 reward_item = {
                     "name": drop["name"],
                     "rarity": drop["rarity"],
@@ -864,6 +1123,44 @@ async def _award_xp(session, user: User, amount: int) -> dict:
                     "stattrak": drop["stattrak"],
                 }
 
+        # ---- ПРАВКИ В ТЗ №5: секретный скин (гарантированный нож/перчатки,
+        # в обход весов рангового кейса), выдаётся ДОПОЛНИТЕЛЬНО к обычной
+        # награде на рангах, где это явно включено (Легендарный Игл, Глобал Элит) ----
+        secret_skin_item = None
+        if rank_def.get("secret_skin"):
+            secret_drop = _roll_secret_skin_item()
+            if secret_drop:
+                session.add(_inventory_entry_from_drop(
+                    user, secret_drop, f"Секретный скин ранга «{rank_def['name']}»",
+                ))
+                secret_skin_item = {
+                    "name": secret_drop["name"],
+                    "rarity": secret_drop["rarity"],
+                    "image": secret_drop["image"],
+                    "price": secret_drop["price"],
+                    "quality_name": secret_drop["quality_name"],
+                    "stattrak": secret_drop["stattrak"],
+                }
+
+        # ---- Эксклюзивная рамка аватара за ранг ----
+        new_frame = None
+        if rank_def.get("frame_key") and cosmetics.grant_frame(user, rank_def["frame_key"]):
+            frame_entry = cosmetics.FRAMES_BY_KEY.get(rank_def["frame_key"])
+            if frame_entry:
+                new_frame = {
+                    "key": frame_entry["key"],
+                    "name": frame_entry["name"],
+                    "name_en": frame_entry["name_en"],
+                    "name_uk": frame_entry["name_uk"],
+                }
+
+        # ---- Эксклюзивный фон профиля за ранг ----
+        new_background = None
+        if rank_def.get("background_key") and cosmetics.grant_background(user, rank_def["background_key"]):
+            bg_entry = BACKGROUND_OPTIONS_BY_KEY.get(rank_def["background_key"])
+            if bg_entry:
+                new_background = {"key": bg_entry["key"], "label": bg_entry["label"]}
+
         rank_up_events.append({
             "level": current_level,
             "key": rank_def["key"],
@@ -871,6 +1168,9 @@ async def _award_xp(session, user: User, amount: int) -> dict:
             "icon": rank_def["icon"],
             "bonus_crystals": rank_def["bonus_crystals"],
             "reward_item": reward_item,
+            "secret_skin_item": secret_skin_item,
+            "new_frame": new_frame,
+            "new_background": new_background,
         })
 
     user.rank_level = current_level
@@ -885,12 +1185,35 @@ async def _award_xp(session, user: User, amount: int) -> dict:
     for lvl in range(level_before + 1, level_after + 1):
         prev_slots = levels.showcase_slots_for_level(lvl - 1)
         slots = levels.showcase_slots_for_level(lvl)
+
+        # ---- ПРАВКИ В ТЗ №5: награда за веху уровня аккаунта ----
+        milestone = LEVEL_MILESTONE_REWARDS.get(lvl)
+        milestone_crystals = 0
+        milestone_item = None
+        if milestone:
+            milestone_crystals = milestone["crystals"]
+            user.balance += milestone_crystals
+            if milestone["case_weights"]:
+                drop = _roll_weighted_item(milestone["case_weights"])
+                if drop:
+                    session.add(_inventory_entry_from_drop(user, drop, f"Награда за {lvl} уровень аккаунта"))
+                    milestone_item = {
+                        "name": drop["name"],
+                        "rarity": drop["rarity"],
+                        "image": drop["image"],
+                        "price": drop["price"],
+                        "quality_name": drop["quality_name"],
+                        "stattrak": drop["stattrak"],
+                    }
+
         level_up_events.append({
             "level": lvl,
             "showcase_slots": slots,
             # +1 слот витрины даётся не на каждом уровне, а раз в 5 — фронт
             # по этому флагу решает, показывать ли строку «+1 слот Витрины».
             "showcase_slot_gained": slots > prev_slots,
+            "milestone_crystals": milestone_crystals,
+            "milestone_item": milestone_item,
         })
     user.last_seen_level = level_after
 
@@ -1047,6 +1370,10 @@ class UpdateSettingsRequest(BaseModel):
     lang: Optional[str] = None
     sound_enabled: Optional[bool] = None
     background: Optional[str] = None
+    # ПРАВКИ В ТЗ №5: настройка показа всплывающих уведомлений (отдельно
+    # от звука — можно оставить звук, но выключить всплывающие окна, и
+    # наоборот).
+    notifications_enabled: Optional[bool] = None
 
 
 class BonusClaimRequest(BaseModel):
@@ -1105,11 +1432,22 @@ class ClimbCashoutRequest(BaseModel):
 # thumb — превью для сетки выбора в Настройках (может совпадать с src для
 # картинок; для видео — отдельный статичный кадр, чтобы не грузить видео
 # только ради иконки выбора).
+#
+# ПРАВКИ В ТЗ №5: у каждой записи появилось поле "unlock" —
+#   None                              — доступен всем сразу (как раньше);
+#   {"type": "grant", "rank_key": ..} — эксклюзив, выдаётся ТОЛЬКО наградой
+#                                        за ранг (см. ranks.py, main._award_xp,
+#                                        cosmetics.grant_background). Открыт,
+#                                        если ключ есть в user.unlocked_backgrounds.
+# type="gradient" — CSS linear/radial-gradient строкой (css), без картинки/
+# видео: используется для эксклюзивных наградных фонов, для которых нет
+# лицензированных ассетов карт (только цветовой градиент + бейдж ранга).
 BACKGROUND_OPTIONS = [
     {
         "key": "dark",
         "label": "Классическая тёмная",
         "type": "theme",
+        "unlock": None,
     },
     {
         "key": "map_mirage",
@@ -1117,6 +1455,7 @@ BACKGROUND_OPTIONS = [
         "type": "image",
         "src": "/assets/backgrounds/mirage.jpg",
         "thumb": "/assets/backgrounds/thumbs/mirage.jpg",
+        "unlock": None,
     },
     {
         "key": "map_dust2",
@@ -1124,6 +1463,7 @@ BACKGROUND_OPTIONS = [
         "type": "image",
         "src": "/assets/backgrounds/dust2.jpg",
         "thumb": "/assets/backgrounds/thumbs/dust2.jpg",
+        "unlock": None,
     },
     {
         "key": "map_inferno",
@@ -1131,6 +1471,7 @@ BACKGROUND_OPTIONS = [
         "type": "image",
         "src": "/assets/backgrounds/inferno.jpg",
         "thumb": "/assets/backgrounds/thumbs/inferno.jpg",
+        "unlock": None,
     },
     {
         "key": "video_mirage",
@@ -1138,6 +1479,7 @@ BACKGROUND_OPTIONS = [
         "type": "video",
         "src": "/assets/backgrounds/mirage_loop.mp4",
         "thumb": "/assets/backgrounds/thumbs/mirage_loop.jpg",
+        "unlock": None,
     },
     {
         "key": "video_dust2",
@@ -1145,9 +1487,26 @@ BACKGROUND_OPTIONS = [
         "type": "video",
         "src": "/assets/backgrounds/dust2_loop.mp4",
         "thumb": "/assets/backgrounds/thumbs/dust2_loop.jpg",
+        "unlock": None,
+    },
+    # ---- ПРАВКИ В ТЗ №5: эксклюзивные фоны-награды за ранг ----
+    {
+        "key": "bg_rank_supreme",
+        "label": "Суприм — золотой прайм",
+        "type": "gradient",
+        "css": "radial-gradient(circle at 30% 20%, #3a2a00 0%, #120b00 55%, #060402 100%)",
+        "unlock": {"type": "grant", "rank_key": "supreme"},
+    },
+    {
+        "key": "bg_rank_global_elite",
+        "label": "Глобал Элит — престиж",
+        "type": "gradient",
+        "css": "radial-gradient(circle at 70% 15%, #402a00 0%, #1a0f00 45%, #060302 100%)",
+        "unlock": {"type": "grant", "rank_key": "global_elite"},
     },
 ]
 BACKGROUND_KEYS = {opt["key"] for opt in BACKGROUND_OPTIONS}
+BACKGROUND_OPTIONS_BY_KEY = {opt["key"]: opt for opt in BACKGROUND_OPTIONS}
 DEFAULT_BACKGROUND = "dark"
 
 
@@ -1158,13 +1517,31 @@ DEFAULT_BACKGROUND = "dark"
 async def app_config():
     return {
         "bot_username": config.BOT_USERNAME,
+        # ПРАВКИ В ТЗ №6: канал для карточки "Розыгрыши" на вкладке
+        # "Заработать" — переиспользуем тот же канал, что и у задания
+        # sub_channel (config.SOCIAL_CHANNEL_USERNAME), т.к. именно там по
+        # ТЗ анонсируются розыгрыши. Плейсхолдер "заглшука" (канал ещё не
+        # настроен) отдаём как есть — фронт сам откатывается на ссылку
+        # бота / алерт, если это значение похоже на плейсхолдер.
+        "social_channel_username": config.SOCIAL_CHANNEL_USERNAME,
         "adsgram_block_id": config.ADSGRAM_BLOCK_ID,
         "ref_bonus_inviter": config.REF_BONUS_INVITER,
         "ref_bonus_invited": config.REF_BONUS_INVITED,
         "ref_commission_percent": config.REF_COMMISSION_PERCENT,
+        # ПРАВКИ В ТЗ №13: % с проигрыша / чистого выигрыша реферала —
+        # теперь общие для ВСЕХ азартных механик (кейсы, мини-игры,
+        # Апгрейдер, Контракты обмена), а не только Апгрейдера.
+        "ref_loss_commission_percent": config.REF_LOSS_COMMISSION_PERCENT,
+        "ref_win_commission_percent": config.REF_WIN_COMMISSION_PERCENT,
         "vip_price_stars": config.VIP_PRICE_STARS,
         "bonus_reward_amount": BONUS_REWARD_AMOUNT,
         "bonus_cooldown_seconds": BONUS_COOLDOWN_SECONDS,
+        # ПРАВКИ В ТЗ №7 (валюты и значки): фронту нужен диапазон награды за
+        # рекламу, чтобы текст карточки "Посмотреть видео" на вкладке
+        # "Заработать" пересчитывался под текущую выбранную валюту (₽/$/₴),
+        # а не был захардкожен как "1000 до 10000 💎" в i18n-словаре.
+        "ad_reward_min": AD_REWARD_MIN,
+        "ad_reward_max": AD_REWARD_MAX,
         "craft_fee_by_rarity": CRAFT_FEE_BY_RARITY,
         "craft_items_required": CRAFT_ITEMS_REQUIRED,
         # Курс валют для переключателя ₽/$/₴ в шапке WebApp — фронт получает
@@ -1260,7 +1637,7 @@ async def open_case(req: OpenCaseRequest):
             raise HTTPException(400, "Недостаточно Кристалликов 💎")
 
         user.balance -= total_price
-        await _credit_referral_commission(session, user, total_price)
+        _track_wagered(user, total_price)
         user.total_cases_opened += req.count
         user.favorite_case = CASES[req.case_key]["name"]
 
@@ -1285,6 +1662,12 @@ async def open_case(req: OpenCaseRequest):
             _maybe_update_top_drop(user, drop)
             # Спринт 11: авто-лента в глобальный чат для дорогих дропов (>100k 💎)
             _maybe_post_drop_to_chat(session, user, drop)
+
+        # ПРАВКИ В ТЗ №13: реферальная комиссия с кейсов — по совокупному
+        # исходу всего батча открытий за этот запрос (total_price против
+        # суммарной цены всех выпавших скинов), а не по факту самой траты.
+        drops_total_value = round(sum(d.get("price", 0) or 0 for d in drops), 2)
+        await _credit_referral_round_outcome(session, user, total_price, drops_total_value, source="case")
 
         xp_info = await _award_xp(session, user, _xp_for_case_open(case_price, req.count))
 
@@ -1455,7 +1838,7 @@ async def activate_promo(req: PromoRequest):
                 rarity=rarity,
                 quality="FT",
                 stattrak=False,
-                float_val=round(random.uniform(*QUALITY_FLOAT_RANGE["FT"]), 4),
+                float_val=_roll_float_in_range(*QUALITY_FLOAT_RANGE["FT"]),
                 obtained_from_case="Промокод",
             )
             session.add(item_record)
@@ -1494,6 +1877,29 @@ def _maybe_update_top_drop(user: User, drop: dict) -> None:
         user.top_drop_price = price
         user.top_drop_rarity = drop.get("rarity")
         user.top_drop_image = drop.get("image")
+
+    # ПРАВКИ В ТЗ №5: «Общий профит» в профиле. Раз эта функция и так уже
+    # вызывается из ВСЕХ 13 мест выдачи предмета, она же — самое надёжное
+    # место, чтобы засчитать цену предмета в total_returned, не забыв ни
+    # один из путей (кейсы, крафт, апгрейдер, колесо, промокоды, Battle
+    # Pass, ежедневки, ранговые кейсы).
+    _track_return(user, price)
+
+
+def _track_wagered(user: User, amount: float) -> None:
+    """Учитывает списание баланса на "азартную" активность (кейсы, апгрейдер,
+    крафт, ставки мини-игр) в total_wagered — расходная часть «Общего
+    профита» в профиле. Вызывать ПОСЛЕ вычитания из user.balance."""
+    if amount:
+        user.total_wagered = (user.total_wagered or 0.0) + amount
+
+
+def _track_return(user: User, amount: float) -> None:
+    """Учитывает "приходную" часть «Общего профита»: цену выигранного
+    предмета (вызывается из _maybe_update_top_drop) либо денежный выигрыш
+    мини-игры, зачисленный на баланс (вызывается вручную в местах кэшаута)."""
+    if amount:
+        user.total_returned = (user.total_returned or 0.0) + amount
 
 
 # ============================================
@@ -1593,13 +1999,28 @@ async def _build_profile_payload(session, user: User) -> dict:
         "vip_expires_at": user.vip_expires_at.isoformat() if user.vip_expires_at else None,
         "lang": user.lang or "ru",
         "sound_enabled": user.sound_enabled,
+        # ПРАВКИ В ТЗ №5: показ всплывающих уведомлений (отдельно от звука).
+        "notifications_enabled": user.notifications_enabled if user.notifications_enabled is not None else True,
         # Спринт 12: сервер — источник истины при рассинхроне с localStorage
         # (напр. игрок сменил фон на другом устройстве) — фронт применяет
         # это значение поверх локального после первого успешного логина.
         "background": user.background or DEFAULT_BACKGROUND,
+        # ПРАВКИ В ТЗ №5: эксклюзивные фоны, открытые наградой за ранг —
+        # фронт использует список, чтобы снять замок с уже заслуженных
+        # пунктов сетки выбора фона (остальные фоны из BACKGROUND_OPTIONS
+        # без unlock доступны всем и сюда не попадают).
+        "unlocked_backgrounds": cosmetics.load_keys(user.unlocked_backgrounds),
         "terms_accepted": bool(user.terms_accepted),
         "total_cases_opened": user.total_cases_opened,
         "favorite_case": user.favorite_case or "—",
+        # ---- ПРАВКИ В ТЗ №5: «Общий профит» + «Статистика мини-игр» ----
+        # profit = сколько игрок суммарно "заработал сверху": цена всех
+        # выигранных предметов + денежные выигрыши мини-игр минус то, что
+        # потрачено на кейсы/крафт/апгрейдер/ставки. Может быть отрицательным.
+        "total_profit": round((user.total_returned or 0.0) - (user.total_wagered or 0.0), 2),
+        "minigames_stats": {
+            "played": user.minigames_played or 0,
+        },
         # ---- P2P-реферальная система: сколько друзей приглашено и сколько
         # 💎 пассивно получено с их активности (см. REF_COMMISSION_PERCENT) ----
         "referrals_count": referrals_count,
@@ -1731,6 +2152,11 @@ async def auth_telegram(req: TelegramAuthRequest):
             session, telegram_id, display_name, photo_url,
             first_name=tg_user.get("first_name"),
         )
+        # ---- ПРАВКИ В ТЗ №15: полный бан доступа (/ban) — забаненный
+        # игрок не может войти в приложение вообще, в отличие от
+        # is_chat_banned (тот запрещает только писать в глобальный чат). ----
+        if user.is_banned:
+            raise HTTPException(403, f"Доступ заблокирован администрацией. Причина: {user.ban_reason or 'не указана'}")
         payload = await _build_profile_payload(session, user)
         payload["telegram_username"] = tg_user.get("username")  # @handle, если задан в Telegram
         return payload
@@ -1747,6 +2173,8 @@ async def auth_telegram_dev(req: DevAuthRequest):
 
     async with async_session() as session:
         user = await _get_or_create_user(session, req.telegram_id, req.username or "Игрок", req.photo_url)
+        if user.is_banned:
+            raise HTTPException(403, f"Доступ заблокирован администрацией. Причина: {user.ban_reason or 'не указана'}")
         return await _build_profile_payload(session, user)
 
 
@@ -1760,7 +2188,63 @@ async def get_profile(telegram_id: int):
         user = result.scalar_one_or_none()
         if not user:
             raise HTTPException(404, "Пользователь не найден — сначала выполни вход")
+        if user.is_banned:
+            raise HTTPException(403, f"Доступ заблокирован администрацией. Причина: {user.ban_reason or 'не указана'}")
         return await _build_profile_payload(session, user)
+
+
+@app.get("/api/referrals/list")
+async def get_referrals_list(telegram_id: int):
+    """ПРАВКИ В ТЗ №6: данные для модалки "Мои рефералы" — построчная
+    разбивка профита по каждому приглашённому другу (никнейм, сумма его
+    вклада, % от общего профита), а не только агрегат ref_earnings_total.
+    Строится из ReferralEarning (см. _credit_referral_commission и др.),
+    группируя записи по referred_id."""
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.telegram_id == telegram_id))
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(404, "Пользователь не найден")
+
+        result_sum = await session.execute(
+            select(
+                ReferralEarning.referred_id,
+                func.sum(ReferralEarning.amount).label("total"),
+            )
+            .where(ReferralEarning.referrer_id == user.id)
+            .group_by(ReferralEarning.referred_id)
+            .order_by(func.sum(ReferralEarning.amount).desc())
+        )
+        rows = result_sum.all()
+
+        grand_total = sum(row.total for row in rows) if rows else 0.0
+
+        friends = []
+        if rows:
+            friend_ids = [row.referred_id for row in rows]
+            result_friends = await session.execute(
+                select(User).where(User.id.in_(friend_ids))
+            )
+            friends_by_id = {u.id: u for u in result_friends.scalars().all()}
+
+            for row in rows:
+                friend = friends_by_id.get(row.referred_id)
+                nickname = (
+                    (friend.username or friend.first_name) if friend else None
+                ) or "—"
+                amount = round(row.total or 0.0, 2)
+                percent = round((amount / grand_total) * 100, 1) if grand_total > 0 else 0.0
+                friends.append({
+                    "telegram_id": friend.telegram_id if friend else None,
+                    "nickname": nickname,
+                    "amount": amount,
+                    "percent": percent,
+                })
+
+        return {
+            "total_earnings": round(grand_total, 2),
+            "friends": friends,
+        }
 
 
 # ============================================
@@ -1778,12 +2262,23 @@ async def update_settings(req: UpdateSettingsRequest):
             user.lang = req.lang
         if req.sound_enabled is not None:
             user.sound_enabled = req.sound_enabled
+        if req.notifications_enabled is not None:
+            user.notifications_enabled = req.notifications_enabled
         # Спринт 12: фон валидируем ТОЛЬКО против BACKGROUND_KEYS — иначе
         # клиент мог бы записать в БД произвольную строку (в т.ч. случайно
         # рассинхронизированную со старой версией фронта после деплоя).
+        # ПРАВКИ В ТЗ №5: часть фонов теперь эксклюзивна за ранг — если у
+        # фона выставлен unlock, дополнительно проверяем, что ключ есть в
+        # user.unlocked_backgrounds (иначе можно было бы выставить себе
+        # наградной фон одним POST-запросом, не заработав ранг).
         if req.background is not None:
-            if req.background not in BACKGROUND_KEYS:
+            bg_entry = BACKGROUND_OPTIONS_BY_KEY.get(req.background)
+            if not bg_entry:
                 raise HTTPException(400, "Неизвестный фон")
+            if bg_entry.get("unlock"):
+                owned = cosmetics.load_keys(user.unlocked_backgrounds)
+                if req.background not in owned:
+                    raise HTTPException(403, "Этот фон ещё не открыт — заработай нужный ранг")
             user.background = req.background
 
         await session.commit()
@@ -1791,6 +2286,7 @@ async def update_settings(req: UpdateSettingsRequest):
             "success": True,
             "lang": user.lang,
             "sound_enabled": user.sound_enabled,
+            "notifications_enabled": user.notifications_enabled,
             "background": user.background or DEFAULT_BACKGROUND,
         }
 
@@ -1838,7 +2334,11 @@ async def create_vip_invoice_link(req: VipInvoiceRequest):
 # ============================================
 # 9. POST /api/ad-reward
 # ============================================
-AD_REWARD_AMOUNT = 2000.0
+# ПРАВКИ В ТЗ №6: награда за просмотр рекламы больше не фиксированная —
+# случайное целое число Кристаллов из диапазона [AD_REWARD_MIN, AD_REWARD_MAX]
+# (например, 5,502), выбирается заново при КАЖДОМ просмотре в _credit_ad_reward.
+AD_REWARD_MIN = 1000
+AD_REWARD_MAX = 10000
 AD_REWARD_COOLDOWN_SECONDS = 60
 _last_ad_reward: dict[int, datetime.datetime] = {}
 
@@ -1860,14 +2360,15 @@ async def _credit_ad_reward(telegram_id: int) -> dict:
         if not user:
             raise HTTPException(404, "Пользователь не найден")
 
-        user.balance += AD_REWARD_AMOUNT
+        reward_amount = float(random.randint(AD_REWARD_MIN, AD_REWARD_MAX))
+        user.balance += reward_amount
         xp_info = await _award_xp(session, user, XP_AD_REWARD)
         await session.commit()
         await session.refresh(user)
 
         _last_ad_reward[telegram_id] = now
 
-        return {"success": True, "reward": AD_REWARD_AMOUNT, "new_balance": user.balance, "xp": xp_info}
+        return {"success": True, "reward": reward_amount, "new_balance": user.balance, "xp": xp_info}
 
 
 @app.post("/api/ad-reward")
@@ -1876,7 +2377,7 @@ async def ad_reward(req: AdRewardRequest):
 
 
 # Кнопка «Бонус 💎 2000» — отдельный от рекламы бесплатный бонус раз в 60 секунд
-BONUS_REWARD_AMOUNT = 2000.0
+BONUS_REWARD_AMOUNT = 5000.0
 BONUS_COOLDOWN_SECONDS = 60
 _last_bonus_claim: dict[int, datetime.datetime] = {}
 
@@ -2113,7 +2614,7 @@ def _instance_from_registry_item(entry: dict, forced_price: float) -> dict:
     q_lo, q_hi = QUALITY_FLOAT_RANGE[quality]
     lo, hi = max(entry_lo, q_lo), min(entry_hi, q_hi)
     if lo < hi:
-        float_val = round(random.uniform(lo, hi), 4)
+        float_val = _roll_float_in_range(lo, hi)
     stattrak = bool(entry.get("stattrak_available")) and random.random() < STATTRAK_CHANCE
     return {
         "name": entry["name"],
@@ -2236,6 +2737,8 @@ async def upgrade_skin(req: UpgradeRequest):
             )
             session.add(new_item)
             _maybe_update_top_drop(user, won_instance)
+            # ПРАВКИ В ТЗ №13: реферальная комиссия с чистого выигрыша Апгрейдера.
+            await _credit_referral_round_outcome(session, user, old_price, target_price, source="upgrade")
             await session.commit()
             await session.refresh(new_item)
 
@@ -2270,6 +2773,10 @@ async def upgrade_skin(req: UpgradeRequest):
                 # Ставка слишком маленькая — скин-компенсация не выдаётся,
                 # вместо этого утешительные 0.01 💎 сразу на баланс.
                 user.balance = round(user.balance + COMPENSATION_FALLBACK_CRYSTALS, 2)
+                # ПРАВКИ В ТЗ №13: реферальная комиссия с проигрыша Апгрейдера.
+                await _credit_referral_round_outcome(
+                    session, user, old_price, COMPENSATION_FALLBACK_CRYSTALS, source="upgrade"
+                )
                 await session.commit()
                 await session.refresh(user)
 
@@ -2299,6 +2806,10 @@ async def upgrade_skin(req: UpgradeRequest):
                 obtained_from_case="Компенсация Апгрейдера",
             )
             session.add(comp_item)
+            # ПРАВКИ В ТЗ №13: реферальная комиссия с проигрыша Апгрейдера
+            # (компенсация деше��ле сгоревшей ставки — comp_price < old_price
+            # по построению, т.к. comp_price = old_price * COMPENSATION_RATIO).
+            await _credit_referral_round_outcome(session, user, old_price, comp_price, source="upgrade")
             await session.commit()
             await session.refresh(comp_item)
 
@@ -2394,7 +2905,11 @@ async def crash_start(req: CrashStartRequest):
             raise HTTPException(400, "Недостаточно Кристалликов 💎")
 
         user.balance -= req.bet_amount
-        await _credit_referral_commission(session, user, req.bet_amount)
+        _track_wagered(user, req.bet_amount)
+        user.minigames_played = (user.minigames_played or 0) + 1
+        # ПРАВКИ В ТЗ №13: реферальная комиссия здесь больше НЕ начисляется —
+        # у Крэша есть отложенный исход (см. /crash/cashout), комиссия
+        # считается там, от результата раунда, а не в момент ставки.
         xp_info = await _award_xp(session, user, XP_MINIGAME_ROUND)
         await session.commit()
         await session.refresh(user)
@@ -2463,6 +2978,7 @@ async def crash_cashout(req: CrashCashoutRequest):
 
         if current_mult >= crash_point:
             # Ракета успела лопнуть до того, как запрос дошёл до сервера.
+            await _credit_referral_round_outcome(session, user, bet_amount, 0, source="minigame_crash")
             await session.commit()
             return {
                 "success": True,
@@ -2475,6 +2991,8 @@ async def crash_cashout(req: CrashCashoutRequest):
 
         winnings = round(bet_amount * current_mult, 2)
         user.balance += winnings
+        _track_return(user, winnings)
+        await _credit_referral_round_outcome(session, user, bet_amount, winnings, source="minigame_crash")
         await session.commit()
         await session.refresh(user)
 
@@ -2508,17 +3026,20 @@ async def play_crash(req: CrashBetRequest):
             raise HTTPException(400, "Недостаточно Кристалликов 💎")
 
         user.balance -= req.bet_amount
-        await _credit_referral_commission(session, user, req.bet_amount)
+        _track_wagered(user, req.bet_amount)
+        user.minigames_played = (user.minigames_played or 0) + 1
         crash_point = generate_crash_point()
 
         if req.cashout_at <= crash_point:
             winnings = round(req.bet_amount * req.cashout_at, 2)
             user.balance += winnings
+            _track_return(user, winnings)
             result_status = "win"
         else:
             winnings = 0
             result_status = "lose"
 
+        await _credit_referral_round_outcome(session, user, req.bet_amount, winnings, source="minigame_crash")
         xp_info = await _award_xp(session, user, XP_MINIGAME_ROUND)
 
         await session.commit()
@@ -2563,11 +3084,14 @@ async def play_wheel(req: WheelBetRequest):
             raise HTTPException(400, "Недостаточно Кристалликов 💎")
 
         user.balance -= req.bet_amount
-        await _credit_referral_commission(session, user, req.bet_amount)
+        _track_wagered(user, req.bet_amount)
+        user.minigames_played = (user.minigames_played or 0) + 1
         segment_index = spin_wheel()
         multiplier = WHEEL_SEGMENTS[segment_index]
         winnings = round(req.bet_amount * multiplier, 2)
         user.balance += winnings
+        _track_return(user, winnings)
+        await _credit_referral_round_outcome(session, user, req.bet_amount, winnings, source="minigame_wheel")
 
         xp_info = await _award_xp(session, user, XP_MINIGAME_ROUND)
 
@@ -2628,7 +3152,11 @@ async def mines_start(req: MinesStartRequest):
             raise HTTPException(400, "Недостаточно Кристалликов 💎")
 
         user.balance -= req.bet_amount
-        await _credit_referral_commission(session, user, req.bet_amount)
+        _track_wagered(user, req.bet_amount)
+        user.minigames_played = (user.minigames_played or 0) + 1
+        # ПРАВКИ В ТЗ №13: комиссия рефереру больше не берётся тут — Минёр
+        # разрешается позже (/mines/reveal при взрыве, /mines/cashout),
+        # комиссия считается от исхода раунда там.
         xp_info = await _award_xp(session, user, XP_MINIGAME_ROUND)
         await session.commit()
         await session.refresh(user)
@@ -2665,7 +3193,18 @@ async def mines_reveal(req: MinesRevealRequest):
     if req.tile_index in session_state["mine_positions"]:
         session_state["active"] = False
         mine_positions = list(session_state["mine_positions"])
+        bet_amount = session_state["bet_amount"]
         del _mines_sessions[req.telegram_id]
+
+        async with async_session() as session:
+            result = await session.execute(select(User).where(User.telegram_id == req.telegram_id))
+            user = result.scalar_one_or_none()
+            if user:
+                # ПРАВКИ В ТЗ №13: подрыв — полный проигрыш всей ставки,
+                # уже списанной на /mines/start.
+                await _credit_referral_round_outcome(session, user, bet_amount, 0, source="minigame_mines")
+                await session.commit()
+
         return {
             "success": True,
             "result": "bust",
@@ -2685,6 +3224,10 @@ async def mines_reveal(req: MinesRevealRequest):
             user = result.scalar_one_or_none()
             winnings = round(session_state["bet_amount"] * multiplier, 2)
             user.balance += winnings
+            _track_return(user, winnings)
+            await _credit_referral_round_outcome(
+                session, user, session_state["bet_amount"], winnings, source="minigame_mines"
+            )
             await session.commit()
             await session.refresh(user)
 
@@ -2722,6 +3265,10 @@ async def mines_cashout(req: MinesCashoutRequest):
 
         winnings = round(session_state["bet_amount"] * multiplier, 2) if multiplier else 0
         user.balance += winnings
+        _track_return(user, winnings)
+        await _credit_referral_round_outcome(
+            session, user, session_state["bet_amount"], winnings, source="minigame_mines"
+        )
         await session.commit()
         await session.refresh(user)
 
@@ -2769,7 +3316,10 @@ async def _climb_start(game: str, req: ClimbStartRequest):
             raise HTTPException(400, "Недостаточно Кристалликов 💎")
 
         user.balance -= req.bet_amount
-        await _credit_referral_commission(session, user, req.bet_amount)
+        _track_wagered(user, req.bet_amount)
+        user.minigames_played = (user.minigames_played or 0) + 1
+        # ПРАВКИ В ТЗ №13: комиссия рефереру начисляется по исходу раунда
+        # (см. _climb_pick/_climb_cashout), а не в момент ставки.
         xp_info = await _award_xp(session, user, XP_MINIGAME_ROUND)
         await session.commit()
         await session.refresh(user)
@@ -2804,7 +3354,18 @@ async def _climb_pick(game: str, req: ClimbPickRequest):
     bomb_tiles = set(random.sample(range(cfg["tiles_per_level"]), cfg["bombs_per_level"]))
     if req.tile_index in bomb_tiles:
         session_state["active"] = False
+        bet_amount = session_state["bet_amount"]
         del _climb_sessions[key]
+
+        async with async_session() as session:
+            result = await session.execute(select(User).where(User.telegram_id == req.telegram_id))
+            user = result.scalar_one_or_none()
+            if user:
+                # ПРАВКИ В ТЗ №13: подрыв — полный проигрыш ставки, уже
+                # списанной на /start.
+                await _credit_referral_round_outcome(session, user, bet_amount, 0, source=f"minigame_{game}")
+                await session.commit()
+
         return {
             "success": True,
             "result": "bust",
@@ -2822,6 +3383,10 @@ async def _climb_pick(game: str, req: ClimbPickRequest):
             user = result.scalar_one_or_none()
             winnings = round(session_state["bet_amount"] * multiplier, 2)
             user.balance += winnings
+            _track_return(user, winnings)
+            await _credit_referral_round_outcome(
+                session, user, session_state["bet_amount"], winnings, source=f"minigame_{game}"
+            )
             await session.commit()
             await session.refresh(user)
 
@@ -2862,6 +3427,10 @@ async def _climb_cashout(game: str, req: ClimbCashoutRequest):
 
         winnings = round(session_state["bet_amount"] * multiplier, 2) if multiplier else 0
         user.balance += winnings
+        _track_return(user, winnings)
+        await _credit_referral_round_outcome(
+            session, user, session_state["bet_amount"], winnings, source=f"minigame_{game}"
+        )
         await session.commit()
         await session.refresh(user)
 

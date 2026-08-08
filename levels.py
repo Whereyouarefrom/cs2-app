@@ -46,11 +46,12 @@ MAX_LEVEL = 200
 # ---- Витрина лучших скинов (Showcase) ----
 # Базовая вместимость 3 слота; каждые SHOWCASE_LEVELS_PER_SLOT уровней
 # аккаунта добавляют +1 слот, но не больше SHOWCASE_MAX_SLOTS всего.
-# Итог: 3 слота на 1-4 уровнях, 4 на 5-9, ... и максимум 10 слотов
-# начиная с 35 уровня.
+# Итог: 3 слота на 1-4 уровнях, 4 на 5-9, ... и максимум 9 слотов
+# (сетка строго 3х3) начиная с 30 уровня.
+# ПРАВКИ В ТЗ №5: было 10 слотов (не влезало в сетку 3х3) — уменьшено до 9.
 SHOWCASE_BASE_SLOTS = 3
 SHOWCASE_LEVELS_PER_SLOT = 5
-SHOWCASE_MAX_SLOTS = 10
+SHOWCASE_MAX_SLOTS = 9
 
 
 def xp_required_for_level(level: int) -> int:
@@ -106,7 +107,7 @@ def level_from_xp(xp: int) -> int:
 
 def showcase_slots_for_level(level: int) -> int:
     """Вместимость Витрины лучших скинов для данного уровня аккаунта:
-    3 базовых + 1 за каждые 5 уровней, максимум 10."""
+    3 базовых + 1 за каждые 5 уровней, максимум 9 (сетка 3х3)."""
     level = max(1, int(level or 1))
     return min(SHOWCASE_MAX_SLOTS, SHOWCASE_BASE_SLOTS + level // SHOWCASE_LEVELS_PER_SLOT)
 

@@ -64,22 +64,71 @@ STREAK_VIP_HOURS = 6
 MEGA_BONUS_STREAK_THRESHOLD = 30
 MEGA_BONUS_GOLD = 25
 
-# ---- 7-дневный цикл наград (см. ТЗ спринта 7) ----
+# ---- ПРАВКИ В ТЗ №6: цикл наград расширен с 7 до 30 дней, награды
+# нарастают по мере приближения к концу цикла — топовый приз (50 Gold)
+# ровно на 30-й день, где он естественно совпадает с порогом мега-бонуса
+# MEGA_BONUS_STREAK_THRESHOLD (тот даёт ещё +25 Gold СВЕРХУ этой награды,
+# итого 75 Gold за 30-й день непрерывного стрика). VIP-дни (6ч/12ч/24ч)
+# и кейсы расставлены равномерно по циклу, чтобы каждую неделю был
+# "особый" день, а не только рост чисел. ----
 STREAK_REWARDS = [
     {"day": 1, "type": "crystals", "amount": 5000},
-    {"day": 2, "type": "case", "case_key": STREAK_CASE_KEY},
-    {"day": 3, "type": "crystals", "amount": 15000},
-    {"day": 4, "type": "gold", "amount": 2},
-    {"day": 5, "type": "crystals", "amount": 30000},
-    {"day": 6, "type": "vip", "hours": STREAK_VIP_HOURS},
-    {"day": 7, "type": "gold", "amount": 10},
+    {"day": 2, "type": "crystals", "amount": 6000},
+    {"day": 3, "type": "case", "case_key": STREAK_CASE_KEY},
+    {"day": 4, "type": "crystals", "amount": 8000},
+    {"day": 5, "type": "gold", "amount": 2},
+    {"day": 6, "type": "crystals", "amount": 10000},
+    {"day": 7, "type": "crystals", "amount": 12000},
+    {"day": 8, "type": "case", "case_key": STREAK_CASE_KEY},
+    {"day": 9, "type": "crystals", "amount": 14000},
+    {"day": 10, "type": "gold", "amount": 3},
+    {"day": 11, "type": "crystals", "amount": 16000},
+    {"day": 12, "type": "crystals", "amount": 18000},
+    {"day": 13, "type": "case", "case_key": STREAK_CASE_KEY},
+    {"day": 14, "type": "crystals", "amount": 20000},
+    {"day": 15, "type": "vip", "hours": STREAK_VIP_HOURS},
+    {"day": 16, "type": "crystals", "amount": 22000},
+    {"day": 17, "type": "crystals", "amount": 24000},
+    {"day": 18, "type": "case", "case_key": STREAK_CASE_KEY},
+    {"day": 19, "type": "crystals", "amount": 26000},
+    {"day": 20, "type": "gold", "amount": 5},
+    {"day": 21, "type": "crystals", "amount": 30000},
+    {"day": 22, "type": "crystals", "amount": 32000},
+    {"day": 23, "type": "case", "case_key": STREAK_CASE_KEY},
+    {"day": 24, "type": "crystals", "amount": 35000},
+    {"day": 25, "type": "vip", "hours": STREAK_VIP_HOURS * 2},
+    {"day": 26, "type": "crystals", "amount": 40000},
+    {"day": 27, "type": "crystals", "amount": 45000},
+    {"day": 28, "type": "case", "case_key": STREAK_CASE_KEY},
+    {"day": 29, "type": "crystals", "amount": 50000},
+    {"day": 30, "type": "gold", "amount": 50},
 ]
 _REWARDS_BY_DAY = {r["day"]: r for r in STREAK_REWARDS}
+_CYCLE_LENGTH = len(STREAK_REWARDS)  # 30
 
 
 def _day_index(streak: int) -> int:
-    """Переводит номер серии (растёт бесконечно) в день цикла 1-7."""
-    return ((streak - 1) % 7) + 1 if streak > 0 else 1
+    """Переводит номер серии (растёт бесконечно) в день цикла 1-30."""
+    return ((streak - 1) % _CYCLE_LENGTH) + 1 if streak > 0 else 1
+
+
+def _seconds_until_next_claim(user: User) -> int:
+    """Сколько секунд осталось до полуночи UTC (следующего календарного
+    дня), если бонус уже забран сегодня — для таймера ЧЧ:ММ:СС на фронте.
+    0, если бонус ещё не забран сегодня (доступен прямо сейчас). Claim
+    привязан к КАЛЕНДАРНЫМ суткам UTC (см. модуль-докстринг), а не к
+    скользящему окну 24ч, как у колеса удачи — поэтому считаем именно до
+    полуночи, а не "last_claim + 24h"."""
+    now = datetime.datetime.utcnow()
+    today = now.date()
+    last = user.last_daily_claim_at.date() if user.last_daily_claim_at else None
+    if last != today:
+        return 0
+    tomorrow_midnight = datetime.datetime.combine(
+        today + datetime.timedelta(days=1), datetime.time.min
+    )
+    remaining = tomorrow_midnight - now
+    return max(0, int(remaining.total_seconds()))
 
 
 async def _apply_streak_reward(session, user: User, day_index: int) -> dict:
@@ -178,8 +227,11 @@ async def streak_status(telegram_id: int):
             "claimed_today": claimed_today,
             "current_day": upcoming_day,
             "rewards": STREAK_REWARDS,
+            "cycle_length": _CYCLE_LENGTH,
             "mega_bonus_threshold": MEGA_BONUS_STREAK_THRESHOLD,
             "mega_bonus_gold": MEGA_BONUS_GOLD,
+            # ПРАВКИ В ТЗ №6: таймер ЧЧ:ММ:СС до следующего клейма на фронте.
+            "seconds_until_next_claim": _seconds_until_next_claim(user),
         }
 
 

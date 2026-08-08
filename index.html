@@ -33,12 +33,15 @@
         <span id="balance-value">0</span>
       </div>
       <div class="balance-pill gold-pill">
-        <span class="balance-icon">💰</span>
+        <img class="gold-coin-icon" src="assets/icons/gold-coin.svg" alt="💰">
         <span id="gold-value">0</span>
       </div>
     </div>
     <div class="topbar-right">
       <div class="vip-pill" id="vip-pill" style="display:none;">⭐ VIP</div>
+      <!-- ПРАВКИ В ТЗ №5: промокоды — отдельная самостоятельная иконка в шапке
+           приложения (раньше поле ввода промокода жило прямо в Профиле). -->
+      <button class="promo-toggle-btn" id="promo-modal-open-btn" data-i18n-title="promo_title" title="🎁 Промокод">🎁</button>
       <button class="currency-toggle-btn" id="header-currency-toggle" title="Currency">₽</button>
       <button class="sound-toggle-btn" id="header-sound-toggle" title="Sound">🔊</button>
     </div>
@@ -84,13 +87,42 @@
           </label>
           <span class="selected-count" id="inventory-selected-count"></span>
         </div>
-        <button type="button" class="inventory-sort-btn" id="inventory-sort-btn" data-dir="desc">
-          <span id="inventory-sort-label">↓ Сначала дорогие</span>
+        <div class="inventory-toolbar-right">
+          <!-- ПРАВКИ В ТЗ №9, п.2: фильтр по редкости + расширенная сортировка
+               (цена / дата получения / редкость). Дефолт сортировки —
+               "Сначала дорогие" (price_desc), как требует ТЗ. -->
+          <select class="inventory-select" id="inventory-filter-select" title="Фильтр по редкости">
+            <option value="all" data-i18n="inventory_filter_all">Все категории</option>
+            <option value="Consumer">Ширпотреб</option>
+            <option value="Industrial">Промышленное</option>
+            <option value="Mil-Spec">Армейское</option>
+            <option value="Restricted">Запрещённое</option>
+            <option value="Classified">Засекреченное</option>
+            <option value="Covert">Тайное</option>
+            <option value="KnifeGloves" data-i18n="inventory_filter_knifegloves">★ Ножи/Перчатки</option>
+          </select>
+          <select class="inventory-select" id="inventory-sort-select" title="Сортировка">
+            <option value="price_desc" data-i18n="sort_expensive_first">Сначала дорогие</option>
+            <option value="price_asc" data-i18n="sort_cheap_first">Сначала дешёвые</option>
+            <option value="date_desc" data-i18n="sort_date_new_first">Сначала новые</option>
+            <option value="date_asc" data-i18n="sort_date_old_first">Сначала старые</option>
+            <option value="rarity_desc" data-i18n="sort_rarity_rare_first">Сначала редкие</option>
+            <option value="rarity_asc" data-i18n="sort_rarity_common_first">Сначала обычные</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- ПРАВКИ В ТЗ №9, п.3: массовая продажа всех скинов дешевле указанной
+           суммы. Кнопка открывает модалку с полем суммы + живым превью
+           количества/суммы (см. openBulkSellModal() в app.js). -->
+      <div class="inventory-bulk-sell-row" id="inventory-bulk-sell-row" style="display:none;">
+        <button type="button" class="bulk-sell-open-btn" id="bulk-sell-open-btn">
+          💰 <span data-i18n="bulk_sell_open_btn">Продать дешевле…</span>
         </button>
       </div>
 
       <div class="inventory-grid" id="inventory-grid"><!-- items injected by JS --></div>
-      <div class="empty-state" id="inventory-empty" style="display:none;" data-i18n="inventory_empty">
+      <div class="empty-state" id="inventory-empty" style="display:none;">
         Пока пусто. Открой первый кейс!
       </div>
     </section>
@@ -123,6 +155,9 @@
           <div class="profile-username" id="profile-username"></div>
         </div>
         <div class="vip-pill" id="profile-vip-pill" style="display:none;">⭐ VIP</div>
+        <!-- ПРАВКИ В ТЗ №5: иконка Настроек в шапке профиля — открывает
+             модалку кастомизации (фон профиля / рамка аватарки / цвет ника). -->
+        <button class="profile-settings-btn" id="profile-settings-open-btn" type="button" data-i18n-title="customize_title" title="⚙️ Настройки">⚙️</button>
       </div>
 
       <!-- ==================== УРОВЕНЬ АККАУНТА (Спринт 10) ====================
@@ -144,6 +179,59 @@
         <div class="level-slots-line" id="level-slots-line"></div>
       </div>
 
+      <!-- ==================== БЛОК СТАТИСТИКИ (ПРАВКИ В ТЗ №5) ====================
+           По новому ТЗ идёт вторым блоком экрана, сразу под уровнем: Топ-дроп,
+           количество открытых кейсов, общий профит, статистика мини-игр —
+           раньше эти четыре куска были раскиданы по всему экрану (top-drop-card
+           был почти в самом низу, "Открыто кейсов" сидел в общем stats-grid
+           вперемешку со стоимостью инвентаря и рефералкой). Профит и
+           мини-игры считаются на бэкенде в main.get_profile() (total_profit,
+           minigames_stats.played) — см. main._track_wagered/_track_return. -->
+      <div class="profile-stats-card" id="profile-stats-card">
+        <div class="ref-title" data-i18n="profile_stats_title">📊 Статистика</div>
+
+        <!-- ТОП ДРОП — самый дорогой предмет, КОГДА-ЛИБО выпавший игроку.
+             Хранится отдельно на бэкенде (User.top_drop_*) и НЕ пересчитывается
+             из текущего инвентаря — поэтому продажа предмета не убирает его
+             из этой карточки. -->
+        <div class="top-drop-card" id="top-drop-card" style="display:none;">
+          <div class="top-drop-label" data-i18n="stat_top_drop">🏆 Топ дроп</div>
+          <div class="top-drop-content">
+            <img id="top-drop-image" src="" alt="">
+            <div class="top-drop-info">
+              <div class="top-drop-name" id="top-drop-name">—</div>
+              <div class="top-drop-price" id="top-drop-price">0 💎</div>
+            </div>
+          </div>
+        </div>
+        <div class="top-drop-card top-drop-empty" id="top-drop-empty" style="display:none;">
+          <div class="top-drop-label" data-i18n="stat_top_drop">🏆 Топ дроп</div>
+          <div class="top-drop-empty-text" data-i18n="top_drop_empty">Пока нет ни одного дропа — открой первый кейс!</div>
+        </div>
+
+        <div class="profile-stats-grid">
+          <div class="stat-box">
+            <div class="stat-label" data-i18n="stat_cases">Открыто кейсов</div>
+            <div class="stat-value" id="stat-cases">0</div>
+          </div>
+          <!-- Общий профит (ПРАВКИ В ТЗ №5) — total_returned - total_wagered
+               с бэкенда. Может уйти в минус, поэтому есть модификатор
+               .negative (см. renderProfileStatsBlock в app.js). -->
+          <div class="stat-box" id="profit-stat-box">
+            <div class="stat-label" data-i18n="stat_profit">Общий профит</div>
+            <div class="stat-value" id="stat-profit">0 💎</div>
+          </div>
+          <!-- Статистика мини-игр (ПРАВКИ В ТЗ №5) — пока только количество
+               сыгранных раундов (minigames_stats.played с бэкенда); если
+               потребуется более детальная разбивка по конкретным играм —
+               доразвернём этот stat-box по отдельному ТЗ. -->
+          <div class="stat-box">
+            <div class="stat-label" data-i18n="stat_minigames">Статистика мини-игр</div>
+            <div class="stat-value small" id="stat-minigames">—</div>
+          </div>
+        </div>
+      </div>
+
       <!-- ==================== ВИТРИНА ЛУЧШИХ СКИНОВ (Спринт 10) ====================
            Базово 3 слота, +1 каждые 5 уровней, максимум 10. Пустые слоты
            рисуются как placeholder'ы, чтобы игрок видел, сколько ещё можно
@@ -157,19 +245,14 @@
         <div class="showcase-hint" id="showcase-hint"></div>
       </div>
 
-      <!-- ==================== ТИТУЛЫ И РАМКИ (Спринт 10) ====================
-           Каталог отдаётся целиком (и отк����ытое, и закрытое с прогрессом) —
-           закрытые кликом показывают подсказку с условием, а не молчат. -->
-      <div class="cosmetics-card" id="cosmetics-card">
-        <div class="cosmetics-group">
-          <div class="cosmetics-label" data-i18n="titles_label">🎖️ Титул</div>
-          <div class="cosmetics-row" id="titles-row"><!-- JS --></div>
-        </div>
-        <div class="cosmetics-group">
-          <div class="cosmetics-label" data-i18n="frames_label">🖼️ Рамка аватара</div>
-          <div class="cosmetics-row" id="frames-row"><!-- JS --></div>
-        </div>
-      </div>
+      <!-- Титулы (🎖️), как и рамка аватарки/цвет ника, переехали в модалку
+           "Настройки" ⚙️ в шапке профиля (ПРАВКИ В ТЗ №12) — см.
+           #customize-modal ниже, там же #titles-row, #frames-row и
+           #pass-frames-row/#pass-nick-colors-row. Раньше (Спринт 10, потом
+           частично ПРАВКИ В ТЗ №5) титулы оставались единственным блоком
+           кастомизации прямо на экране Профиля — теперь там только
+           .profile-title-pill (не выбор, а просто индикатор активного
+           титула, см. applyTitlePill() в app.js). -->
 
       <!-- ==================== ДРУЗЬЯ (Спринт 10) ==================== -->
       <button class="friends-open-btn" id="friends-open-btn" type="button">
@@ -198,10 +281,6 @@
 
       <div class="stats-grid">
         <div class="stat-box">
-          <div class="stat-label" data-i18n="stat_cases">Открыто кейсов</div>
-          <div class="stat-value" id="stat-cases">0</div>
-        </div>
-        <div class="stat-box">
           <div class="stat-label" data-i18n="stat_inv_value">Стоимость инвентаря</div>
           <div class="stat-value" id="stat-inventory-value">0 💎</div>
         </div>
@@ -219,39 +298,11 @@
         </div>
       </div>
 
-      <!-- ТОП ДРОП — самый дорогой предмет, КОГДА-ЛИБО выпавший игроку.
-           Хранится отдельно на бэкенде (User.top_drop_*) и НЕ пересчитывается
-           из текущего инвентаря — поэтому продажа предмета не убирает его
-           из этой карточки. -->
-      <div class="top-drop-card" id="top-drop-card" style="display:none;">
-        <div class="top-drop-label" data-i18n="stat_top_drop">🏆 Топ дроп</div>
-        <div class="top-drop-content">
-          <img id="top-drop-image" src="" alt="">
-          <div class="top-drop-info">
-            <div class="top-drop-name" id="top-drop-name">—</div>
-            <div class="top-drop-price" id="top-drop-price">0 💎</div>
-          </div>
-        </div>
-      </div>
-      <div class="top-drop-card top-drop-empty" id="top-drop-empty" style="display:none;">
-        <div class="top-drop-label" data-i18n="stat_top_drop">🏆 Топ дроп</div>
-        <div class="top-drop-empty-text" data-i18n="top_drop_empty">Пока нет ни одного дропа — открой первый кейс!</div>
-      </div>
-
-      <!-- ==================== BATTLE PASS COSMETICS (Спринт 8) ==================== -->
-      <div class="pass-cosmetics-card" id="pass-cosmetics-card" style="display:none;">
-        <div class="ref-title">🎖️ Косметика Battle Pass</div>
-
-        <div class="pass-cosmetics-group">
-          <div class="pass-cosmetics-label">Рамка профиля</div>
-          <div class="pass-cosmetics-row" id="pass-frames-row"><!-- JS --></div>
-        </div>
-
-        <div class="pass-cosmetics-group">
-          <div class="pass-cosmetics-label">Цвет ника</div>
-          <div class="pass-cosmetics-row" id="pass-nick-colors-row"><!-- JS --></div>
-        </div>
-      </div>
+      <!-- Косметика Battle Pass (рамка + цвет ника) и выбор фона переехали в
+           модалку ⚙️ Настройки (см. #customize-modal) — ПРАВКИ В ТЗ №5.
+           Реферальная ссылка переехала во вкладку "Заработать" (#screen-earn),
+           а ввод промокода — в отдельную модалку по иконке 🎁 в шапке
+           приложения (#promo-modal). -->
 
       <div class="settings-block">
         <div class="ref-title" data-i18n="settings_title">⚙️ Настройки</div>
@@ -281,28 +332,24 @@
           </button>
         </div>
 
-        <!-- ==================== СПРИНТ 12: ФОН СИМУЛЯТОРА ==================== -->
-        <div class="settings-row settings-row-column">
-          <span class="settings-label" data-i18n="settings_background">🖼️ Фон симулятора</span>
-          <div class="bg-picker-grid" id="bg-picker-grid"><!-- JS: renderBackgroundPicker() --></div>
+        <!-- ПРАВКИ В ТЗ №5: переключатель всплывающих уведомлений — отдельно
+             от звука (см. toggleNotifications() в app.js, User.notifications_enabled
+             в database.py). -->
+        <div class="settings-row">
+          <span class="settings-label" data-i18n="settings_notifications">🔔 Уведомления</span>
+          <button class="sound-switch" id="notif-switch">
+            <span id="notif-switch-label" data-i18n="sound_on">Вкл</span>
+          </button>
         </div>
       </div>
 
-      <div class="ref-block">
-        <div class="ref-title" data-i18n="ref_title">👥 Реферальная ссылка</div>
-        <div class="ref-row">
-          <input type="text" id="ref-link-input" readonly>
-          <button id="copy-ref-btn" class="btn-secondary" data-i18n="copy_btn">Копировать</button>
-        </div>
-        <div class="ref-hint" id="ref-hint">+2500 💎 тебе и +1000 💎 другу за каждого приглашённого, плюс 5% с каждой траты друга — навсегда</div>
-      </div>
-
-      <div class="promo-block">
-        <div class="ref-title" data-i18n="promo_title">🎁 Промокод</div>
-        <div class="ref-row">
-          <input type="text" id="promo-input" data-i18n-placeholder="promo_placeholder" placeholder="Введите промокод">
-          <button id="apply-promo-btn" class="btn-secondary" data-i18n="activate_btn">Активировать</button>
-        </div>
+      <!-- ==================== ПРАВКИ В ТЗ №3: футер приложения ====================
+           Самый низ приложения (подвальная часть экрана профиля/настроек) —
+           ссылка на Пользовательское соглашение, доступная в ЛЮБОЙ момент
+           (в отличие от #terms-overlay, который показывается один раз при
+           первом входе и требует принятия). -->
+      <div class="app-footer">
+        <button type="button" class="app-footer-link" id="terms-view-open-btn" data-i18n="footer_terms_link">📄 Пользовательское соглашение</button>
       </div>
     </section>
 
@@ -318,11 +365,7 @@
         </button>
         <button class="game-icon-card" data-game="upgrader">
           <span class="game-icon-emoji">🔺</span>
-          <span class="game-icon-label" data-i18n="game_upgrader">Улучшитель</span>
-        </button>
-        <button class="game-icon-card" data-game="crafter">
-          <span class="game-icon-emoji">🧪</span>
-          <span class="game-icon-label" data-i18n="game_crafter">Синтезатор</span>
+          <span class="game-icon-label" data-i18n="game_upgrader">Улучшитель/Синтезатор</span>
         </button>
         <button class="game-icon-card" data-game="wheel">
           <span class="game-icon-emoji">🎡</span>
@@ -347,11 +390,29 @@
     <section class="screen" id="screen-earn">
       <h1 class="screen-title" data-i18n="earn_title">Заработать</h1>
 
+      <!-- ==================== ПРАВКИ В ТЗ №6: VIP — первым крупным лид-блоком
+           (был последней карточкой). Тот же buy-vip-btn обработчик в
+           app.js — только новая разметка/стили (.earn-lead-card). ==================== -->
+      <div class="earn-card earn-lead-card" id="earn-vip-lead-card">
+        <div class="earn-lead-icon">⭐</div>
+        <div class="earn-lead-info">
+          <div class="earn-lead-title" data-i18n="earn_vip_title">VIP-статус</div>
+          <div class="earn-lead-desc" data-i18n="earn_vip_desc">Без рекламы + косметические бонусы</div>
+          <ul class="earn-lead-perks">
+            <li data-i18n="earn_vip_perk_ads">🚫 Никакой рекламы</li>
+            <li data-i18n="earn_vip_perk_wheel">🎡 Больше золота с Колеса удачи</li>
+            <li data-i18n="earn_vip_perk_cosmetics">🖼️ Эксклюзивные фоны и косметика</li>
+          </ul>
+          <div class="earn-desc" id="vip-price-label">25 ⭐ Telegram Stars, навсегда</div>
+        </div>
+        <button class="btn-primary small earn-lead-btn" id="buy-vip-btn" data-i18n="buy_btn">Купить</button>
+      </div>
+
       <div class="earn-card daily-earn-card" id="open-daily-modal-btn">
         <div class="earn-icon">🎁</div>
         <div class="earn-info">
           <div class="earn-title" data-i18n="daily_earn_title">Ежедневный бонус</div>
-          <div class="earn-desc" id="daily-earn-desc" data-i18n="daily_earn_desc">Заходи каждый день — награды растут до 7 дня!</div>
+          <div class="earn-desc" id="daily-earn-desc" data-i18n="daily_earn_desc">Заходи каждый день — награды растут до 30 дня!</div>
         </div>
         <button class="btn-primary small" id="daily-earn-btn" data-i18n="watch_btn">Смотреть</button>
       </div>
@@ -363,6 +424,31 @@
           <div class="earn-desc" id="wheel-earn-desc" data-i18n="wheel_earn_desc">Крути раз в день бесплатно — или за 💰 Золото</div>
         </div>
         <button class="btn-primary small" id="wheel-earn-btn" data-i18n="watch_btn">Смотреть</button>
+      </div>
+
+      <!-- ==================== РЕФЕРАЛЬНАЯ СИСТЕМА (ПРАВКИ В ТЗ №5, доработано в №6) ====================
+           Разметка и id-шники (#ref-link-input/#ref-hint/#copy-ref-btn) не
+           менялись, поэтому renderProfileScreen() в app.js продолжает
+           работать без правок. Добавлена кнопка открытия модалки "Мои
+           рефералы" (#open-referrals-modal-btn) с построчным профитом по
+           каждому другу — см. GET /api/referrals/list. -->
+      <div class="ref-block">
+        <div class="ref-title" data-i18n="ref_title">👥 Реферальная ссылка</div>
+        <div class="ref-row">
+          <input type="text" id="ref-link-input" readonly>
+          <button id="copy-ref-btn" class="btn-secondary" data-i18n="copy_btn">Копировать</button>
+        </div>
+        <div class="ref-hint" id="ref-hint">+2500 💎 тебе и +1000 💎 другу за каждого приглашённого, плюс 5% с каждой траты друга — навсегда</div>
+        <button class="btn-secondary full ref-my-referrals-btn" id="open-referrals-modal-btn" data-i18n="referrals_open_btn">👥 Мои рефералы</button>
+      </div>
+
+      <div class="earn-card">
+        <div class="earn-icon">🎉</div>
+        <div class="earn-info">
+          <div class="earn-title" data-i18n="earn_giveaway_title">Розыгрыши</div>
+          <div class="earn-desc" data-i18n="earn_giveaway_desc">Участвуй и выигрывай редкие скины</div>
+        </div>
+        <button class="btn-secondary small" id="open-giveaways" data-i18n="watch_btn">Смотреть</button>
       </div>
 
       <div class="earn-card" id="open-tasks-modal-btn">
@@ -377,44 +463,28 @@
       <div class="earn-card">
         <div class="earn-icon">💎</div>
         <div class="earn-info">
-          <div class="earn-title" data-i18n="bonus_btn">Бонус 💎 2000</div>
+          <div class="earn-title" data-i18n="bonus_btn">Бонус 💎 5000</div>
           <div class="earn-desc" data-i18n="earn_bonus_desc">Бесплатный бонус раз в 60 секунд</div>
         </div>
-        <button class="btn-primary small" id="claim-bonus-btn" data-i18n="bonus_btn">Бонус 💎 2000</button>
+        <button class="btn-primary small" id="claim-bonus-btn" data-i18n="bonus_btn">Бонус 💎 5000</button>
       </div>
 
       <div class="earn-card">
         <div class="earn-icon">📺</div>
         <div class="earn-info">
           <div class="earn-title" data-i18n="earn_ad_title">Посмотреть видео</div>
-          <div class="earn-desc" id="earn-ad-desc" data-i18n="earn_ad_desc">Получи +2000 💎 виртуа��ьного баланса</div>
+          <div class="earn-desc" id="earn-ad-desc" data-i18n="earn_ad_desc">Получи от 1000 до 10000 💎 виртуального баланса</div>
         </div>
         <button class="btn-primary small" id="watch-ad-btn" data-i18n="watch_btn">Смотреть</button>
       </div>
-
-      <div class="earn-card">
-        <div class="earn-icon">🎉</div>
-        <div class="earn-info">
-          <div class="earn-title" data-i18n="earn_giveaway_title">Розыгрыши</div>
-          <div class="earn-desc" data-i18n="earn_giveaway_desc">Участвуй и выигрывай редкие скины</div>
-        </div>
-        <button class="btn-secondary small" id="open-giveaways" data-i18n="watch_btn">Смотреть</button>
-      </div>
-
-      <div class="earn-card">
-        <div class="earn-icon">⭐</div>
-        <div class="earn-info">
-          <div class="earn-title" data-i18n="earn_vip_title">VIP-статус</div>
-          <div class="earn-desc" data-i18n="earn_vip_desc">Без рекламы + косметические бонусы</div>
-          <div class="earn-desc" id="vip-price-label">25 ⭐ Telegram Stars, навсегда</div>
-        </div>
-        <button class="btn-secondary small" id="buy-vip-btn" data-i18n="buy_btn">Купить</button>
-      </div>
     </section>
 
-    <!-- ==================== ЧАТ (Спринт 11) ==================== -->
+    <!-- ==================== ЧАТ (Спринт 11 + ТЗ №3: правила/модерация) ==================== -->
     <section class="screen" id="screen-chat">
-      <h1 class="screen-title" data-i18n="chat_title">Глобальный чат</h1>
+      <div class="screen-title-row">
+        <h1 class="screen-title" data-i18n="chat_title">Глобальный чат</h1>
+        <button class="chat-rules-btn" id="chat-rules-open-btn" type="button" title="Правила чата">ℹ️</button>
+      </div>
 
       <div class="chat-wrap">
         <div class="chat-messages" id="chat-messages">
@@ -561,6 +631,8 @@
         <div class="win-item-quality" id="win-item-quality"></div>
         <div class="win-item-price" id="win-item-price">0 💎</div>
       </div>
+      <!-- ПРАВКИ В ТЗ №14: "Поделиться дропом" -->
+      <button class="share-btn full" id="win-share-btn">🔗 <span data-i18n="share_btn">Поделиться</span></button>
       <div class="win-actions">
         <button class="btn-secondary" id="win-keep-btn" data-i18n="keep_btn">В коллекцию</button>
         <button class="btn-primary" id="win-sell-btn" data-i18n="sell_btn">Продать</button>
@@ -596,8 +668,14 @@
       <div class="daily-title" data-i18n="daily_title">🎁 Ежедневный бонус</div>
       <div class="daily-streak-label" id="daily-streak-label"><!-- "Серия: 3 дня подряд" --></div>
 
-      <div class="daily-days-grid" id="daily-days-grid"><!-- 7 карточек дней, JS --></div>
+      <!-- ПРАВКИ В ТЗ №6: цикл расширен с 7 до 30 карточек дней (см.
+           STREAK_REWARDS в routers/streak.py) — сетка сама переносится на
+           новые строки (grid-template-columns: repeat(4,1fr) в style.css),
+           модалка уже скроллится (.modal-sheet { overflow-y: auto }),
+           поэтому разметка контейнера не менялась, растёт только контент. -->
+      <div class="daily-days-grid" id="daily-days-grid"><!-- 30 карточек дней, JS --></div>
 
+      <div class="daily-countdown" id="daily-countdown"></div>
       <button class="btn-primary full" id="daily-claim-btn" data-i18n="daily_claim_btn">Забрать награду</button>
       <div class="daily-hint" id="daily-hint" data-i18n="daily_hint">Заходи каждый день, чтобы не потерять серию!</div>
       <div class="daily-hint" id="daily-mega-hint"></div>
@@ -660,6 +738,20 @@
     </div>
   </div>
 
+  <!-- ==================== "МОИ РЕФЕРАЛЫ" MODAL (ПРАВКИ В ТЗ №6) ====================
+       Построчный профит по каждому приглашённому другу — см.
+       GET /api/referrals/list в main.py (агрегация по ReferralEarning). -->
+  <div class="modal-overlay" id="referrals-modal">
+    <div class="modal-sheet daily-sheet">
+      <button class="modal-close" id="referrals-close-btn">✕</button>
+      <div class="daily-title" data-i18n="referrals_title">👥 Мои рефералы</div>
+      <div class="referrals-total" id="referrals-total"><!-- "Всего получено: 12 500 💎", JS --></div>
+
+      <div class="referrals-list" id="referrals-list"><!-- карточки друзей, JS --></div>
+      <div class="referrals-empty" id="referrals-empty" data-i18n="referrals_empty" hidden>Пока нет друзей, приносящих доход — поделись реферальной ссылкой!</div>
+    </div>
+  </div>
+
   <!-- ==================== RANK UP MODAL (Новый ранг!) ====================
        Показывается при получении xp_info.rank_up с бэкенда (см. _award_xp
        в main.py) — очередь событий обрабатывается в enqueueRankUps()/
@@ -676,6 +768,21 @@
         <div class="win-item-name" id="rankup-item-name">—</div>
         <div class="win-item-price" id="rankup-item-price">0 💎</div>
       </div>
+
+      <!-- ПРАВКИ В ТЗ №5: секретный скин (гарантированный нож/перчатки) —
+           выдаётся ДОПОЛНИТЕЛЬНО к обычной награде на старших рангах, см.
+           ranks.py::RANKS[i]["secret_skin"] / main.py::_award_xp. -->
+      <div class="win-item-card rankup-secret-card" id="rankup-secret-item-card" style="display:none;">
+        <div class="rankup-secret-label" data-i18n="rankup_secret_skin_label">🔪 Секретный скин!</div>
+        <img id="rankup-secret-item-image" src="" alt="">
+        <div class="win-item-name" id="rankup-secret-item-name">—</div>
+        <div class="win-item-price" id="rankup-secret-item-price">0 💎</div>
+      </div>
+
+      <!-- Эксклюзивная рамка аватара за ранг (cosmetics.py::FRAMES, grant_frame) -->
+      <div class="rankup-extra-line" id="rankup-frame-line" style="display:none;"></div>
+      <!-- Эксклюзивный фон профиля за ранг (main.py::BACKGROUND_OPTIONS, grant_background) -->
+      <div class="rankup-extra-line" id="rankup-background-line" style="display:none;"></div>
 
       <button class="btn-primary full" id="rankup-ok-btn" data-i18n="ok_btn">Отлично!</button>
     </div>
@@ -696,6 +803,130 @@
        не скрывают, поэтому здесь нет модификатора .modal-overlay (там есть
        закрытие по клику на фон) — используется отдельный, немодифицируемый
        извне класс. -->
+  <!-- ==================== ПРАВКИ В ТЗ №3: ПРАВИЛА ЧАТА ====================
+       Открывается кнопкой ℹ️ в шапке вкладки "Чат". Обычная закрываемая
+       модалка (клик по фону/крестику закрывает) — в отличие от
+       #terms-overlay, здесь ничего принимать не нужно. -->
+  <div class="modal-overlay" id="chat-rules-modal">
+    <div class="modal-sheet chat-rules-sheet">
+      <button class="modal-close" id="chat-rules-close-btn">✕</button>
+      <div class="daily-title" data-i18n="chat_rules_title">📜 Правила чата</div>
+      <div class="chat-rules-body" id="chat-rules-body"><!-- JS: applyChatRulesTranslation() --></div>
+    </div>
+  </div>
+
+  <!-- ==================== ПРАВКИ В ТЗ №3: действие по клику на аватар/ник ====================
+       [Посмотреть профиль] / [Пожаловаться]. Для своих сообщений кнопка
+       "Пожаловаться" скрывается через JS (openChatUserActionModal). -->
+  <div class="modal-overlay" id="chat-user-action-modal">
+    <div class="modal-sheet chat-action-sheet">
+      <button class="modal-close" id="chat-action-close-btn">✕</button>
+      <div class="daily-title" data-i18n="chat_action_title">Действие</div>
+      <div class="chat-action-buttons">
+        <button type="button" class="btn-secondary full" id="chat-action-view-profile-btn" data-i18n="chat_view_profile">👤 Посмотреть профиль</button>
+        <button type="button" class="btn-secondary full chat-action-report" id="chat-action-report-btn" data-i18n="chat_report">🚩 Пожаловаться</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== ПРАВКИ В ТЗ №3: просмотр Пользовательского соглашения ====================
+       В отличие от #terms-overlay (показывается один раз, требует принятия),
+       эта модалка открывается ЛЮБОЕ количество раз по ссылке в футере и
+       просто закрывается — плюс содержит динамическую дату последнего
+       обновления сверху текста. -->
+  <div class="modal-overlay" id="terms-view-modal">
+    <div class="modal-sheet terms-view-sheet">
+      <button class="modal-close" id="terms-view-close-btn">✕</button>
+      <div class="daily-title" data-i18n="terms_title">📜 Пользовательское соглашение</div>
+      <div class="terms-view-updated" id="terms-view-updated"><!-- JS: dynamic date --></div>
+      <div class="terms-body" id="terms-view-body"><!-- JS: applyTermsBodyTranslation() --></div>
+    </div>
+  </div>
+
+  <!-- ==================== ПРАВКИ В ТЗ №5: модалка Промокода ====================
+       Раньше поле ввода промокода лежало прямо в Профиле — теперь это
+       самостоятельная модалка, открывается по иконке 🎁 в шапке приложения.
+       id-шники (#promo-input/#apply-promo-btn) не менялись, поэтому JS-обработчик
+       клика в app.js продолжает работать без правок. -->
+  <div class="modal-overlay" id="promo-modal">
+    <div class="modal-sheet promo-modal-sheet">
+      <button class="modal-close" id="promo-modal-close-btn">✕</button>
+      <div class="daily-title" data-i18n="promo_title">🎁 Промокод</div>
+      <div class="ref-row">
+        <input type="text" id="promo-input" data-i18n-placeholder="promo_placeholder" placeholder="Введите промокод">
+        <button id="apply-promo-btn" class="btn-secondary" data-i18n="activate_btn">Активировать</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== ПРАВКИ В ТЗ №5 / №12: модалка Настроек/Кастомизации ====================
+       Открывается иконкой ⚙️ в шапке профиля (.profile-settings-btn). Разделы:
+       живое превью (#customize-preview-card — ПРАВКИ В ТЗ №12, п.2), фон
+       профиля (переиспользует #bg-picker-grid/renderBackgroundPicker), титул
+       (#titles-row — переехал сюда с экрана Профиля по ПРАВКАМ В ТЗ №12, п.1),
+       рамка аватарки (#frames-row — уровневые рамки + #pass-frames-row —
+       рамки Battle Pass) и цвет/градиент никнейма (#pass-nick-colors-row,
+       уже умеет градиенты — см. applyPassCosmeticsToProfile() в pass.js).
+       Все id-шники сохранены как были, чтобы существующие renderXxx()
+       функции в app.js/pass.js продолжали работать без изменений — сами
+       контролы просто физически переехали внутрь этой модалки. -->
+  <div class="modal-overlay" id="customize-modal">
+    <div class="modal-sheet customize-modal-sheet">
+      <button class="modal-close" id="customize-modal-close-btn">✕</button>
+      <div class="daily-title" data-i18n="customize_title">⚙️ Настройки профиля</div>
+
+      <!-- ==================== ПРАВКИ В ТЗ №12, п.2: Live Preview Card ====================
+           Тестовый аватар/никнейм/титул этой карточки НЕ связаны с реальными
+           данными на бэкенде — это чисто фронтовое зеркало текущего выбора.
+           Клик по любому доступному чипу (титул/рамка/рамка Pass/цвет ника)
+           ниже в этой же модалке синхронно (до ответа сервера) обновляет
+           карточку через updateCustomizePreview*() в app.js/pass.js — реальное
+           сохранение (apiPost) уходит в фоне и просто досинхронизирует
+           состояние, когда ответ придёт. Специально переиспользует классы
+           .profile-avatar-wrap/.has-frame/.frame-glow/.frame-animated/
+           .profile-title-pill/.profile-name настоящей карточки профиля,
+           чтобы визуальные эффекты рамок (градиент/glow/анимированная
+           обводка) не пришлось дублировать отдельным CSS. -->
+      <div class="customize-preview-card" id="customize-preview-card">
+        <div class="profile-avatar-wrap" id="customize-preview-avatar-wrap">
+          <img class="profile-avatar-img" id="customize-preview-avatar-img" src="" alt="" style="display:none;">
+          <div class="profile-avatar" id="customize-preview-avatar">🎮</div>
+        </div>
+        <div class="profile-card-info">
+          <div class="customize-preview-label" data-i18n="customize_preview_label">👁️ Превью профиля</div>
+          <div class="profile-name" id="customize-preview-name">Игрок</div>
+          <div class="profile-title-pill" id="customize-preview-title-pill" style="display:none;"></div>
+        </div>
+      </div>
+
+      <div class="customize-section">
+        <div class="ref-title" data-i18n="settings_background">🖼️ Фон профиля</div>
+        <div class="bg-picker-grid" id="bg-picker-grid"><!-- JS: renderBackgroundPicker() --></div>
+      </div>
+
+      <div class="customize-section">
+        <div class="ref-title" data-i18n="titles_label">🎖️ Титул</div>
+        <div class="cosmetics-row" id="titles-row"><!-- JS: renderCosmeticRow() --></div>
+      </div>
+
+      <div class="customize-section">
+        <div class="ref-title" data-i18n="frames_label">🖼️ Рамка аватарки</div>
+        <div class="cosmetics-row" id="frames-row"><!-- JS: renderCosmeticRow() --></div>
+        <!-- Отдельные рамки Battle Pass (появляются, только если хоть одна открыта) -->
+        <div class="pass-cosmetics-card" id="pass-cosmetics-card" style="display:none;">
+          <div class="pass-cosmetics-group">
+            <div class="pass-cosmetics-label" data-i18n="customize_pass_frames">🎖️ Рамки Battle Pass</div>
+            <div class="pass-cosmetics-row" id="pass-frames-row"><!-- JS --></div>
+          </div>
+          <div class="pass-cosmetics-group">
+            <div class="pass-cosmetics-label" data-i18n="customize_nick_color">🎨 Цвет никнейма</div>
+            <div class="pass-cosmetics-row" id="pass-nick-colors-row"><!-- JS --></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="terms-overlay" id="terms-overlay">
     <div class="terms-sheet">
       <div class="terms-title" data-i18n="terms_title">📜 Пользовательское соглашение</div>
@@ -782,6 +1013,8 @@
         <div class="win-item-quality" id="craft-result-quality"></div>
         <div class="win-item-price" id="craft-result-price">0 💎</div>
       </div>
+      <!-- ПРАВКИ В ТЗ №14: "Поделиться дропом" -->
+      <button class="share-btn full" id="craft-result-share-btn">🔗 <span data-i18n="share_btn">Поделиться</span></button>
       <button class="btn-primary full" id="craft-result-ok-btn" data-i18n="ok_btn">Отлично!</button>
     </div>
   </div>
@@ -803,6 +1036,9 @@
         <div class="win-item-quality" id="upgrade-result-quality"></div>
         <div class="win-item-price" id="upgrade-result-price">0 💎</div>
       </div>
+      <!-- ПРАВКИ В ТЗ №14: только на успехе (см. showCrafterResult в app.js,
+           скрывает кнопку через style.display на проигрыше) -->
+      <button class="share-btn full" id="upgrade-result-share-btn">🔗 <span data-i18n="share_btn">Поделиться</span></button>
       <button class="btn-primary full" id="upgrade-result-ok-btn" data-i18n="upgrade_result_ok_btn">Отлично!</button>
     </div>
   </div>
@@ -814,6 +1050,11 @@
       <div class="daily-title">🎖️ Battle Pass</div>
 
       <div class="pass-header">
+        <!-- ПРАВКИ В ТЗ №11, п.1: название сезона + таймер до конца сезона. -->
+        <div class="pass-season-row">
+          <span class="pass-season-name" id="pass-season-name">Сезон 1</span>
+          <span class="pass-season-timer" id="pass-season-timer" title="До конца сезона">⏳ --:--:--:--</span>
+        </div>
         <div class="pass-header-toprow">
           <span class="pass-header-level" id="pass-header-level">Уровень 1 / 50</span>
           <span class="pass-widget-vip-chip" id="pass-header-vip-chip" style="display:none;">VIP Pass</span>
@@ -822,9 +1063,11 @@
         <div class="pass-widget-xp" id="pass-header-xp">0 / 100 XP</div>
       </div>
 
+      <!-- ПРАВКИ В ТЗ №12, п.3: кнопка "+1 уровень" переехала из шапки на
+           карточку следующего непройденного уровня в сетке наград (см.
+           renderPassTree() в pass.js) — здесь остаётся только VIP Pass. -->
       <div class="pass-actions" id="pass-actions">
         <button class="btn-primary small" id="pass-buy-vip-btn">🌟 Купить VIP Pass — 50 💰</button>
-        <button class="btn-secondary small" id="pass-skip-btn">⏩ +1 уровень — 5 💰</button>
       </div>
 
       <div class="pass-tabs">
@@ -834,10 +1077,12 @@
 
       <div class="pass-tab-content" id="pass-tab-tree">
         <div class="pass-final-chest" id="pass-final-chest" style="display:none;"></div>
-        <div class="pass-tree-list" id="pass-tree-list"><!-- уровни 1-49, JS --></div>
+        <div class="pass-tree-list" id="pass-tree-list"><!-- уровни 1-50 (50-й — финальный сундук), JS --></div>
       </div>
 
       <div class="pass-tab-content" id="pass-tab-tasks" style="display:none;">
+        <!-- ПРАВКИ В ТЗ №11, п.1: таймер обновления заданий (каждые 24ч). -->
+        <div class="pass-tasks-timer" id="pass-tasks-timer">🔄 Задания обновятся через: --:--:--</div>
         <div class="pass-tasks-list" id="pass-tasks-list"><!-- ежедневные задания, JS --></div>
       </div>
     </div>
@@ -861,6 +1106,14 @@
       <div class="levelup-num" id="levelup-num">2</div>
       <div class="levelup-slot-line" id="levelup-slot-line" style="display:none;"></div>
       <div class="levelup-unlock-line" id="levelup-unlock-line" style="display:none;"></div>
+      <!-- ПРАВКИ В ТЗ №5: награда за веху уровня аккаунта — иногда, помимо
+           кристаллов (строка выше), выдаётся ещё и предмет из кейса, см.
+           main.py::LEVEL_MILESTONE_REWARDS. -->
+      <div class="win-item-card levelup-item-card" id="levelup-item-card" style="display:none;">
+        <img id="levelup-item-image" src="" alt="">
+        <div class="win-item-name" id="levelup-item-name">—</div>
+        <div class="win-item-price" id="levelup-item-price">0 💎</div>
+      </div>
       <button class="btn-primary full" id="levelup-ok-btn" data-i18n="ok_btn">Отлично!</button>
     </div>
   </div>
@@ -994,6 +1247,71 @@
       </div>
 
       <button class="btn-primary full" id="item-detail-showcase-btn">🏅 В витрину</button>
+    </div>
+  </div>
+
+  <!-- ==================== ПРАВКИ В ТЗ №9, п.1: ПОДТВЕРЖДЕНИЕ ПРОДАЖИ
+       РЕДКОГО/ДОРОГОГО СКИНА ====================
+       Открывается из requestSellSkin() (app.js) для предметов высокой
+       редкости (Тайное/Ножи/Перчатки/Засекреченное) или дороже
+       HIGH_VALUE_SELL_THRESHOLD. Кнопка "Подтвердить продажу" заблокирована,
+       пока не отмечен чекбокс — так игрок не сможет продать редкий скин
+       случайным двойным тапом. -->
+  <div class="modal-overlay" id="rare-sell-confirm-modal">
+    <div class="modal-sheet rare-sell-confirm-sheet">
+      <button class="modal-close" id="rare-sell-confirm-close-btn">✕</button>
+      <div class="rare-sell-confirm-title" data-i18n="sell_rare_confirm_title">Продажа редкого скина</div>
+
+      <div class="rare-sell-confirm-preview">
+        <img id="rare-sell-confirm-image" src="" alt="">
+        <div class="rare-sell-confirm-info">
+          <div class="rare-sell-confirm-name" id="rare-sell-confirm-name">—</div>
+          <div class="rare-sell-confirm-price" id="rare-sell-confirm-price">0 💎</div>
+        </div>
+      </div>
+
+      <label class="rare-sell-confirm-checkbox-row">
+        <input type="checkbox" id="rare-sell-confirm-checkbox">
+        <span data-i18n="sell_rare_confirm_checkbox">Я уверен, что хочу продать этот редкий скин</span>
+      </label>
+
+      <div class="rare-sell-confirm-actions">
+        <button type="button" class="btn-secondary full" id="rare-sell-confirm-cancel-btn" data-i18n="confirm_cancel_btn">Отмена</button>
+        <button type="button" class="btn-primary full" id="rare-sell-confirm-btn" data-i18n="sell_rare_confirm_btn" disabled>Подтвердить продажу</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== ПРАВКИ В ТЗ №9, п.3: МАССОВАЯ ПРОДАЖА
+       "ДЕШЕВЛЕ N" ====================
+       Игрок вводит порог цены — модалка живьём считает, сколько предметов
+       под него попадает и на какую сумму, и продаёт их одним запросом
+       к уже существующему /api/sell-multiple. По умолчанию из подборки
+       исключены скины на витрине и редкие ножи/перчатки — чекбокс защиты
+       можно снять, чтобы продать и их тоже. -->
+  <div class="modal-overlay" id="bulk-sell-modal">
+    <div class="modal-sheet bulk-sell-sheet">
+      <button class="modal-close" id="bulk-sell-close-btn">✕</button>
+      <div class="bulk-sell-title" data-i18n="bulk_sell_title">💰 Продать дешевле суммы</div>
+
+      <label class="bulk-sell-price-row">
+        <span data-i18n="bulk_sell_price_label">Максимальная цена (💎)</span>
+        <input type="number" id="bulk-sell-price-input" min="0" step="1" placeholder="1999" inputmode="numeric">
+      </label>
+
+      <label class="bulk-sell-protect-row">
+        <input type="checkbox" id="bulk-sell-protect-checkbox" checked>
+        <span data-i18n="bulk_sell_protect_label">Не трогать витрину и редкие ножи/перчатки</span>
+      </label>
+
+      <div class="bulk-sell-preview" id="bulk-sell-preview">
+        <span id="bulk-sell-preview-text" data-i18n="bulk_sell_preview_empty">Введи сумму, чтобы увидеть подборку</span>
+      </div>
+
+      <button type="button" class="btn-primary full" id="bulk-sell-confirm-btn" disabled>
+        <span data-i18n="bulk_sell_confirm_btn">Продать всё</span>
+        <span id="bulk-sell-confirm-total"></span>
+      </button>
     </div>
   </div>
 

@@ -177,6 +177,43 @@ FRAMES = [
         "hint_en": "Take 2nd-3rd place in a weekly tournament",
         "hint_uk": "Займи 2-3 місце у щотижневому турнірі",
     },
+    # ---- ПРАВКИ В ТЗ №5: эксклюзивные рамки за РАНГ (не за уровень) ----
+    # Выдаются напрямую из main.py::_award_xp при пересечении порога
+    # соответствующего ранга (ranks.py::RANKS[i]["frame_key"]), поэтому
+    # тоже помечены unlock={"type": "grant"} — по статистике не открываются.
+    {
+        "key": "rank_master_guardian",
+        "name": "Обод «Мастер Гвардиан»",
+        "name_en": "Master Guardian Rim",
+        "name_uk": "Обід «Майстер Гвардіан»",
+        "css": "0 0 0 3px #3d7bd6, 0 0 16px rgba(61,123,214,0.75)",
+        "unlock": {"type": "grant"},
+        "hint": "Достигни ранга «Мастер Гвардиан»",
+        "hint_en": "Reach the Master Guardian rank",
+        "hint_uk": "Досягни рангу «Майстер Гвардіан»",
+    },
+    {
+        "key": "rank_legendary_eagle",
+        "name": "Обод «Легендарный Игл»",
+        "name_en": "Legendary Eagle Rim",
+        "name_uk": "Обід «Легендарний Ігл»",
+        "css": "0 0 0 3px #8a4dff, 0 0 20px rgba(138,77,255,0.8)",
+        "unlock": {"type": "grant"},
+        "hint": "Достигни ранга «Легендарный Игл»",
+        "hint_en": "Reach the Legendary Eagle rank",
+        "hint_uk": "Досягни рангу «Легендарний Ігл»",
+    },
+    {
+        "key": "rank_global_elite",
+        "name": "Обод «Глобал Элит»",
+        "name_en": "Global Elite Rim",
+        "name_uk": "Обід «Глобал Еліт»",
+        "css": "0 0 0 3px #ffd700, 0 0 10px #ff5e1c, 0 0 26px rgba(255,215,0,0.9)",
+        "unlock": {"type": "grant"},
+        "hint": "Достигни максимального ранга «Глобал Элит»",
+        "hint_en": "Reach the maximum Global Elite rank",
+        "hint_uk": "Досягни максимального рангу «Глобал Еліт»",
+    },
 ]
 
 FRAMES_BY_KEY = {f["key"]: f for f in FRAMES}
@@ -314,6 +351,21 @@ def grant_frame(user, key: str) -> bool:
         return False
     keys.append(key)
     user.unlocked_frames = dump_keys(keys)
+    return True
+
+
+def grant_background(user, key: str) -> bool:
+    """ПРАВКИ В ТЗ №5: прямая выдача эксклюзивного фона профиля наградой
+    за ранг (см. main.py::_award_xp, ranks.py::RANKS[i]["background_key"]).
+    В отличие от titles/frames каталог самих фонов живёт не здесь, а в
+    main.py::BACKGROUND_OPTIONS (там же и картинки/градиенты) — эта
+    функция не валидирует key против каталога (циклический импорт), только
+    пишет его в user.unlocked_backgrounds. Возвращает True, если фон новый."""
+    keys = load_keys(user.unlocked_backgrounds)
+    if key in keys:
+        return False
+    keys.append(key)
+    user.unlocked_backgrounds = dump_keys(keys)
     return True
 
 

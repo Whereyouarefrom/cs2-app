@@ -30,6 +30,7 @@
 
 from __future__ import annotations
 
+import datetime
 from typing import Optional
 
 import httpx
@@ -41,6 +42,10 @@ import config
 from database import Task, User, UserTaskCompletion, async_session
 
 router = APIRouter()
+
+# ---- ПРАВКИ В ТЗ №6: сколько дней после Task.created_at задание считается
+# "новым" и показывается с мигающей плашкой NEW на фронте. ----
+TASK_NEW_BADGE_DAYS = 7
 
 # ---- Статусы участника чата/канала, которые Telegram Bot API считает
 # "подписан"/"состоит" (getChatMember.result.status) ----
@@ -195,6 +200,9 @@ async def tasks_list(telegram_id: int):
         )
         referrals_count = result_ref_count.scalar() or 0
 
+        now = datetime.datetime.utcnow()
+        new_threshold = datetime.timedelta(days=TASK_NEW_BADGE_DAYS)
+
         return {
             "gold_balance": user.gold_balance,
             "referrals_count": referrals_count,
@@ -208,6 +216,10 @@ async def tasks_list(telegram_id: int):
                     "task_type": task.task_type,
                     "action_url": task.action_url,
                     "completed": task.id in completed_task_ids,
+                    # ПРАВКИ В ТЗ №6: плашка "NEW" для заданий младше
+                    # TASK_NEW_BADGE_DAYS дней (created_at бэкфиллится
+                    # автомиграцией у уже существующих строк — см. database.py).
+                    "is_new": bool(task.created_at and (now - task.created_at) < new_threshold),
                 }
                 for task in tasks
             ],

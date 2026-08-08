@@ -3,8 +3,9 @@
 # ============================================
 #
 # GET  /api/pass/status         — полный статус: уровень/XP, ветка VIP,
-#                                  дерево наград 1-49 с флагами claimed,
-#                                  доступность финального 50-го уровня.
+#                                  название/дедлайн сезона, дерево наград
+#                                  1-50 с флагами claimed (50-й уровень —
+#                                  финальный сундук, отмечен is_final).
 # POST /api/pass/claim          { telegram_id, level, track }
 # POST /api/pass/buy-vip        { telegram_id }               — 50 Gold
 # POST /api/pass/skip-level     { telegram_id }                — 5 Gold / уровень
@@ -57,6 +58,16 @@ LEVEL_SKIP_PRICE_GOLD = 5
 
 FREE_TASK_XP = 20
 VIP_TASK_XP = 25
+
+# ============================================
+# ПРАВКИ В ТЗ №11: Сезон и дата окончания Battle Pass
+# ============================================
+# Фиксированная дата/название текущего сезона. Дедлайн задан в ТЗ как
+# "1 сентября 2026, 00:00 по МСК (UTC+3)" — храним и отдаём во фронтенд
+# в UTC (МСК минус 3 часа), чтобы клиент считал обратный отсчёт от одной
+# и той же точки во времени независимо от часового пояса устройства.
+SEASON_NAME = "Сезон 1: Операция Хищник"
+SEASON_END_UTC = datetime.datetime(2026, 8, 31, 21, 0, 0, tzinfo=datetime.timezone.utc)
 
 
 # ============================================
@@ -260,6 +271,72 @@ def _add_pass_xp(progress: BattlePassProgress, amount: int) -> dict:
     return {"gained": amount, "levels_gained": levels_gained}
 
 
+def _auto_claim_completed_tasks(progress: BattlePassProgress, user: User) -> list[dict]:
+    """ПРАВКИ В ТЗ №12, п.4: автоматическое начисление XP за ежедневные
+    задания Battle Pass — без ручного нажатия "Забрать". Как только
+    фактический прогресс задания (см. _task_progress: разница текущих
+    счётчиков user.total_cases_opened / user.xp и дневного "снимка")
+    достигает цели, XP тут же начисляется прямо здесь, а задание
+    помечается как забранное на сегодня (claimed_daily_tasks) — то есть
+    сам факт выполнения условия И является claim'ом, отдельного клика
+    для этого больше не требуется.
+    Вызывается из каждой точки, где мы и так уже держим в руках
+    прогресс/пользователя в открытой сессии (GET /status, GET
+    /daily-tasks, а также извне — см. sync_daily_tasks() ниже, который
+    дергают другие роутеры сразу после игровых действий типа открытия
+    кейса). Ничего не коммитит сама — коммит делает вызывающий код.
+    Возвращает список НОВЫХ начислений (для ответа/уведомления), если
+    список пуст — вызывать commit()/refresh() не обязательно."""
+    claimed_today = _load_json_list(progress.claimed_daily_tasks)
+    newly_claimed: list[dict] = []
+    for task in DAILY_TASKS:
+        if task["key"] in claimed_today:
+            continue
+        if task["vip_only"] and not progress.is_vip_pass:
+            continue
+        done, target = _task_progress(task, progress, user)
+        if done < target:
+            continue
+        claimed_today.append(task["key"])
+        xp_info = _add_pass_xp(progress, task["xp"])
+        newly_claimed.append({
+            "task_key": task["key"],
+            "xp_gained": task["xp"],
+            "levels_gained": xp_info["levels_gained"],
+        })
+
+    if newly_claimed:
+        progress.claimed_daily_tasks = _dump_json_list(claimed_today)
+    return newly_claimed
+
+
+async def sync_daily_tasks(session, user: User) -> list[dict]:
+    """Публичная точка входа для ДРУГИХ роутеров (напр. routers/cases.py
+    после открытия кейса) — прогоняет обычный дневной сброс + автозачёт
+    выполненных заданий Пропуска ВНУТРИ уже открытой сессии/транзакции
+    вызывающего кода (сама session.commit() не делает — коммитит тот, кто
+    её открыл, чтобы не плодить лишние транзакции на каждый чих).
+    Импортировать этот модуль стоит ЛЕНИВО (внутри функции-обработчика),
+    как и `main` здесь же — иначе рискуем словить цикл импортов, так как
+    main.py подключает роутеры по очереди и routers/cases.py стоит в
+    списке раньше routers/pass_.py."""
+    result = await session.execute(
+        select(BattlePassProgress).where(BattlePassProgress.user_id == user.id)
+    )
+    progress = result.scalar_one_or_none()
+    if not progress:
+        progress = BattlePassProgress(
+            user_id=user.id,
+            daily_baseline_cases=user.total_cases_opened or 0,
+            daily_baseline_xp=user.xp or 0,
+            last_task_reset=datetime.datetime.utcnow().date(),
+        )
+        session.add(progress)
+        await session.flush()
+    _maybe_reset_daily(progress, user)
+    return _auto_claim_completed_tasks(progress, user)
+
+
 def _task_progress(task: dict, progress: BattlePassProgress, user: User) -> tuple[int, int]:
     """(текущий_прогресс, цель) для одного задания на СЕГОДНЯ."""
     if task["kind"] == "checkin":
@@ -451,6 +528,33 @@ def _build_tree_payload(progress: BattlePassProgress) -> list[dict]:
             "free_claimed": level in claimed_free,
             "vip_claimed": level in claimed_vip,
         })
+
+    # ПРАВКИ В ТЗ №11, п.2: сетка наград должна гарантированно показывать
+    # ВСЕ 50 уровней, а не 1-49 с "оторванным" финальным сундуком где-то
+    # отдельно. Level 50 — та же строка в общей сетке, но с флагом
+    # is_final=True: клик по ней не отправляет /pass/claim (бэкенд его для
+    # 50-го уровня и так отклоняет, см. pass_claim ниже), а на фронте ведёт
+    # к уже существующему интерактивному сундуку (scratch-card) — сам
+    # финальный приз (Тайное/Нож/Перчатки) остаётся честно случайным и не
+    # "спойлерится" превью, но заглавная карточка не даёт сетке обрываться
+    # на 49-м уровне.
+    tree.append({
+        "level": MAX_LEVEL,
+        "unlocked": progress.level >= MAX_LEVEL,
+        "is_final": True,
+        "free_rewards": [{
+            "type": "final_chest",
+            "label": "Финальный сундук (Тайное)",
+            "rarities": FINAL_CHEST_FREE_RARITIES,
+        }],
+        "vip_rewards": [{
+            "type": "final_chest",
+            "label": "Финальный сундук (Нож / Перчатки)",
+            "rarities": FINAL_CHEST_VIP_RARITIES,
+        }],
+        "free_claimed": MAX_LEVEL in claimed_free,
+        "vip_claimed": MAX_LEVEL in claimed_vip,
+    })
     return tree
 
 
@@ -466,7 +570,13 @@ async def pass_status(telegram_id: int):
             raise HTTPException(404, "Пользователь не найден")
 
         progress = await _get_or_create_progress(session, user)
-        if _maybe_reset_daily(progress, user):
+        reset_happened = _maybe_reset_daily(progress, user)
+        # ПРАВКИ В ТЗ №12, п.4: автозачёт выполненных ежедневных заданий
+        # прямо здесь — статус пропуска (уровень/XP в шапке) должен быть
+        # актуальным, даже если игрок ни разу не открывал вкладку
+        # "Задания" после того, как условие уже выполнилось.
+        auto_claimed = _auto_claim_completed_tasks(progress, user)
+        if reset_happened or auto_claimed:
             await session.commit()
             await session.refresh(progress)
 
@@ -475,6 +585,10 @@ async def pass_status(telegram_id: int):
             "xp": progress.xp,
             "xp_needed": XP_PER_LEVEL if progress.level < MAX_LEVEL else 0,
             "max_level": MAX_LEVEL,
+            "season_name": SEASON_NAME,
+            # ISO 8601 с явным смещением UTC — Date() на фронте парсит его
+            # однозначно вне зависимости от часового пояса устройства.
+            "season_end": SEASON_END_UTC.isoformat(),
             "is_vip_pass": progress.is_vip_pass,
             "gold_balance": round(user.gold_balance or 0.0, 2),
             "vip_pass_price_gold": VIP_PASS_PRICE_GOLD,
@@ -623,7 +737,11 @@ async def pass_daily_tasks(telegram_id: int):
             raise HTTPException(404, "Пользователь не найден")
 
         progress = await _get_or_create_progress(session, user)
-        if _maybe_reset_daily(progress, user):
+        reset_happened = _maybe_reset_daily(progress, user)
+        # ПРАВКИ В ТЗ №12, п.4: авто-начисление XP за выполненные задания —
+        # заменяет собой ручной клик "Забрать" (см. _auto_claim_completed_tasks).
+        auto_claimed = _auto_claim_completed_tasks(progress, user)
+        if reset_happened or auto_claimed:
             await session.commit()
             await session.refresh(progress)
 
@@ -645,7 +763,28 @@ async def pass_daily_tasks(telegram_id: int):
                 "claimed": task["key"] in claimed_today,
             })
 
-        return {"tasks": tasks_payload, "level": progress.level, "xp": progress.xp}
+        # ПРАВКИ В ТЗ №11, п.1: таймер "Задания обновятся через" на фронте
+        # считает обратный отсчёт именно до этой точки — полночь UTC
+        # следующего дня, то есть ровно тот момент, когда _maybe_reset_daily
+        # сделает сброс (см. функцию выше). Отдаём готовый ISO-таймстамп,
+        # а не заставляем фронт гадать по локальным часам устройства.
+        next_reset = datetime.datetime.combine(
+            progress.last_task_reset + datetime.timedelta(days=1),
+            datetime.time.min,
+            tzinfo=datetime.timezone.utc,
+        )
+
+        return {
+            "tasks": tasks_payload,
+            "level": progress.level,
+            "xp": progress.xp,
+            "next_reset": next_reset.isoformat(),
+            # ПРАВКИ В ТЗ №12, п.4: что было автоматически зачтено ИМЕННО в
+            # этом запросе (для фронта — необязательное поле, он и так умеет
+            # обнаружить новые claimed=true сравнением с предыдущим ответом,
+            # но так проще/надёжнее).
+            "auto_claimed": auto_claimed,
+        }
 
 
 # ============================================

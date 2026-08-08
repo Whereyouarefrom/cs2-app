@@ -12,6 +12,15 @@ const passState = {
   tasks: null,         // последний ответ GET /api/pass/daily-tasks
   activeTab: "tree",
   finalChestLocked: { free: false, vip: false }, // одна карточка уже выбрана -> остальные 2 блокируются
+  // ПРАВКИ В ТЗ №11, п.1: таймеры окончания сезона и обновления заданий.
+  seasonEndMs: null,      // из status.season_end (ISO), мс с эпохи
+  tasksNextResetMs: null, // из daily-tasks.next_reset (ISO), мс с эпохи
+  timerId: null,          // id setInterval общего 1-секундного тика
+  // ПРАВКИ В ТЗ №12, п.4: пока открыта вкладка "Задания", опрашиваем
+  // бэкенд, чтобы поймать автозачёт XP, случившийся где-то ещё в
+  // приложении (например, игрок открыл кейс на вкладке "Кейсы", не
+  // закрывая модалку Pass) — см. startPassTasksPolling/stopPassTasksPolling.
+  tasksPollId: null,
 };
 
 const PASS_RARITY_COLOR = {
@@ -27,6 +36,8 @@ function passRewardIcon(reward) {
     case "vip_time": return "⭐";
     case "frame": return "🖼️";
     case "nick_color": return "🎨";
+    // ПРАВКИ В ТЗ №11, п.2: превью финального 50-го уровня в общей сетке.
+    case "final_chest": return "🏆";
     default: return "🎁";
   }
 }
@@ -38,7 +49,52 @@ function passRewardLabel(reward) {
   if (reward.type === "vip_time") return reward.label;
   if (reward.type === "frame") return `Рамка «${reward.label}»`;
   if (reward.type === "nick_color") return `Цвет ника: ${reward.label}`;
+  if (reward.type === "final_chest") return reward.label;
   return reward.label || "Награда";
+}
+
+// ============================================
+// ПРАВКИ В ТЗ №11, п.1: таймеры обратного отсчёта
+// ============================================
+// Один общий 1-секундный тик обновляет оба таймера (конец сезона и
+// обновление заданий) — обе точки времени приходят готовыми с бэкенда
+// (season_end / next_reset, оба ISO с явным UTC-смещением), фронт только
+// вычитает Date.now() и форматирует остаток.
+function formatPassCountdown(msLeft) {
+  if (msLeft <= 0) return "00:00:00";
+  const totalSec = Math.floor(msLeft / 1000);
+  const days = Math.floor(totalSec / 86400);
+  const hours = Math.floor((totalSec % 86400) / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return days > 0
+    ? `${days}д ${pad(hours)}:${pad(mins)}:${pad(secs)}`
+    : `${pad(hours)}:${pad(mins)}:${pad(secs)}`;
+}
+
+function tickPassTimers() {
+  const seasonEl = document.getElementById("pass-season-timer");
+  if (seasonEl && passState.seasonEndMs) {
+    seasonEl.textContent = `⏳ ${formatPassCountdown(passState.seasonEndMs - Date.now())}`;
+  }
+  const tasksEl = document.getElementById("pass-tasks-timer");
+  if (tasksEl && passState.tasksNextResetMs) {
+    tasksEl.textContent = `🔄 Задания обновятся через: ${formatPassCountdown(passState.tasksNextResetMs - Date.now())}`;
+  }
+}
+
+function startPassTimers() {
+  stopPassTimers();
+  tickPassTimers();
+  passState.timerId = setInterval(tickPassTimers, 1000);
+}
+
+function stopPassTimers() {
+  if (passState.timerId) {
+    clearInterval(passState.timerId);
+    passState.timerId = null;
+  }
 }
 
 // ============================================
@@ -61,11 +117,44 @@ async function loadPassStatus() {
 
 async function loadPassDailyTasks() {
   try {
+    // ПРАВКИ В ТЗ №12, п.4: запоминаем предыдущий снимок заданий, чтобы
+    // после обновления заметить, что какое-то задание стало claimed=true
+    // САМО (бэкенд зачёл его автоматически — см. sync_daily_tasks /
+    // _auto_claim_completed_tasks), и показать это анимацией, а не молча.
+    const prevTasks = passState.tasks ? passState.tasks.tasks : null;
     passState.tasks = await apiGet(`/pass/daily-tasks?telegram_id=${state.telegramId}`);
+    if (passState.tasks.next_reset) {
+      passState.tasksNextResetMs = new Date(passState.tasks.next_reset).getTime();
+      tickPassTimers();
+    }
     renderPassTasks();
+
+    const justAutoClaimed = prevTasks && passState.tasks.tasks.some(t => {
+      const prev = prevTasks.find(p => p.key === t.key);
+      return t.claimed && (!prev || !prev.claimed);
+    });
+    if (justAutoClaimed) {
+      // Задание зачлось само — подтягиваем актуальные уровень/XP пропуска
+      // (шапка модалки + виджет на главной) и коротко подсвечиваем шкалу.
+      await loadPassStatus();
+      animatePassHeaderBar();
+    }
   } catch (e) {
     console.error("Ошибка загрузки заданий Battle Pass:", e);
   }
+}
+
+// ПРАВКИ В ТЗ №12, п.4: короткая вспышка на шкале уровня БП, когда XP
+// начислился автоматически (без клика игрока) — чтобы прогресс не
+// "тихо" прыгнул, а было заметно, что что-то только что зачлось.
+function animatePassHeaderBar() {
+  const fill = document.getElementById("pass-header-bar-fill");
+  if (!fill) return;
+  fill.classList.remove("pass-bar-pulse");
+  // reflow, чтобы повторный запуск класса перезапустил CSS-анимацию
+  void fill.offsetWidth;
+  fill.classList.add("pass-bar-pulse");
+  setTimeout(() => fill.classList.remove("pass-bar-pulse"), 900);
 }
 
 // ============================================
@@ -94,12 +183,38 @@ function renderPassHeader() {
     s.level >= s.max_level ? "Пройден полностью!" : `${s.xp} / ${s.xp_needed} XP`;
   document.getElementById("pass-header-vip-chip").style.display = s.is_vip_pass ? "inline-block" : "none";
 
+  // ПРАВКИ В ТЗ №11, п.1: название сезона + таймер до его окончания.
+  const seasonNameEl = document.getElementById("pass-season-name");
+  if (seasonNameEl && s.season_name) seasonNameEl.textContent = s.season_name;
+  if (s.season_end) {
+    passState.seasonEndMs = new Date(s.season_end).getTime();
+    tickPassTimers();
+  }
+
   const buyBtn = document.getElementById("pass-buy-vip-btn");
-  const skipBtn = document.getElementById("pass-skip-btn");
   buyBtn.style.display = s.is_vip_pass ? "none" : "inline-block";
-  buyBtn.textContent = `🌟 Купить VIP Pass — ${s.vip_pass_price_gold} 💰`;
-  skipBtn.textContent = `⏩ +1 уровень — ${s.level_skip_price_gold} 💰`;
-  skipBtn.style.display = s.level >= s.max_level ? "none" : "inline-block";
+  // ПРАВКИ В ТЗ №7: графический значок монеты вместо эмодзи 💰 — кнопки
+  // используют innerHTML, а не textContent, чтобы вставить <img>.
+  buyBtn.innerHTML = `🌟 Купить VIP Pass — ${s.vip_pass_price_gold} ${goldIconHTML("inline")}`;
+  // ПРАВКИ В ТЗ №12, п.3: кнопка докупки уровня больше не живёт в шапке —
+  // она рендерится renderPassTree() прямо на карточке следующего уровня.
+}
+
+// ============================================
+// ПРАВКИ В ТЗ №12, п.3: кнопка "Купить следующий уровень"
+// ============================================
+// Рендерится ТОЛЬКО на карточке того уровня, который игрок должен
+// получить следующим (row.level === nextBuyLevel, т.е. s.level + 1) —
+// по мере прокачки (клеймом наград, докупкой Золотом или Level Skip)
+// пропадает с текущей карточки и на следующем renderPassTree() (после
+// loadPassStatus()) появляется на следующей, "спускаясь" вниз по сетке
+// сама собой — без какого-либо отдельного состояния на фронте.
+function passBuyLevelButtonHTML(rowLevel, nextBuyLevel, s) {
+  if (rowLevel !== nextBuyLevel) return "";
+  return `
+    <button class="pass-buy-level-btn" title="Купить следующий уровень">
+      ⏩ Купить уровень ${rowLevel} — ${s.level_skip_price_gold} ${goldIconHTML("inline")}
+    </button>`;
 }
 
 // ============================================
@@ -110,23 +225,73 @@ function renderPassTree() {
   const list = document.getElementById("pass-tree-list");
   if (!s) { list.innerHTML = ""; return; }
 
+  // ПРАВКИ В ТЗ №12, п.3: следующий уровень, который можно докупить за
+  // Золото ("Купить следующий уровень") — привязан к текущему прогрессу,
+  // а не к фиксированному месту в шапке. Если пропуск уже пройден
+  // полностью (level >= max_level), докупать нечего — кнопки не будет
+  // нигде в сетке (см. также pass_skip_level на бэкенде, тот же лимит).
+  const nextBuyLevel = s.level < s.max_level ? s.level + 1 : null;
+
   list.innerHTML = s.tree.map(row => {
     const freeReward = row.free_rewards[0];
     const vipReward = row.vip_rewards[0];
     const freeExtra = row.free_rewards.length > 1 ? ` +${row.free_rewards.length - 1}` : "";
     const vipExtra = row.vip_rewards.length > 1 ? ` +${row.vip_rewards.length - 1}` : "";
+    // ПРАВКИ В ТЗ №11, п.2: подсветка/glow VIP-наград и редких предметов
+    // на "вехах" — 10/20/30/40 уровнях; 50-й — отдельный, ещё более
+    // заметный стиль (см. ветку row.is_final ниже).
+    const isMilestone = row.level % 10 === 0;
+
+    const rowClasses = ["pass-row"];
+    if (row.unlocked) rowClasses.push("unlocked");
+    if (isMilestone) rowClasses.push("pass-row-milestone");
+
+    if (row.is_final) {
+      // 50-й уровень — не обычный клейм по /pass/claim (бэкенд его для
+      // этого уровня и так отклоняет), а витрина уже существующего
+      // интерактивного сундука (scratch-card) ниже: клик скроллит к нему.
+      rowClasses.push("pass-row-final");
+      const freeCellClass = [
+        "pass-cell", "final",
+        row.free_claimed ? "claimed" : (row.unlocked ? "final-ready" : "locked"),
+      ].join(" ");
+      const vipCellClass = [
+        "pass-cell", "vip", "final",
+        row.vip_claimed ? "claimed" : ((row.unlocked && s.is_vip_pass) ? "final-ready" : "locked"),
+      ].join(" ");
+      return `
+        <div class="pass-row-block${row.level === nextBuyLevel ? " pass-row-buy-target" : ""}">
+        <div class="${rowClasses.join(" ")}">
+          <div class="pass-row-level">${row.level}</div>
+          <div class="${freeCellClass}" data-track="free">
+            <span class="pass-cell-icon">${passRewardIcon(freeReward)}</span>
+            <span class="pass-cell-label">${passRewardLabel(freeReward)}</span>
+            ${row.free_claimed ? '<span class="pass-cell-check">✓</span>' : ""}
+          </div>
+          <div class="${vipCellClass}" data-track="vip">
+            <span class="pass-cell-icon">${passRewardIcon(vipReward)}</span>
+            <span class="pass-cell-label">${passRewardLabel(vipReward)}</span>
+            ${row.vip_claimed ? '<span class="pass-cell-check">✓</span>' : ""}
+          </div>
+        </div>
+        ${passBuyLevelButtonHTML(row.level, nextBuyLevel, s)}
+        </div>`;
+    }
 
     const freeCellClass = [
       "pass-cell",
+      isMilestone ? "pass-cell-milestone" : "",
       row.free_claimed ? "claimed" : (row.unlocked ? "claimable" : "locked"),
-    ].join(" ");
+    ].filter(Boolean).join(" ");
     const vipCellClass = [
       "pass-cell", "vip",
+      isMilestone ? "pass-cell-milestone" : "",
       row.vip_claimed ? "claimed" : ((row.unlocked && s.is_vip_pass) ? "claimable" : "locked"),
-    ].join(" ");
+    ].filter(Boolean).join(" ");
 
     return `
-      <div class="pass-row ${row.unlocked ? "unlocked" : ""}">
+      <div class="pass-row-block${row.level === nextBuyLevel ? " pass-row-buy-target" : ""}">
+      <div class="${rowClasses.join(" ")}">
         <div class="pass-row-level">${row.level}</div>
         <div class="${freeCellClass}" data-level="${row.level}" data-track="free">
           <span class="pass-cell-icon">${passRewardIcon(freeReward)}</span>
@@ -138,12 +303,31 @@ function renderPassTree() {
           <span class="pass-cell-label">${passRewardLabel(vipReward)}${vipExtra}</span>
           ${row.vip_claimed ? '<span class="pass-cell-check">✓</span>' : ""}
         </div>
+      </div>
+      ${passBuyLevelButtonHTML(row.level, nextBuyLevel, s)}
       </div>`;
   }).join("");
 
   list.querySelectorAll(".pass-cell.claimable").forEach(cell => {
     cell.addEventListener("click", () => {
       claimPassLevel(parseInt(cell.dataset.level, 10), cell.dataset.track);
+    });
+  });
+
+  // ПРАВКИ В ТЗ №12, п.3: кнопка докупки уровня привязана к текущему
+  // прогрессу — рендерится заново на каждый renderPassTree() ровно на
+  // одной карточке (следующий недостигнутый уровень), поэтому обработчик
+  // достаточно навесить один раз после вставки разметки.
+  const buyLevelBtn = list.querySelector(".pass-buy-level-btn");
+  if (buyLevelBtn) buyLevelBtn.addEventListener("click", skipPassLevel);
+
+  // Готовая (открытая, но ещё не забранная) финальная карточка 50-го
+  // уровня — клик скроллит к интерактивному сундуку (.pass-final-chest),
+  // который рендерится отдельным блоком выше сетки (см. renderFinalChest).
+  list.querySelectorAll(".pass-cell.final-ready").forEach(cell => {
+    cell.addEventListener("click", () => {
+      const chestBox = document.getElementById("pass-final-chest");
+      if (chestBox) chestBox.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   });
 }
@@ -229,38 +413,28 @@ function renderPassTasks() {
   const list = document.getElementById("pass-tasks-list");
   if (!t) { list.innerHTML = ""; return; }
 
+  // ПРАВКИ В ТЗ №12, п.4: заданию больше не нужна кнопка "Забрать" — XP
+  // начисляется на бэкенде сам, как только условие выполнено (см.
+  // loadPassDailyTasks/animatePassHeaderBar выше). Карточка теперь только
+  // ПОКАЗЫВАЕТ статус: прогресс "1 / 3 кейсов" пока не выполнено, и
+  // зелёный градиент + "Выполнено ✓" как только бэкенд зачёл задание.
   list.innerHTML = t.tasks.map(task => {
     const pct = Math.min(100, Math.round((task.progress / task.target) * 100));
-    const btn = task.claimed
-      ? `<button class="btn-secondary small" disabled>Получено ✓</button>`
-      : task.completed
-        ? `<button class="btn-primary small pass-task-claim-btn" data-key="${task.key}">Забрать +${task.xp} XP</button>`
-        : `<button class="btn-secondary small" disabled>${task.progress}/${task.target}</button>`;
+    const statusChip = task.claimed
+      ? `<span class="pass-task-status done">Выполнено ✓</span>`
+      : `<span class="pass-task-status">${task.progress} / ${task.target}</span>`;
 
     return `
       <div class="pass-task-card ${task.claimed ? "claimed" : ""}">
-        <div class="pass-task-info">
+        <div class="pass-task-top">
           <div class="pass-task-title">${task.title}</div>
-          <div class="pass-task-desc">${task.description}</div>
-          <div class="pass-task-bar"><div class="pass-task-bar-fill" style="width:${pct}%"></div></div>
+          ${statusChip}
         </div>
-        ${btn}
+        <div class="pass-task-desc">${task.description}</div>
+        <div class="pass-task-bar"><div class="pass-task-bar-fill" style="width:${pct}%"></div></div>
+        <div class="pass-task-xp">${task.claimed ? "Получено" : "Награда"}: +${task.xp} XP</div>
       </div>`;
   }).join("");
-
-  list.querySelectorAll(".pass-task-claim-btn").forEach(btn => {
-    btn.addEventListener("click", () => claimPassDailyTask(btn.dataset.key));
-  });
-}
-
-async function claimPassDailyTask(taskKey) {
-  try {
-    await apiPost("/pass/daily-task/claim", { telegram_id: state.telegramId, task_key: taskKey });
-    await loadPassStatus();
-    await loadPassDailyTasks();
-  } catch (e) {
-    alert(e.message || "Не удалось забрать задание");
-  }
 }
 
 // ============================================
@@ -393,6 +567,8 @@ function openPassModal() {
   renderFinalChest();
   if (!passState.tasks) loadPassDailyTasks();
   else renderPassTasks();
+  startPassTimers();
+  if (passState.activeTab === "tasks") startPassTasksPolling();
 }
 
 function switchPassTab(tab) {
@@ -401,7 +577,28 @@ function switchPassTab(tab) {
   document.getElementById("pass-tab-btn-tasks").classList.toggle("active", tab === "tasks");
   document.getElementById("pass-tab-tree").style.display = tab === "tree" ? "block" : "none";
   document.getElementById("pass-tab-tasks").style.display = tab === "tasks" ? "block" : "none";
-  if (tab === "tasks") loadPassDailyTasks();
+  if (tab === "tasks") {
+    loadPassDailyTasks();
+    startPassTasksPolling();
+  } else {
+    stopPassTasksPolling();
+  }
+}
+
+// ПРАВКИ В ТЗ №12, п.4: лёгкий поллинг (раз в 4с) заданий, пока вкладка
+// "Задания" реально видна — не создаёт лишней нагрузки (останавливается
+// при переключении вкладки/закрытии модалки), но позволяет увидеть
+// автозачёт XP почти сразу, а не только при повторном открытии вкладки.
+function startPassTasksPolling() {
+  stopPassTasksPolling();
+  passState.tasksPollId = setInterval(loadPassDailyTasks, 4000);
+}
+
+function stopPassTasksPolling() {
+  if (passState.tasksPollId) {
+    clearInterval(passState.tasksPollId);
+    passState.tasksPollId = null;
+  }
 }
 
 // ============================================
@@ -458,7 +655,16 @@ function renderPassCosmetics() {
     })).join("");
 
   card.querySelectorAll(".pass-cosmetic-chip").forEach(btn => {
-    btn.addEventListener("click", () => selectPassCosmetic(btn.dataset.kind, btn.dataset.key || null));
+    btn.addEventListener("click", () => {
+      const kind = btn.dataset.kind;
+      const key = btn.dataset.key || null;
+      // ПРАВКИ В ТЗ №12, п.2: карточка «Превью профиля» в модалке Настроек
+      // обновляется мгновенно, синхронно с кликом — до ответа
+      // selectPassCosmetic() (apiPost уходит следом, в фоне).
+      if (typeof updateCustomizePreviewPassFrame === "function" && kind === "frame") updateCustomizePreviewPassFrame(key);
+      if (typeof updateCustomizePreviewNickColor === "function" && kind === "nick_color") updateCustomizePreviewNickColor(key);
+      selectPassCosmetic(kind, key);
+    });
   });
 
   applyPassCosmeticsToProfile();
@@ -504,15 +710,23 @@ async function selectPassCosmetic(kind, key) {
 document.getElementById("pass-widget-open-btn").addEventListener("click", openPassModal);
 document.getElementById("pass-close-btn").addEventListener("click", () => {
   document.getElementById("pass-modal").classList.remove("active");
+  stopPassTimers();
+  stopPassTasksPolling();
 });
 document.getElementById("pass-modal").addEventListener("click", (e) => {
-  if (e.target.id === "pass-modal") document.getElementById("pass-modal").classList.remove("active");
+  if (e.target.id === "pass-modal") {
+    document.getElementById("pass-modal").classList.remove("active");
+    stopPassTimers();
+    stopPassTasksPolling();
+  }
 });
 document.getElementById("pass-result-ok-btn").addEventListener("click", () => {
   document.getElementById("pass-result-modal").classList.remove("active");
 });
 document.getElementById("pass-buy-vip-btn").addEventListener("click", buyPassVip);
-document.getElementById("pass-skip-btn").addEventListener("click", skipPassLevel);
+// ПРАВКИ В ТЗ №12, п.3: кнопки #pass-skip-btn в шапке больше нет — клик
+// по докупке уровня навешивается динамически в renderPassTree() на ту
+// карточку, где кнопка сейчас отрисована (см. passBuyLevelButtonHTML).
 document.querySelectorAll(".pass-tab-btn").forEach(btn => {
   btn.addEventListener("click", () => switchPassTab(btn.dataset.tab));
 });

@@ -181,6 +181,18 @@ async def upgrader_spin(req: UpgraderSpinRequest):
         if target_value <= 0:
             raise HTTPException(400, "Не удалось определить стоимость целевого предмета")
 
+        # ПРАВКИ В ТЗ №2, п.1: если ставка дороже (или равна) целевого
+        # предмета, формула (staked/target)*100 даёт коэффициент >= 100%,
+        # что ломает саму механику "апгрейда" (выгоднее продать ставку
+        # напрямую, чем "улучшать" её на заведомо более дешёвый предмет).
+        # Такую ставку прямо запрещаем, а не тихо зажимаем шанс в потолок —
+        # игрок должен выбрать более дорогую цель.
+        if staked_value >= target_value:
+            raise HTTPException(
+                400,
+                "Целевой предмет должен быть дороже ставки — выбери более дорогую цель",
+            )
+
         chance_percent = (staked_value / target_value) * 100.0
         chance_percent = max(CHANCE_MIN_PERCENT, min(CHANCE_MAX_PERCENT, chance_percent))
 
@@ -196,8 +208,8 @@ async def upgrader_spin(req: UpgraderSpinRequest):
             await session.delete(item)
 
         if not success:
-            # Спринт 9.5: рефереру (если есть) — % от ПРОИГРАННОЙ ставки.
-            await main._credit_referral_upgrader_loss(session, user, staked_value)
+            # ПРАВКИ В ТЗ №13: рефереру (если есть) — % от ПРОИГРАННОЙ ставки.
+            await main._credit_referral_loss(session, user, staked_value, source="upgrader")
             await session.commit()
             await session.refresh(user)
             return {
@@ -241,7 +253,9 @@ async def upgrader_spin(req: UpgraderSpinRequest):
 
         # Спринт 9.5: рефереру (если есть) — % от ЧИСТОГО выигрыша
         # (стоимость целевого предмета за вычетом сгоревшей в него ставки).
-        await main._credit_referral_upgrader_win(session, user, round(target_value - staked_value, 2))
+        await main._credit_referral_win(
+            session, user, round(target_value - staked_value, 2), source="upgrader"
+        )
 
         await session.commit()
         await session.refresh(new_item)

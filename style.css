@@ -87,19 +87,56 @@ html, body {
 /* Когда активен кастомный фон — делаем #app и его основные панели
    полупрозрачными со своим лёгким blur, чтобы картинка/видео были видны
    не только в промежутках, но и просвечивали сквозь карточки, при этом
-   текст остаётся читаемым за счёт того же backdrop-filter. */
+   текст остаётся читаемым за счёт того же backdrop-filter.
+   ПРАВКИ В ТЗ №10, п.1: раньше .screen (главный контейнер контента —
+   "Кейсы"/"Чат"/"Профиль" и т.д.) получал сплошной тёмный фон без
+   скруглений, из-за чего торчал тёмным прямоугольным пластом поверх
+   кастомного фона с острыми верхними углами. Плюс селектор ссылался на
+   несуществующий класс .bottom-nav вместо реального .tabbar, поэтому
+   нижняя навигация вообще не участвовала в "остеклении". Теперь у всех
+   основных панелей — единый полупрозрачный blur-фон, мягкие скругления
+   и тонкая едва заметная обводка, чтобы они аккуратно вписывались в
+   любой выбранный фон без "выпирающих" тёмных углов. */
 #app.custom-bg {
   background: transparent;
 }
 #app.custom-bg .topbar,
 #app.custom-bg .screen,
-#app.custom-bg .bottom-nav,
+#app.custom-bg .tabbar,
 #app.custom-bg .settings-block,
 #app.custom-bg .ref-block,
 #app.custom-bg .promo-block {
-  background: rgba(21, 26, 33, 0.72);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  background: rgba(18, 22, 31, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* .screen — сам "лист" экрана (Кейсы/Инвентарь/Чат/Профиль и т.д.):
+   скругляем со всех сторон и слегка отступаем от шапки/таббара, чтобы
+   не было ощущения глухого квадратного пласта поверх фона. */
+#app.custom-bg .screen {
+  border-radius: 20px;
+  margin: 10px 0 6px;
+  padding: 14px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+}
+
+/* Шапка и нижняя навигация — те же скругления, что и у карточек ниже,
+   только со стороны, обращённой к контенту (верх/низ экрана остаются
+   заподлицо с краем вьюпорта, а не "выпирают" рваным прямоугольником). */
+#app.custom-bg .topbar {
+  border-radius: 0 0 16px 16px;
+  border-top: none;
+}
+#app.custom-bg .tabbar {
+  border-radius: 16px 16px 0 0;
+  border-bottom: none;
+}
+#app.custom-bg .settings-block,
+#app.custom-bg .ref-block,
+#app.custom-bg .promo-block {
+  border-radius: 16px;
 }
 
 /* ---- Сетка выбора фона в Настройках ---- */
@@ -154,6 +191,16 @@ html, body {
 .bg-picker-item.active .bg-picker-name {
   color: var(--text-primary);
 }
+/* ПРАВКИ В ТЗ №5: заблокированный (ещё не заработанный) наградной фон —
+   приглушённая плитка с иконкой замка вместо превью/эмодзи-иконки типа. */
+.bg-picker-item.locked {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.bg-picker-item.locked .bg-picker-thumb {
+  filter: grayscale(0.6);
+}
+.bg-picker-item.locked:active { transform: none; }
 
 /* ==================== TOPBAR ==================== */
 .topbar {
@@ -191,6 +238,33 @@ html, body {
 .topbar-right { display: flex; align-items: center; gap: 8px; }
 .topbar-left { display: flex; align-items: center; gap: 8px; }
 .gold-pill { color: #ffd15c; }
+
+/* ============================================
+   ПРАВКИ В ТЗ №7 (валюты и значки): отдельный графический значок
+   Золота (SVG-монетка, assets/icons/gold-coin.svg) вместо эмодзи 💰 или
+   просто подсвеченного жёлтым текста (см. .wheel-result-gold ниже,
+   которое раньше было единственным маркером Золота в результате колеса).
+   ============================================ */
+.gold-coin-icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  vertical-align: middle;
+}
+.gold-coin-icon.small {
+  width: 14px;
+  height: 14px;
+}
+.gold-coin-icon.large {
+  width: 28px;
+  height: 28px;
+}
+/* Значок внутри строки текста — чуть приподнят, чтобы не "плавать" ниже
+   базовой линии шрифта. */
+.gold-coin-icon.inline {
+  display: inline-block;
+  margin: 0 1px -3px;
+}
 
 .sound-toggle-btn {
   background: var(--bg-card);
@@ -247,12 +321,13 @@ html, body {
 
 .case-card {
   background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
   padding: 12px;
   text-align: center;
   cursor: pointer;
   transition: transform 0.15s ease, border-color 0.15s ease;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
 }
 
 .case-card:active { transform: scale(0.96); }
@@ -286,14 +361,15 @@ html, body {
 
 .inventory-card {
   background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
   padding: 10px;
   text-align: center;
   position: relative;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
 }
 
 .inventory-card img {
@@ -336,6 +412,34 @@ html, body {
   cursor: pointer;
 }
 
+/* ПРАВКИ В ТЗ №14: строка "Поделиться" + "Продать" под карточкой скина в
+   Инвентаре — иконка-кнопка шариться слева, узкая и не конкурирует по
+   вниманию с основным действием (продажей). */
+.inv-actions-row {
+  display: flex;
+  gap: 6px;
+}
+
+.inv-actions-row .sell-btn {
+  flex: 1;
+}
+
+.inv-share-btn {
+  flex: 0 0 auto;
+  width: 30px;
+  padding: 6px 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.inv-share-btn:active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .empty-state {
   text-align: center;
   color: var(--text-secondary);
@@ -371,6 +475,38 @@ html, body {
 .profile-name { font-weight: 700; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .profile-username { font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .profile-card .vip-pill { flex-shrink: 0; }
+
+/* ПРАВКИ В ТЗ №5: иконка ⚙️ Настроек в шапке профиля — открывает
+   #customize-modal (фон профиля / рамка аватарки / цвет ника). */
+.profile-settings-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 15px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease;
+}
+.profile-settings-btn:active { transform: scale(0.9) rotate(20deg); }
+
+/* ПРАВКИ В ТЗ №5: иконка 🎁 Промокода в шапке приложения — открывает
+   #promo-modal (раньше поле ввода промокода жило прямо в Профиле). */
+.promo-toggle-btn {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  font-size: 14px;
+  cursor: pointer;
+}
 
 /* ==================== SETTINGS ==================== */
 .settings-block {
@@ -510,6 +646,36 @@ html, body {
 }
 
 .stat-box.highlight { border-color: var(--accent-orange); }
+
+/* ==================== ПРАВКИ В ТЗ №5: объединённый блок статистики
+   (Топ-дроп + кейсы + профит + мини-игры), сразу под уровнем аккаунта. ==================== */
+.profile-stats-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 16px;
+}
+.profile-stats-card .top-drop-card {
+  margin-bottom: 12px; /* внутри карточки — меньше отступ, чем было отдельно на экране */
+}
+.profile-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+/* На узких экранах трём колонкам тесно — переносим статистику мини-игр
+   (самое длинное значение) на всю ширину второй строки. */
+@media (max-width: 380px) {
+  .profile-stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .profile-stats-grid .stat-box:last-child {
+    grid-column: 1 / -1;
+  }
+}
+#profit-stat-box .stat-value.positive { color: var(--accent-green, #4caf50); }
+#profit-stat-box .stat-value.negative { color: var(--accent-red, #e35b5b); }
 
 .stat-label {
   font-size: 11px;
@@ -651,6 +817,45 @@ html, body {
 .earn-title { font-weight: 700; font-size: 14px; }
 .earn-desc { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
 
+/* ==================== ПРАВКИ В ТЗ №6: VIP лид-карта ====================
+   Первая крупная карточка на вкладке "Заработать" — золотой градиентный
+   акцент и список преимуществ отличают её от обычных .earn-card. */
+.earn-lead-card {
+  align-items: flex-start;
+  background: linear-gradient(135deg, rgba(255,215,0,0.10), var(--bg-card) 55%);
+  border: 1px solid rgba(255,215,0,0.35);
+  position: relative;
+  overflow: hidden;
+}
+.earn-lead-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: 0 0 24px rgba(255,215,0,0.08) inset;
+}
+.earn-lead-icon { font-size: 34px; line-height: 1; filter: drop-shadow(0 0 6px rgba(255,215,0,0.5)); }
+.earn-lead-info { flex: 1; }
+.earn-lead-title {
+  font-weight: 800;
+  font-size: 16px;
+  background: linear-gradient(135deg, var(--rarity-knife), #fff3b0);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.earn-lead-desc { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+.earn-lead-perks {
+  list-style: none;
+  margin: 8px 0 4px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.earn-lead-perks li { font-size: 11px; color: var(--text-primary); opacity: 0.9; }
+.earn-lead-btn { align-self: center; white-space: nowrap; }
+
 /* ==================== SOCIAL TASKS (Спринт 7) ==================== */
 .tasks-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
 .task-card {
@@ -665,9 +870,84 @@ html, body {
 .task-card.completed { opacity: 0.6; }
 .task-icon { font-size: 22px; }
 .task-info { flex: 1; }
+.task-title-row { display: flex; align-items: center; gap: 6px; }
 .task-title { font-weight: 700; font-size: 13px; }
 .task-desc { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
 .task-reward { font-size: 11px; color: var(--accent-orange); font-weight: 700; margin-top: 2px; }
+
+/* ---- ПРАВКИ В ТЗ №6: мигающая плашка "NEW" у свежих заданий (см.
+   Task.created_at / TASK_NEW_BADGE_DAYS в routers/tasks.py) ---- */
+.new-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  color: #1a1a1a;
+  background: var(--accent-orange);
+  border-radius: 6px;
+  padding: 2px 5px;
+  animation: newBadgeBlink 1.4s ease-in-out infinite;
+}
+@keyframes newBadgeBlink {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(248,156,28,0.5); }
+  50% { opacity: 0.55; box-shadow: 0 0 0 4px rgba(248,156,28,0); }
+}
+
+/* ==================== ПРАВКИ В ТЗ №6: "Мои рефералы" ==================== */
+.ref-my-referrals-btn { margin-top: 10px; }
+.referrals-total {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 14px;
+}
+.referrals-total b { color: var(--accent-orange); }
+.referrals-list { display: flex; flex-direction: column; gap: 8px; text-align: left; }
+.referral-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.referral-rank {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text-secondary);
+  width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.referral-info { flex: 1; min-width: 0; }
+.referral-nickname {
+  font-weight: 700;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.referral-bar-track {
+  height: 4px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  margin-top: 6px;
+  overflow: hidden;
+}
+.referral-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-orange), #ff6b1c);
+  border-radius: 4px;
+}
+.referral-amount { text-align: right; flex-shrink: 0; }
+.referral-amount-value { font-weight: 700; font-size: 13px; color: var(--accent-orange); }
+.referral-amount-percent { font-size: 10px; color: var(--text-secondary); margin-top: 1px; }
+.referrals-empty {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+  padding: 20px 0;
+}
 
 /* ==================== BUTTONS ==================== */
 .btn-primary, .btn-secondary {
@@ -691,7 +971,28 @@ html, body {
 }
 
 .btn-primary.small, .btn-secondary.small { padding: 8px 14px; font-size: 12px; }
-.btn-primary.full { width: 100%; padding: 14px; font-size: 15px; margin-top: 14px; }
+.btn-primary.full, .btn-secondary.full { width: 100%; padding: 14px; font-size: 15px; margin-top: 14px; }
+
+/* ПРАВКИ В ТЗ №14: кнопка "Поделиться" в окнах выигрыша/крафта/апгрейда —
+   Telegram-голубой, чтобы визуально читаться как отдельное действие
+   ("отправить пост"), а не как ещё один вариант основного btn-primary/
+   btn-secondary выбора (забрать/продать/ок). */
+.share-btn {
+  border: 1px solid rgba(74, 158, 255, 0.4);
+  border-radius: 10px;
+  background: rgba(74, 158, 255, 0.12);
+  color: var(--accent-blue);
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 10px 16px;
+}
+
+.share-btn:active {
+  background: rgba(74, 158, 255, 0.22);
+}
+
+.share-btn.full { width: 100%; padding: 12px; font-size: 14px; margin-top: 12px; }
 
 /* ==================== MINI-GAMES HUB (icon grid) ==================== */
 .games-hub-hint {
@@ -1379,6 +1680,29 @@ html, body {
 .win-item-name { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
 .win-item-price { color: var(--accent-orange); font-weight: 700; font-size: 16px; }
 
+/* ПРАВКИ В ТЗ №5: секретный скин в модалке повышения ранга — тот же
+   .win-item-card, но с золотистой рамкой и подписью сверху, чтобы явно
+   отличаться от обычной награды-кейса. */
+.rankup-secret-card { border-color: var(--rarity-knife, #ffd700); }
+.rankup-secret-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--rarity-knife, #ffd700);
+  margin-bottom: 8px;
+}
+/* Строки "новая рамка"/"новый фон" в модалке повышения ранга — компактные
+   текстовые бейджи, в духе .levelup-unlock-line. */
+.rankup-extra-line {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+}
+
 .win-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .win-actions button { flex: 1 1 calc(50% - 5px); padding: 12px; min-width: 100px; }
 .win-actions button#win-open-again-btn { flex-basis: 100%; }
@@ -1819,6 +2143,46 @@ html, body {
   color: var(--accent-orange);
 }
 
+/* ПРАВКИ В ТЗ №9, п.2: дропдауны фильтра по редкости + расширенной
+   сортировки (цена/дата/редкость), заменившие собой одиночную кнопку
+   .inventory-sort-btn выше (класс оставлен нетронутым для обратной
+   совместимости, если где-то ещё подключается). */
+.inventory-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.inventory-select {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 6px 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+  max-width: 145px;
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%), linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%);
+  background-position: calc(100% - 14px) center, calc(100% - 9px) center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 22px;
+}
+.inventory-select:hover, .inventory-select:focus-visible {
+  border-color: var(--accent-orange);
+  color: var(--accent-orange);
+}
+.inventory-select option {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
 .select-all-row {
   display: flex;
   align-items: center;
@@ -1853,6 +2217,96 @@ html, body {
 .inventory-card.selected {
   border-color: var(--accent-orange);
   box-shadow: 0 0 0 1px var(--accent-orange);
+}
+
+/* ПРАВКИ В ТЗ №9, п.3: кнопка "Продать дешевле..." над сеткой инвентаря */
+.inventory-bulk-sell-row {
+  display: flex;
+  margin-bottom: 10px;
+}
+.bulk-sell-open-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-card);
+  border: 1px dashed var(--border-color);
+  border-radius: 10px;
+  padding: 8px 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.bulk-sell-open-btn:hover, .bulk-sell-open-btn:focus-visible {
+  border-color: var(--accent-orange);
+  color: var(--accent-orange);
+}
+.bulk-sell-open-btn:active { transform: scale(0.97); }
+
+/* ---------- Модалка массовой продажи "дешевле N" ---------- */
+.bulk-sell-sheet { text-align: left; }
+.bulk-sell-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 16px;
+  padding-right: 26px;
+}
+.bulk-sell-price-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 14px;
+}
+.bulk-sell-price-row input {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 12px;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.bulk-sell-price-row input:focus {
+  outline: none;
+  border-color: var(--accent-orange);
+}
+.bulk-sell-protect-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  cursor: pointer;
+  margin-bottom: 14px;
+}
+.bulk-sell-protect-row input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  accent-color: var(--accent-orange);
+  cursor: pointer;
+  margin-top: 1px;
+}
+.bulk-sell-preview {
+  background: var(--bg-secondary);
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: 14px;
+  color: var(--accent-orange);
+}
+#bulk-sell-confirm-total { margin-left: 4px; }
+.bulk-sell-sheet .btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .disintegrate-bar {
@@ -2049,6 +2503,13 @@ html, body {
 .daily-day-card.jackpot { border-color: var(--rarity-knife); }
 .daily-day-card.jackpot .day-icon { filter: drop-shadow(0 0 4px rgba(255,215,0,0.6)); }
 
+.daily-countdown {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+.daily-countdown b { color: var(--accent-orange); }
+
 @keyframes dailyPulse {
   0%, 100% { box-shadow: 0 0 0 2px rgba(248,156,28,0.25); }
   50% { box-shadow: 0 0 0 5px rgba(248,156,28,0.12); }
@@ -2242,6 +2703,7 @@ html, body {
   margin-bottom: 10px;
 }
 .upg-search-empty {
+  grid-column: 1 / -1;
   text-align: center;
   font-size: 12px;
   color: var(--text-secondary);
@@ -2417,16 +2879,67 @@ html, body {
 .crf-price-range-row .mg-input { margin-bottom: 10px; }
 
 .crf-catalog-grid {
-  max-height: 260px;
+  max-height: 340px;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding-right: 2px;
 }
 
-.upg-search-item.selected {
+/* ПРАВКИ В ТЗ №2, п.3 — редизайн карточек каталога целевых предметов:
+   раньше .upg-search-item в этом гриде рендерился ОДНОЙ узкой строкой
+   (flex-row, картинка 36px, паддинг 8×10) — при таком паддинге и без
+   фиксированной высоты карточка реально сжималась до 30-40px, а имя и
+   картинка AWP визуально наезжали друг на друга. Ниже — отдельная (не
+   переиспользующая .upg-search-item) карточка-плитка: картинка сверху
+   по центру, имя жирным под ней, цена с иконкой алмаза ещё ниже. */
+.crf-catalog-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  min-height: 132px;
+  min-width: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-top: 3px solid var(--rarity-consumer);
+  border-radius: 12px;
+  padding: 12px 8px 10px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.1s ease, background 0.15s ease;
+}
+.crf-catalog-card:active { transform: scale(0.97); }
+.crf-catalog-card img {
+  display: block;
+  width: 64px;
+  height: 64px;
+  max-width: 100%;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+.crf-catalog-card-name {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.25;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  width: 100%;
+}
+.crf-catalog-card-price {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-orange);
+}
+.crf-catalog-card.selected {
   border-color: var(--accent-orange);
-  background: rgba(248, 156, 28, 0.08);
+  background: rgba(248, 156, 28, 0.1);
+  box-shadow: 0 0 0 1px var(--accent-orange) inset;
 }
 
 /* ==================== СПРИНТ 6: ЕЖЕДНЕВНОЕ КОЛЕСО УДАЧИ ==================== */
@@ -2541,6 +3054,7 @@ html, body {
   border-radius: 16px;
   padding: 12px 14px;
   margin-bottom: 14px;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
 }
 
 .pass-widget-icon { font-size: 30px; line-height: 1; }
@@ -2585,6 +3099,39 @@ html, body {
 .pass-sheet { max-height: 92vh; }
 
 .pass-header { margin: 6px 0 14px; }
+
+/* ПРАВКИ В ТЗ №11, п.1: название сезона + таймер до конца сезона. */
+.pass-season-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  background: linear-gradient(135deg, rgba(248,156,28,0.14), rgba(211,44,230,0.10));
+  border: 1px solid rgba(248,156,28,0.3);
+  border-radius: 12px;
+}
+.pass-season-name {
+  font-weight: 800;
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pass-season-timer {
+  flex-shrink: 0;
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--accent-orange);
+  background: rgba(0,0,0,0.25);
+  padding: 4px 8px;
+  border-radius: 8px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .pass-header-toprow { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 6px; }
 .pass-header-level { font-weight: 700; font-size: 15px; }
 
@@ -2619,8 +3166,13 @@ html, body {
 
 .pass-tab-btn.active { background: var(--bg-card); color: var(--text-primary); }
 
-/* ---- Дерево наград ---- */
-.pass-tree-list { display: flex; flex-direction: column; gap: 6px; }
+/* ---- Дерево наград ----
+   ПРАВКИ В ТЗ №11, п.2: ячейки были мелкими и плоскими — увеличена
+   высота (min-height: 80px), карточка теперь колонкой (иконка сверху,
+   крупнее и с лёгкой объёмной тенью, подпись под ней в 2 строки вместо
+   обрезанной в одну), плюс glow-подсветка на уровнях-вехах 10/20/30/40
+   и отдельный, ещё более заметный стиль для финального 50-го уровня. */
+.pass-tree-list { display: flex; flex-direction: column; gap: 8px; }
 
 .pass-row {
   display: grid;
@@ -2639,36 +3191,49 @@ html, body {
   font-weight: 700;
   color: var(--text-secondary);
   background: var(--bg-primary);
-  border-radius: 8px;
+  border-radius: 10px;
 }
 
 .pass-cell {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: 5px;
   background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  padding: 8px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 10px 6px;
+  min-height: 80px;
   font-size: 11px;
+  text-align: center;
   position: relative;
   min-width: 0;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.25);
 }
 
 .pass-cell.vip { border-color: rgba(248,156,28,0.35); }
-.pass-cell-icon { font-size: 15px; flex-shrink: 0; }
+.pass-cell-icon {
+  font-size: 32px;
+  line-height: 1;
+  flex-shrink: 0;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4));
+}
 .pass-cell-label {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--text-primary);
+  font-size: 11px;
+  line-height: 1.25;
 }
 
 .pass-cell.locked { opacity: 0.4; }
 .pass-cell.claimable {
   cursor: pointer;
   border-color: var(--accent-orange);
-  box-shadow: 0 0 0 1px var(--accent-orange) inset;
+  box-shadow: 0 0 0 1px var(--accent-orange) inset, 0 3px 10px rgba(0, 0, 0, 0.25);
 }
 .pass-cell.claimable:active { transform: scale(0.97); }
 .pass-cell.claimed { border-color: #2ecc71; }
@@ -2688,26 +3253,164 @@ html, body {
   font-weight: 800;
 }
 
-/* ---- Ежедневные задания Pass ---- */
-.pass-tasks-list { display: flex; flex-direction: column; gap: 8px; }
+/* ---- Вехи (10/20/30/40 уровни): glow-подсветка VIP-наград/редких предметов ---- */
+@keyframes passMilestoneGlow {
+  0%, 100% { box-shadow: 0 0 8px rgba(255, 215, 0, 0.35), 0 3px 10px rgba(0, 0, 0, 0.25); }
+  50% { box-shadow: 0 0 18px rgba(255, 215, 0, 0.8), 0 3px 10px rgba(0, 0, 0, 0.25); }
+}
+.pass-row-milestone .pass-row-level {
+  background: linear-gradient(135deg, var(--accent-orange), #ffd700);
+  color: #1a1206;
+}
+.pass-cell-milestone {
+  border-color: var(--rarity-knife);
+  animation: passMilestoneGlow 2s ease-in-out infinite;
+}
 
-.pass-task-card {
+/* ---- 50-й уровень: финальный сундук в общей сетке ----
+   Крупнее и заметнее остальных ячеек — "витрина" уже существующего
+   интерактивного сундука ниже (клик по готовой карточке скроллит к нему,
+   см. pass.js). */
+@keyframes passFinalGlow {
+  0%, 100% { box-shadow: 0 0 10px rgba(255, 94, 28, 0.45), 0 4px 15px rgba(0, 0, 0, 0.3); }
+  50% { box-shadow: 0 0 24px rgba(255, 94, 28, 0.9), 0 4px 15px rgba(0, 0, 0, 0.3); }
+}
+.pass-row-final { margin-top: 4px; }
+.pass-row-final .pass-row-level {
+  background: linear-gradient(135deg, #ffd700, #ff5e1c);
+  color: #1a1206;
+  font-size: 13px;
+}
+.pass-cell.final {
+  min-height: 92px;
+  border-width: 2px;
+  background: linear-gradient(160deg, #24160f 0%, #1b222c 100%);
+}
+.pass-cell.final .pass-cell-icon { font-size: 40px; }
+.pass-cell.final.locked { opacity: 0.4; animation: none; }
+.pass-cell.final-ready {
+  cursor: pointer;
+  border-color: #ffd700;
+  animation: passFinalGlow 1.8s ease-in-out infinite;
+}
+.pass-cell.final-ready:active { transform: scale(0.97); }
+.pass-cell.final.claimed { border-color: #2ecc71; animation: none; }
+
+/* ---- ПРАВКИ В ТЗ №12, п.3: кнопка "Купить следующий уровень" ----
+   Раньше жила фиксированной кнопкой в шапке (#pass-skip-btn) — теперь
+   рендерится динамически (pass.js/renderPassTree) прямо под карточкой
+   того уровня, который игрок получит следующим, и "едет" по сетке
+   вместе с прогрессом. .pass-row-block — просто обёртка над строкой
+   сетки, чтобы кнопка могла встать сразу под конкретным рядом, не ломая
+   grid самой .pass-row. */
+.pass-row-block { display: flex; flex-direction: column; }
+.pass-row-buy-target .pass-row { opacity: 1; }
+
+.pass-buy-level-btn {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--accent-orange), #ffb300);
+  color: #1a1206;
+  font-weight: 800;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 3px 10px rgba(248, 156, 28, 0.35);
+  animation: passMilestoneGlow 2s ease-in-out infinite;
+}
+.pass-buy-level-btn:active { transform: scale(0.97); }
+.pass-buy-level-btn img { height: 14px; vertical-align: middle; }
+
+/* ---- Ежедневные задания Pass ---- */
+/* ПРАВКИ В ТЗ №11, п.1: таймер обновления заданий (сброс каждые 24ч). */
+.pass-tasks-timer {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-blue);
+  background: rgba(74,158,255,0.1);
+  border: 1px solid rgba(74,158,255,0.3);
+  border-radius: 10px;
+  padding: 8px;
+  margin-bottom: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pass-tasks-list { display: flex; flex-direction: column; gap: 10px; }
+
+/* ---- ПРАВКИ В ТЗ №12, п.4: переверстка карточек заданий + автозачёт ----
+   Кнопки "Забрать" больше нет — XP начисляется на бэкенде сам, как
+   только условие выполнено (см. pass.js loadPassDailyTasks). Карточка
+   теперь только сообщает статус: адекватные отступы, контрастный текст,
+   прогресс-бар "1 / 3 кейсов", и приятный зелёный градиент + "Выполнено
+   ✓" как только бэкенд помечает задание забранным. */
+.pass-task-card {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
-  border-radius: 12px;
-  padding: 10px 12px;
+  border-radius: 14px;
+  padding: 12px 14px;
+  transition: background 0.4s ease, border-color 0.4s ease;
 }
-.pass-task-card.claimed { opacity: 0.55; }
+.pass-task-card.claimed {
+  background: linear-gradient(135deg, rgba(46, 204, 113, 0.20), rgba(46, 204, 113, 0.05));
+  border-color: rgba(46, 204, 113, 0.55);
+}
 
-.pass-task-info { flex: 1; min-width: 0; }
-.pass-task-title { font-weight: 700; font-size: 13px; margin-bottom: 2px; }
-.pass-task-desc { font-size: 11px; color: var(--text-secondary); margin-bottom: 6px; }
+.pass-task-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.pass-task-title { font-weight: 800; font-size: 14px; color: var(--text-primary); }
 
-.pass-task-bar { height: 5px; background: var(--bg-primary); border-radius: 4px; overflow: hidden; }
-.pass-task-bar-fill { height: 100%; background: var(--accent-blue); border-radius: 4px; }
+.pass-task-status {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.07);
+  padding: 3px 9px;
+  border-radius: 8px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.pass-task-status.done { color: #0d3320; background: #2ecc71; }
+
+.pass-task-desc { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; line-height: 1.35; }
+
+.pass-task-bar { height: 6px; background: var(--bg-primary); border-radius: 4px; overflow: hidden; }
+.pass-task-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-blue), #6ec3ff);
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+.pass-task-card.claimed .pass-task-bar-fill { background: #2ecc71; }
+
+.pass-task-xp {
+  margin-top: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-orange);
+  text-align: right;
+}
+.pass-task-card.claimed .pass-task-xp { color: #2ecc71; }
+
+/* ---- ПРАВКИ В ТЗ №12, п.4: короткая вспышка шкалы уровня БП при
+   автоначислении XP (см. pass.js animatePassHeaderBar) ---- */
+@keyframes passBarPulse {
+  0% { box-shadow: 0 0 0 rgba(46, 204, 113, 0); filter: brightness(1); }
+  40% { box-shadow: 0 0 14px rgba(46, 204, 113, 0.9); filter: brightness(1.35); }
+  100% { box-shadow: 0 0 0 rgba(46, 204, 113, 0); filter: brightness(1); }
+}
+.pass-bar-pulse { animation: passBarPulse 0.9s ease-out; }
 
 /* ---- Финальный сундук 50-го уровня ---- */
 .pass-final-chest {
@@ -2953,8 +3656,10 @@ html, body {
 .showcase-head .ref-title { margin-bottom: 0; }
 .showcase-counter { font-size: 12px; color: var(--text-secondary); font-weight: 600; }
 .showcase-grid {
+  /* ПРАВКИ В ТЗ №5: сетка строго 3х3 = 9 ячеек (раньше auto-fill мог
+     растянуться на 10 колонок под максимум слотов). */
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  grid-template-columns: repeat(3, 1fr);
   gap: 8px;
   margin-top: 10px;
 }
@@ -3258,6 +3963,79 @@ html, body {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+/* ---------- ПРАВКИ В ТЗ №9, п.1: подтверждение продажи редкого скина ---------- */
+.rare-sell-confirm-sheet { text-align: center; }
+.rare-sell-confirm-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 14px;
+  padding-right: 26px; /* не наезжает на крестик закрытия */
+}
+.rare-sell-confirm-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-secondary);
+  border-radius: 12px;
+  padding: 10px;
+  margin-bottom: 16px;
+  text-align: left;
+}
+.rare-sell-confirm-preview img {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  flex-shrink: 0;
+  background: var(--bg-card);
+  border-radius: 8px;
+  padding: 6px;
+}
+.rare-sell-confirm-info { min-width: 0; }
+.rare-sell-confirm-name {
+  font-size: 13px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rare-sell-confirm-price {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--accent-orange);
+  margin-top: 4px;
+}
+.rare-sell-confirm-checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  text-align: left;
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+  padding: 4px 2px;
+}
+.rare-sell-confirm-checkbox-row input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  accent-color: var(--accent-orange);
+  cursor: pointer;
+  margin-top: 1px;
+}
+.rare-sell-confirm-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}
+.rare-sell-confirm-actions .btn-primary,
+.rare-sell-confirm-actions .btn-secondary {
+  margin-top: 0;
+}
+.rare-sell-confirm-actions .btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ---------- Карточка скина в инвентаре: плашки Float/StatTrak ---------- */
 .inv-badges {
   display: flex;
@@ -3318,6 +4096,9 @@ html, body {
   margin: 12px 0;
 }
 .levelup-unlock-line { font-size: 12px; color: var(--text-secondary); margin-bottom: 12px; }
+/* ПРАВКИ В ТЗ №5: предмет из награды за веху уровня аккаунта — переиспользует
+   .win-item-card, чуть уже, чтобы аккуратно смотреться под levelup-num. */
+.levelup-item-card { margin: 0 auto 14px; max-width: 220px; }
 
 /* ==================== ГЛОБАЛЬНЫЙ ЧАТ (Спринт 11) ==================== */
 #screen-chat.active { display: flex; flex-direction: column; }
@@ -3407,6 +4188,18 @@ html, body {
 .chat-msg.mine .chat-name { color: var(--accent-orange); }
 .chat-time { font-size: 10px; color: var(--text-secondary); flex-shrink: 0; }
 
+/* ---- ПРАВКИ В ТЗ №15: /set_prefix — кастомный визуальный префикс автора ---- */
+.chat-prefix-badge {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #0d0d0f;
+  background: linear-gradient(135deg, var(--accent-orange), #ffcf5c);
+  border-radius: 6px;
+  padding: 1px 6px;
+  flex-shrink: 0;
+}
+
 .chat-text {
   font-size: 14px;
   line-height: 1.4;
@@ -3415,10 +4208,6 @@ html, body {
   white-space: pre-wrap;
 }
 
-.chat-msg.reportable { cursor: pointer; }
-.chat-msg.reportable:active .chat-bubble { transform: scale(0.98); }
-
-/* Системное сообщение авто-ленты дорогих дропов (>100k 💎). */
 .chat-msg.system {
   align-self: center;
   max-width: 92%;
@@ -3436,6 +4225,39 @@ html, body {
   line-height: 1.35;
 }
 
+/* ---- ПРАВКИ В ТЗ №15: /admin_msg — объявление администрации, яркий
+   акцентный стиль + плашка "Администрация", отдельно от обычных
+   системных сообщений (лента дропов и т.п.) выше. ---- */
+.chat-msg.system.admin-announcement {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  max-width: 96%;
+  text-align: center;
+  background: linear-gradient(135deg, rgba(235,75,75,0.16), rgba(255,159,10,0.14));
+  border: 1px solid rgba(235,75,75,0.45);
+  border-radius: 12px;
+  padding: 8px 14px;
+}
+.chat-msg.system.admin-announcement .chat-sys-text {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.chat-admin-badge {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #fff;
+  background: linear-gradient(135deg, #eb4b4b, #ff9f0a);
+  border-radius: 8px;
+  padding: 2px 8px;
+}
+
 .chat-status {
   font-size: 12px;
   color: var(--text-secondary);
@@ -3448,6 +4270,13 @@ html, body {
   border: 1px solid rgba(235,75,75,0.30);
   border-radius: 10px;
   margin-bottom: 8px;
+}
+/* ---- ПРАВКИ В ТЗ №15: /mute_chat — баннер "только чтение" (мягче по
+   цвету, чем блокировка конкретного игрока — это не наказание). ---- */
+.chat-status.chat-readonly-banner {
+  color: var(--accent-orange);
+  background: rgba(255,159,10,0.10);
+  border: 1px solid rgba(255,159,10,0.30);
 }
 
 .chat-inputbar {
@@ -3471,3 +4300,128 @@ html, body {
 .chat-input:disabled { opacity: 0.55; cursor: not-allowed; }
 .chat-send-btn { flex-shrink: 0; margin-top: 0 !important; }
 .chat-send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ==================== ПРАВКИ В ТЗ №3 ==================== */
+
+/* Кнопка ℹ️ "Правила чата" в шапке вкладки */
+.chat-rules-btn {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  width: 32px;
+  height: 32px;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.chat-rules-btn:active { transform: scale(0.94); }
+
+/* Аватар/ник — кликабельная зона, открывающая модалку действий */
+.chat-avatar-trigger { display: inline-flex; cursor: pointer; flex-shrink: 0; }
+.chat-name-trigger { cursor: pointer; }
+.chat-name-trigger:active, .chat-avatar-trigger:active { opacity: 0.75; }
+
+/* Корзина удаления своего сообщения */
+.chat-delete-btn {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 0 0 6px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.chat-delete-btn:active { color: var(--rarity-covert); transform: scale(0.9); }
+
+/* Модалка правил чата — переиспользует .modal-sheet / .daily-title */
+.chat-rules-sheet { max-width: 420px; }
+.chat-rules-body {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  margin-top: 8px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+/* Модалка выбора действия (Посмотреть профиль / Пожаловаться) */
+.chat-action-sheet { max-width: 340px; }
+.chat-action-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+}
+.chat-action-report { color: var(--rarity-covert); }
+
+/* Просмотр Пользовательского соглашения из футера */
+.terms-view-sheet { max-width: 420px; }
+.terms-view-updated {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  margin-top: 6px;
+}
+
+/* ПРАВКИ В ТЗ №5: модалка Промокода (иконка 🎁 в шапке приложения) */
+.promo-modal-sheet { max-width: 380px; text-align: center; padding-top: 34px; }
+.promo-modal-sheet .ref-row { margin-top: 14px; }
+
+/* ПРАВКИ В ТЗ №5: модалка Настроек/Кастомизации профиля (иконка ⚙️ в шапке
+   профиля) — фон профиля / рамка аватарки / цвет ника, в одну колонку. */
+.customize-modal-sheet { max-width: 420px; max-height: 80vh; overflow-y: auto; }
+.customize-section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-color);
+}
+.customize-section:first-of-type { margin-top: 16px; padding-top: 0; border-top: none; }
+.customize-section .pass-cosmetics-card { padding: 0; margin: 10px 0 0; border: none; background: none; }
+
+/* ПРАВКИ В ТЗ №12, п.2: карточка «Превью профиля» в самом верху модалки
+   Настроек — увеличенная копия .profile-card, специально переиспользует её
+   вложенные классы (.profile-avatar-wrap/.profile-avatar/.profile-name/
+   .profile-title-pill), поэтому эффекты рамок (has-frame/frame-glow/
+   frame-animated) и градиент/неон никнейма отрисовываются сами, без
+   отдельных правил — см. updateCustomizePreview*() в app.js/pass.js. */
+.customize-preview-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: linear-gradient(135deg, rgba(248,156,28,0.12), rgba(74,158,255,0.08));
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 16px;
+  margin-top: 16px;
+}
+.customize-preview-card .profile-avatar-wrap,
+.customize-preview-card .profile-avatar,
+.customize-preview-card .profile-avatar-img { width: 68px; height: 68px; font-size: 30px; }
+.customize-preview-card .profile-card-info { gap: 5px; }
+.customize-preview-card .profile-name { font-size: 17px; }
+.customize-preview-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+/* Футер приложения (низ экрана Профиля) — ссылка на соглашение */
+.app-footer {
+  text-align: center;
+  padding: 18px 0 6px;
+}
+.app-footer-link {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 4px;
+}
+.app-footer-link:active { color: var(--accent-blue); }

@@ -188,7 +188,7 @@ async def showcase_add(req: ShowcaseRequest):
         скин, который в любой момент уедет к покупателю);
       - свободен слот — вместимость зависит от уровня аккаунта
         (levels.showcase_slots_for_level: 3 базовых + 1 за каждые 5 уровней,
-        максимум 10).
+        максимум 9).
     """
     async with async_session() as session:
         user = await _get_user(session, req.telegram_id)

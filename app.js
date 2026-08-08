@@ -6,6 +6,12 @@ const tg = window.Telegram?.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
 
 const API_BASE = "https://cs2-app.onrender.com/api";
+// ПРАВКИ В ТЗ №14: базовый URL бэкенда БЕЗ "/api" — используется для
+// share-страницы (GET /share/:id, см. main.py), т.к. она живёт вне
+// префикса /api (это обычная HTML-страница для превью Telegram, а не
+// JSON-эндпоинт).
+const SITE_BASE = API_BASE.replace(/\/api\/?$/, "");
+const APP_DISPLAY_NAME = "CS2 Case Simulator";
 
 // initDataUnsafe используется ТОЛЬКО для мгновенного отображения плейсхолдера
 // (имя/аватар) ещё до ответа сервера — доверять этим данным для авторизации
@@ -24,29 +30,59 @@ const state = {
   vipExpiresAt: null,
   lang: "ru",
   soundEnabled: true,
+  // ПРАВКИ В ТЗ №5: показ всплывающих уведомлений (tg.showAlert/toast) —
+  // отдельно от звука, см. database.py::User.notifications_enabled.
+  notificationsEnabled: true,
   currency: "RUB",
   currencyRates: { RUB: 1, USD: 1 / 90, UAH: 1 / 2.2 }, // фолбэк, перезаписывается из /app-config при старте
   background: "dark",       // Спринт 12: активный фон симулятора, см. BACKGROUND_OPTIONS
   backgroundOptions: [],    // каталог фонов, приходит из /app-config
+  // ПРАВКИ В ТЗ №5: ключи фонов, реально открытых игроком наградой за
+  // ранг (main.py::user.unlocked_backgrounds) — используется в
+  // renderBackgroundPicker(), чтобы показать эксклюзивные фоны как
+  // заблокированные, пока нужный ранг не достигнут.
+  unlockedBackgrounds: [],
   cases: [],
   inventory: [],
   casesOpenedSinceAd: 0,
   adBannerDismissed: false,
   currentCase: null,
   pendingDrop: null,
+  // ПРАВКИ В ТЗ №14: последний предмет, показанный в craft-result-modal /
+  // upgrade-result-modal — нужен, чтобы кнопка "Поделиться" в этих окнах
+  // знала, ЧТО шарить (у самих модалок нет своего "pendingDrop").
+  lastCraftItem: null,
+  lastUpgradeItem: null,
   botUsername: "your_bot_username",
+  giveawaysUrl: null,        // ПРАВКИ В ТЗ №6: ссылка на канал розыгрышей, из /app-config
   adsgramBlockId: null,
   refBonusInviter: 1000,
   refBonusInvited: 1000,
   refCommissionPercent: 0.05, // фолбэк, перезаписывается из /app-config (config.REF_COMMISSION_PERCENT)
   referralsCount: 0,          // сколько друзей приглашено (из профиля)
   refEarningsTotal: 0,        // сколько 💎 пассивно получено с активности рефералов (из профиля)
+  // ПРАВКИ В ТЗ №7 (валюты и значки): диапазон награды за рекламу и сумма
+  // минутного бонуса — фолбэки, перезаписываются из /app-config при
+  // старте. Нужны на фронте, чтобы тексты карточек "Заработать"
+  // (earn_ad_desc / bonus_btn) пересчитывались под текущую выбранную
+  // валюту (₽/$/₴), а не были захардкожены в i18n-словаре.
+  adRewardMin: 1000,
+  adRewardMax: 10000,
+  bonusRewardAmount: 5000,
   vipPriceStars: 25,
   openCount: 1,
   openSpeed: "slow",
   lastMultiDrops: [],
   selectedInventoryIds: new Set(),
-  inventorySortDir: "desc", // сортировка инвентаря по цене: desc (дорогие сначала) | asc (дешёвые сначала)
+  inventorySortDir: "desc", // сортировка инвентаря по цене: desc (дорогие сначала) | asc (дешёвые сначала) — оставлено для обратной совместимости, реальный режим сортировки теперь в inventorySortMode
+  // ПРАВКИ В ТЗ №9, п.2: расширенная сортировка/фильтрация инвентаря.
+  // inventorySortMode — единый режим сортировки (цена/дата/редкость),
+  // выбирается дропдауном; по умолчанию, как и требует ТЗ, первыми идут
+  // самые дорогие предметы ("price_desc").
+  inventorySortMode: "price_desc",
+  // inventoryRarityFilter — "all" либо конкретная редкость из RARITY_ORDER_JS,
+  // либо "KnifeGloves" (общий фильтр "Ножи/Перчатки", как просит ТЗ).
+  inventoryRarityFilter: "all",
   dailyStatus: null,
   lastProfile: null, // последний полный профиль с бэкенда — для перерисовки при смене валюты без лишнего запроса
   // ---- Ежедневное колесо удачи (Спринт 6) ----
@@ -82,7 +118,9 @@ const I18N = {
     profile_title: "Профиль", stat_cases: "Открыто кейсов",
     stat_ref_count: "Приглашено друзей", stat_ref_earnings: "Начислено пассивно",
     stat_inv_value: "Стоимость инвентаря", stat_favorite: "Любимый кейс",
-    stat_top_drop: "🏆 Топ дроп", top_drop_empty: "Пока нет ни одного дропа — открой первый кейс!", settings_title: "⚙️ Настройки",
+    stat_top_drop: "🏆 Топ дроп", top_drop_empty: "Пока нет ни одного дропа — открой первый кейс!",
+    profile_stats_title: "📊 Статистика", stat_profit: "Общий профит", stat_minigames: "Статистика мини-игр",
+    minigames_rounds_played: "раундов сыграно", minigames_no_data: "ещё не играл", settings_title: "⚙️ Настройки",
     craft_open_btn: "Крафт", craft_title: "🔧 Крафт", craft_progress_sub: "выбрано",
     craft_rarity_hint: "Выбери 5 предметов ОДНОЙ редкости из инвентаря",
     craft_source_title: "1. Исходные предметы (инвентарь)",
@@ -93,7 +131,11 @@ const I18N = {
     craft_max_rarity: "Эта редкость уже максимальная — крафтить дальше некуда",
     craft_success: "Готово! Новый предмет уже в инвентаре",
     craft_not_enough_balance: "Не хватает 💎 на оплату рецепта",
-    settings_lang: "🌐 Язык", settings_sound: "🔊 Звук", settings_currency: "💱 Валюта", settings_background: "🖼️ Фон симулятора",
+    settings_lang: "🌐 Язык", settings_sound: "🔊 Звук", settings_currency: "💱 Валюта", settings_background: "🖼️ Фон профиля",
+    settings_notifications: "🔔 Уведомления", bg_locked_hint: "🔒 Этот фон открывается наградой за ранг — заработай нужный ранг",
+    rankup_secret_skin_label: "🔪 Секретный скин!", rankup_new_frame_label: "🖼️ Новая рамка: {name}",
+    rankup_new_background_label: "🎨 Новый фон профиля: {name}", levelup_milestone_crystals: "💎 Награда за уровень: +{crystals}",
+    customize_title: "⚙️ Настройки профиля", customize_preview_label: "👁️ Превью профиля", customize_pass_frames: "🎖️ Рамки Battle Pass", customize_nick_color: "🎨 Цвет никнейма",
     sound_on: "Вкл", sound_off: "Выкл",
     ref_title: "👥 Реферальная ссылка", copy_btn: "Копировать",
     promo_title: "🎁 Промокод", promo_placeholder: "Введите промокод",
@@ -114,17 +156,30 @@ const I18N = {
     upgrade_pick_target_first: "Укажи цель апгрейда",
     bet_label: "Ставка (💎)", cashout_label: "Забрать на", play_btn: "Играть",
     earn_title: "Заработать", earn_ad_title: "Посмотреть видео",
-    earn_ad_desc: "Получи +2000 💎 виртуального баланса", watch_btn: "Смотреть",
+    earn_ad_desc: "Получи от {min} до {max} {icon} виртуального баланса", watch_btn: "Смотреть",
     earn_giveaway_title: "Розыгрыши", earn_giveaway_desc: "Участвуй и выигрывай редкие скины",
     earn_vip_title: "VIP-статус", earn_vip_desc: "Без рекламы + косметические бонусы",
+    earn_vip_perk_ads: "🚫 Никакой рекламы", earn_vip_perk_wheel: "🎡 Больше золота с Колеса удачи",
+    earn_vip_perk_cosmetics: "🖼️ Эксклюзивные фоны и косметика",
     buy_btn: "Купить", tab_cases: "Кейсы", tab_inventory: "Инвентарь",
     tab_profile: "Профиль", tab_minigames: "Мини-игры", tab_earn: "Заработать", tab_chat: "Чат",
     chat_title: "Глобальный чат", chat_input_ph: "Написать сообщение…", chat_send: "Отправить",
     chat_empty: "Сообщений пока нет. Будь первым!", chat_report: "Пожаловаться",
     chat_report_done: "Жалоба отправлена", chat_muted: "Вы в муте и не можете писать",
     chat_banned: "Вы заблокированы в чате", chat_you: "Вы",
+    chat_delete: "Удалить", chat_delete_confirm: "Удалить сообщение?",
+    chat_admin_badge: "Администрация", chat_locked_readonly: "🔒 Чат временно закрыт администрацией (только чтение)",
+    chat_rules_title: "📜 Правила чата", chat_action_title: "Действие",
+    chat_view_profile: "👤 Посмотреть профиль",
+    footer_terms_link: "📄 Пользовательское соглашение",
+    terms_last_updated_label: "Последнее обновление:",
     open_case_btn: "Открыть кейс", contents_title: "📋 Содержимое кейса",
     win_title: "🎉 Выпало!", keep_btn: "В коллекцию", sell_btn: "Продать", open_again_btn: "Открыть ещё",
+    // ПРАВКИ В ТЗ №14: кнопка "Поделиться" и шаблон текста поста.
+    share_btn: "Поделиться", share_sent_toast: "Готово! Выбери, куда отправить пост.",
+    share_category_knife: "нож", share_category_gloves: "перчатки",
+    share_category_skin: "скин", share_category_sticker: "наклейка",
+    share_text_template: "Дарова! Вот мне в {app} выпал вот такой {category}! Если хочешь испытать такие же эмоции, то заходи в этот симулятор!",
     insufficient_balance: "Недостаточно Кристалликов 💎. Посмотри рекламу на вкладке «Заработать»!",
     link_copied: "Ссылка скопирована!", sell_label: "Продать",
     upgrade_success: "🎉 Успех! Новая цена:", upgrade_fail: "💥 Неудача. Предмет сгорел.",
@@ -140,10 +195,33 @@ const I18N = {
     select_all_label: "Выделить все", disintegrate_btn: "Продать выбранное",
     sort_expensive_first: "Сначала дорогие", sort_cheap_first: "Сначала дешёвые",
     disintegrate_success: "Предметы проданы!", nothing_selected: "Выбери хотя бы один предмет",
+    // ПРАВКИ В ТЗ №9: подтверждения продажи + сортировка/фильтр инвентаря
+    sell_showcase_confirm_title: "Скин на витрине",
+    sell_showcase_confirm_text: "Этот скин находится на витрине. Снять с витрины и продать?",
+    sell_rare_confirm_title: "Продажа редкого скина",
+    sell_rare_confirm_checkbox: "Я уверен, что хочу продать этот редкий скин",
+    sell_rare_confirm_btn: "Подтвердить продажу",
+    confirm_yes_btn: "Да", confirm_cancel_btn: "Отмена",
+    inventory_filter_all: "Все категории",
+    inventory_filter_knifegloves: "★ Ножи/Перчатки",
+    sort_group_price: "Цена", sort_group_date: "Дата получения", sort_group_rarity: "Редкость",
+    sort_date_new_first: "Сначала новые", sort_date_old_first: "Сначала старые",
+    sort_rarity_rare_first: "Сначала редкие", sort_rarity_common_first: "Сначала обычные",
+    inventory_filter_empty: "Нет предметов в этой категории",
+    bulk_sell_open_btn: "Продать дешевле…",
+    bulk_sell_title: "💰 Продать дешевле суммы",
+    bulk_sell_price_label: "Максимальная цена (💎)",
+    bulk_sell_protect_label: "Не трогать витрину и редкие ножи/перчатки",
+    bulk_sell_preview_empty: "Введи сумму, чтобы увидеть подборку",
+    bulk_sell_preview_none: "Под эту сумму ничего не подходит",
+    bulk_sell_preview_count: "Выбрано {count} скинов на сумму {total}",
+    bulk_sell_confirm_btn: "Продать всё",
+    bulk_sell_confirm_question: "Продать {count} скинов на сумму {total}?",
+    bulk_sell_success: "Продано {count} скинов на сумму {total}!",
     open_case_for_btn: "Открыть за",
-    games_hub_hint: "Выбери игру", game_rocket: "Ракета", game_upgrader: "Улучшитель",
+    games_hub_hint: "Выбери игру", game_rocket: "Ракета", game_upgrader: "Улучшитель/Синтезатор",
     game_wheel: "Колесо", game_miner: "Минёр", game_tower: "Башня", game_ladder: "Лесенка",
-    bonus_btn: "Бонус 💎 2000", bonus_claimed_toast: "начислено бонусом!",
+    bonus_btn: "Бонус {icon} {amount}", bonus_claimed_toast: "начислено бонусом!",
     bonus_wait_prefix: "Бонус через", mines_count_label: "Количество мин",
     cashout_btn: "Забрать", bust_msg: "💥 Бум! Раунд окончен.", cleared_msg: "🎉 Все безопасные клетки открыты!",
     level_label: "Уровень", pick_tile_hint: "Выбери плитку, чтобы продвинуться дальше",
@@ -157,7 +235,7 @@ const I18N = {
     droprate_chance_label: "Точный шанс выпадения", droprate_price_label: "Примерная стоимость",
     ok_btn: "Отлично!",
     daily_title: "🎁 Ежедневный бонус", daily_earn_title: "Ежедневный бонус",
-    daily_earn_desc: "Заходи каждый день — награды растут до 7 дня!",
+    daily_earn_desc: "Заходи каждый день — награды растут до 30 дня!",
     daily_claim_btn: "Забрать награду", daily_claimed_btn: "Уже забрано сегодня",
     daily_hint: "Заходи каждый день, чтобы не потерять серию! Пропустишь день — серия сбросится.",
     daily_streak_label: "Серия: {n} дн. подряд", daily_day_label: "День {n}",
@@ -167,8 +245,10 @@ const I18N = {
     daily_mega_hint: "Ещё {n} дн. подряд — и получишь мега-бонус +{gold} 💰",
     daily_mega_bonus_toast: "🔥 Мега-бонус за 30 дней подряд!",
     daily_already_claimed_toast: "Ежедневный бонус уже получен сегодня. Возвращайся завтра!",
+    daily_next_in: "Следующая награда через",
     tasks_earn_title: "Задания", tasks_earn_desc: "Подписки и рефералы — бесплатное 💰 Золото",
     tasks_title: "✅ Задания",
+    new_badge: "NEW",
     task_open_btn: "Перейти", task_check_btn: "Проверить", task_done_btn: "Выполнено ✓",
     task_completed_toast: "Задание выполнено! +{gold} 💰 Золота",
     task_not_verified_toast: "Условие ещё не выполнено — попробуй ещё раз чуть позже",
@@ -193,16 +273,21 @@ const I18N = {
     crafter_pick_target_first: "Выбери целевой предмет из каталога",
     crafter_catalog_empty: "Ничег�� не найдено",
     crafter_catalog_hint: "Найди целевой предмет по названию или диапазону цен",
+    crafter_target_too_cheap: "Целевой предмет должен быть дороже твоей ставки — выбери более дорогую цель",
     wheel_earn_title: "Колесо удачи", wheel_earn_desc: "Крути раз в день бесплатно — или за 💰 Золото",
     wheel_title: "🎡 Колесо удачи", wheel_spin_btn: "Крутить", wheel_spinning: "Крутится…",
     wheel_free_hint: "Бесплатный спин доступен!", wheel_free_in: "Бесплатный спин через",
     wheel_paid_hint: "Платный спин — 💰 5 Золота", wheel_paid_left: "Осталось платных спинов сегодня",
     wheel_no_spins_left: "Спины на сегодня закончились",
     wheel_no_gold: "Не хватает 💰 Золота для платного спина",
+    wheel_open_for_gold_btn: "Открыть за {cost} 💰",
     wheel_result_title: "🎉 Приз колеса!", wheel_ok_btn: "Отлично!",
     wheel_sector_crystals: "Кристаллы", wheel_sector_gold: "Золото",
     wheel_sector_vip: "VIP-статус на 3 часа", wheel_sector_case: "Кейс «Revolution»",
     gold_label: "Золото",
+    referrals_open_btn: "👥 Мои рефералы", referrals_title: "👥 Мои рефералы",
+    referrals_total_label: "Всего получено пассивно: {amount}",
+    referrals_empty: "Пока нет друзей, приносящих доход — поделись реферальной ссылкой!",
     // ---- Спринт 10: уровень, титулы/рамки, витрина, друзья ----
     level_label: "Уровень аккаунта", level_short: "ур.",
     level_max_line: "{xp} XP · Максимальный уровень",
@@ -213,7 +298,7 @@ const I18N = {
     levelup_slot_gained: "🏅 +1 слот Витрины! Теперь их {slots}",
     showcase_title: "🏅 Витрина лучших скинов",
     showcase_hint: "Закрепи лучшие скины из инвентаря. +1 слот на {level} уровне.",
-    showcase_hint_max: "Все слоты витрины открыты — максимум 10.",
+    showcase_hint_max: "Все слоты витрины открыты — максимум 9.",
     showcase_add: "В витрину", showcase_remove: "Убрать из витрины",
     showcase_empty_friend: "Витрина пуста",
     titles_label: "🎖️ Титул", frames_label: "🖼️ Рамка аватара",
@@ -245,7 +330,9 @@ const I18N = {
     profile_title: "Profile", stat_cases: "Cases opened",
     stat_ref_count: "Friends invited", stat_ref_earnings: "Earned passively",
     stat_inv_value: "Inventory value", stat_favorite: "Favorite case",
-    stat_top_drop: "🏆 Top drop", top_drop_empty: "No drops yet — open your first case!", settings_title: "⚙️ Settings",
+    stat_top_drop: "🏆 Top drop", top_drop_empty: "No drops yet — open your first case!",
+    profile_stats_title: "📊 Stats", stat_profit: "Total profit", stat_minigames: "Mini-games stats",
+    minigames_rounds_played: "rounds played", minigames_no_data: "no games yet", settings_title: "⚙️ Settings",
     craft_open_btn: "Craft", craft_title: "🔧 Craft", craft_progress_sub: "selected",
     craft_rarity_hint: "Pick 5 items of the SAME rarity from your inventory",
     craft_source_title: "1. Source items (inventory)",
@@ -256,7 +343,11 @@ const I18N = {
     craft_max_rarity: "This rarity is already the highest — nothing to craft up to",
     craft_success: "Done! New item is in your inventory",
     craft_not_enough_balance: "Not enough 💎 to pay the recipe fee",
-    settings_lang: "🌐 Language", settings_sound: "🔊 Sound", settings_currency: "💱 Currency", settings_background: "🖼️ Simulator background",
+    settings_lang: "🌐 Language", settings_sound: "🔊 Sound", settings_currency: "💱 Currency", settings_background: "🖼️ Profile background",
+    settings_notifications: "🔔 Notifications", bg_locked_hint: "🔒 This background is unlocked by a rank reward — reach the required rank first",
+    rankup_secret_skin_label: "🔪 Secret skin!", rankup_new_frame_label: "🖼️ New frame: {name}",
+    rankup_new_background_label: "🎨 New profile background: {name}", levelup_milestone_crystals: "💎 Level reward: +{crystals}",
+    customize_title: "⚙️ Profile settings", customize_preview_label: "👁️ Profile preview", customize_pass_frames: "🎖️ Battle Pass frames", customize_nick_color: "🎨 Nickname color",
     sound_on: "On", sound_off: "Off",
     ref_title: "👥 Referral link", copy_btn: "Copy",
     promo_title: "🎁 Promo code", promo_placeholder: "Enter promo code",
@@ -277,17 +368,30 @@ const I18N = {
     upgrade_pick_target_first: "Set an upgrade target",
     bet_label: "Bet (💎)", cashout_label: "Cash out at", play_btn: "Play",
     earn_title: "Earn", earn_ad_title: "Watch a video",
-    earn_ad_desc: "Get +2000 �� virtual balance", watch_btn: "Watch",
+    earn_ad_desc: "Get {min} to {max} {icon} virtual balance", watch_btn: "Watch",
     earn_giveaway_title: "Giveaways", earn_giveaway_desc: "Join and win rare skins",
     earn_vip_title: "VIP status", earn_vip_desc: "No ads + cosmetic perks",
+    earn_vip_perk_ads: "🚫 No ads", earn_vip_perk_wheel: "🎡 More gold from the Wheel of Fortune",
+    earn_vip_perk_cosmetics: "🖼️ Exclusive backgrounds and cosmetics",
     buy_btn: "Buy", tab_cases: "Cases", tab_inventory: "Inventory",
     tab_profile: "Profile", tab_minigames: "Games", tab_earn: "Earn", tab_chat: "Chat",
     chat_title: "Global chat", chat_input_ph: "Type a message…", chat_send: "Send",
     chat_empty: "No messages yet. Be the first!", chat_report: "Report",
     chat_report_done: "Report sent", chat_muted: "You are muted and can't post",
     chat_banned: "You are banned from the chat", chat_you: "You",
+    chat_delete: "Delete", chat_delete_confirm: "Delete this message?",
+    chat_admin_badge: "Admin", chat_locked_readonly: "🔒 Chat is temporarily read-only (admin lock)",
+    chat_rules_title: "📜 Chat rules", chat_action_title: "Action",
+    chat_view_profile: "👤 View profile",
+    footer_terms_link: "📄 User Agreement",
+    terms_last_updated_label: "Last updated:",
     open_case_btn: "Open case", contents_title: "📋 Case contents",
     win_title: "🎉 You got!", keep_btn: "To collection", sell_btn: "Sell", open_again_btn: "Open again",
+    // ПРАВКИ В ТЗ №14: share button + post text template.
+    share_btn: "Share", share_sent_toast: "Done! Pick where to send the post.",
+    share_category_knife: "knife", share_category_gloves: "gloves",
+    share_category_skin: "skin", share_category_sticker: "sticker",
+    share_text_template: "Hey! I just got this {category} in {app}! Want the same rush? Come check out this simulator!",
     insufficient_balance: "Not enough 💎 Crystals. Watch an ad on the Earn tab!",
     link_copied: "Link copied!", sell_label: "Sell",
     upgrade_success: "🎉 Success! New price:", upgrade_fail: "💥 Failed. The item is gone.",
@@ -298,15 +402,37 @@ const I18N = {
     back_btn: "Back", open_count_label: "Number of openings", open_speed_label: "Speed mode",
     speed_slow: "Slow", speed_fast: "Fast", sell_all_btn: "Sell all",
     sell_all_for_btn: "Sell all for", keep_all_btn: "Keep all in inventory",
+    sell_showcase_confirm_title: "Item on showcase",
+    sell_showcase_confirm_text: "This skin is on your profile showcase. Remove it and sell?",
+    sell_rare_confirm_title: "Selling a rare skin",
+    sell_rare_confirm_checkbox: "I'm sure I want to sell this rare skin",
+    sell_rare_confirm_btn: "Confirm sale",
+    confirm_yes_btn: "Yes", confirm_cancel_btn: "Cancel",
+    inventory_filter_all: "All categories",
+    inventory_filter_knifegloves: "★ Knives/Gloves",
+    sort_group_price: "Price", sort_group_date: "Date obtained", sort_group_rarity: "Rarity",
+    sort_date_new_first: "Newest first", sort_date_old_first: "Oldest first",
+    sort_rarity_rare_first: "Rarest first", sort_rarity_common_first: "Common first",
+    inventory_filter_empty: "No items in this category",
+    bulk_sell_open_btn: "Sell below…",
+    bulk_sell_title: "💰 Sell below a price",
+    bulk_sell_price_label: "Maximum price (💎)",
+    bulk_sell_protect_label: "Keep showcase items and rare knives/gloves safe",
+    bulk_sell_preview_empty: "Enter an amount to see the selection",
+    bulk_sell_preview_none: "Nothing matches this amount",
+    bulk_sell_preview_count: "{count} skins selected worth {total}",
+    bulk_sell_confirm_btn: "Sell all",
+    bulk_sell_confirm_question: "Sell {count} skins worth {total}?",
+    bulk_sell_success: "Sold {count} skins worth {total}!",
     sell_for_btn: "Sell for", sold_label: "Sold",
     multi_results_total_label: "Items received worth:",
     select_all_label: "Select all", disintegrate_btn: "Sell selected",
     sort_expensive_first: "Highest price", sort_cheap_first: "Lowest price",
     disintegrate_success: "Items sold!", nothing_selected: "Select at least one item",
     open_case_for_btn: "Open for",
-    games_hub_hint: "Pick a game", game_rocket: "Rocket", game_upgrader: "Upgrader",
+    games_hub_hint: "Pick a game", game_rocket: "Rocket", game_upgrader: "Upgrader/Synthesizer",
     game_wheel: "Wheel", game_miner: "Miner", game_tower: "Tower", game_ladder: "Ladder",
-    bonus_btn: "Bonus 💎 2000", bonus_claimed_toast: "credited as a bonus!",
+    bonus_btn: "Bonus {icon} {amount}", bonus_claimed_toast: "credited as a bonus!",
     bonus_wait_prefix: "Bonus in", mines_count_label: "Number of mines",
     cashout_btn: "Cash out", bust_msg: "💥 Boom! Round over.", cleared_msg: "🎉 All safe tiles revealed!",
     level_label: "Level", pick_tile_hint: "Pick a tile to move forward",
@@ -320,7 +446,7 @@ const I18N = {
     droprate_chance_label: "Exact drop chance", droprate_price_label: "Approx. value",
     ok_btn: "Awesome!",
     daily_title: "🎁 Daily bonus", daily_earn_title: "Daily bonus",
-    daily_earn_desc: "Log in every day — rewards grow up to day 7!",
+    daily_earn_desc: "Log in every day — rewards grow up to day 30!",
     daily_claim_btn: "Claim reward", daily_claimed_btn: "Already claimed today",
     daily_hint: "Come back every day to keep your streak! Miss a day and it resets.",
     daily_streak_label: "Streak: {n} days in a row", daily_day_label: "Day {n}",
@@ -330,8 +456,10 @@ const I18N = {
     daily_mega_hint: "{n} more days in a row for a mega bonus of +{gold} 💰",
     daily_mega_bonus_toast: "🔥 30-day streak mega bonus!",
     daily_already_claimed_toast: "Daily bonus already claimed today. Come back tomorrow!",
+    daily_next_in: "Next reward in",
     tasks_earn_title: "Tasks", tasks_earn_desc: "Subscriptions and referrals — free 💰 Gold",
     tasks_title: "✅ Tasks",
+    new_badge: "NEW",
     task_open_btn: "Open", task_check_btn: "Check", task_done_btn: "Done ✓",
     task_completed_toast: "Task completed! +{gold} 💰 Gold",
     task_not_verified_toast: "Not completed yet — try again in a moment",
@@ -356,16 +484,21 @@ const I18N = {
     crafter_pick_target_first: "Pick a target item from the catalog",
     crafter_catalog_empty: "Nothing found",
     crafter_catalog_hint: "Find a target item by name or price range",
+    crafter_target_too_cheap: "The target item must be worth more than your stake — pick a pricier target",
     wheel_earn_title: "Wheel of Luck", wheel_earn_desc: "Spin free once a day — or pay 💰 Gold",
     wheel_title: "🎡 Wheel of Luck", wheel_spin_btn: "Spin", wheel_spinning: "Spinning…",
     wheel_free_hint: "Free spin available!", wheel_free_in: "Free spin in",
     wheel_paid_hint: "Paid spin — 💰 5 Gold", wheel_paid_left: "Paid spins left today",
     wheel_no_spins_left: "No spins left for today",
     wheel_no_gold: "Not enough 💰 Gold for a paid spin",
+    wheel_open_for_gold_btn: "Open for {cost} 💰",
     wheel_result_title: "🎉 Wheel prize!", wheel_ok_btn: "Awesome!",
     wheel_sector_crystals: "Crystals", wheel_sector_gold: "Gold",
     wheel_sector_vip: "VIP status for 3 hours", wheel_sector_case: "\"Revolution\" case",
     gold_label: "Gold",
+    referrals_open_btn: "👥 My Referrals", referrals_title: "👥 My Referrals",
+    referrals_total_label: "Total passive earnings: {amount}",
+    referrals_empty: "No income-generating friends yet — share your referral link!",
     // ---- Sprint 10: level, titles/frames, showcase, friends ----
     level_label: "Account level", level_short: "lvl",
     level_max_line: "{xp} XP · Max level",
@@ -376,7 +509,7 @@ const I18N = {
     levelup_slot_gained: "🏅 +1 Showcase slot! Now {slots}",
     showcase_title: "🏅 Best skins showcase",
     showcase_hint: "Pin your best skins from inventory. +1 slot at level {level}.",
-    showcase_hint_max: "All showcase slots unlocked — 10 max.",
+    showcase_hint_max: "All showcase slots unlocked — 9 max.",
     showcase_add: "Add to showcase", showcase_remove: "Remove from showcase",
     showcase_empty_friend: "Showcase is empty",
     titles_label: "🎖️ Title", frames_label: "🖼️ Avatar frame",
@@ -408,7 +541,9 @@ const I18N = {
     profile_title: "Профіль", stat_cases: "Відкрито кейсів",
     stat_ref_count: "Запрошено друзів", stat_ref_earnings: "Нараховано пасивно",
     stat_inv_value: "Вартість інвентаря", stat_favorite: "Улюблений кейс",
-    stat_top_drop: "🏆 Топ дроп", top_drop_empty: "Ще немає жодного дропу — відкрий перший кейс!", settings_title: "⚙️ Налаштування",
+    stat_top_drop: "🏆 Топ дроп", top_drop_empty: "Ще немає жодного дропу — відкрий перший кейс!",
+    profile_stats_title: "📊 Статистика", stat_profit: "Загальний прибуток", stat_minigames: "Статистика міні-ігор",
+    minigames_rounds_played: "раундів зіграно", minigames_no_data: "ще не грав", settings_title: "⚙️ Налаштування",
     craft_open_btn: "Крафт", craft_title: "🔧 Крафт", craft_progress_sub: "вибрано",
     craft_rarity_hint: "Обери 5 предметів ОДНІЄЇ рідкості з інвентаря",
     craft_source_title: "1. Вихідні предмети (інвентар)",
@@ -419,7 +554,11 @@ const I18N = {
     craft_max_rarity: "Ця рідкість вже максимальна — крафтити далі нікуди",
     craft_success: "Готово! Новий предмет вже в інвентарі",
     craft_not_enough_balance: "Не вистачає 💎 на оплату рецепта",
-    settings_lang: "🌐 Мова", settings_sound: "🔊 Звук", settings_currency: "💱 Валюта", settings_background: "🖼️ Фон симулятора",
+    settings_lang: "🌐 Мова", settings_sound: "🔊 Звук", settings_currency: "💱 Валюта", settings_background: "🖼️ Фон профілю",
+    settings_notifications: "🔔 Сповіщення", bg_locked_hint: "🔒 Цей фон відкривається нагородою за ранг — заробі потрібний ранг",
+    rankup_secret_skin_label: "🔪 Секретний скін!", rankup_new_frame_label: "🖼️ Нова рамка: {name}",
+    rankup_new_background_label: "🎨 Новий фон профілю: {name}", levelup_milestone_crystals: "💎 Нагорода за рівень: +{crystals}",
+    customize_title: "⚙️ Налаштування профілю", customize_preview_label: "👁️ Превʼю профілю", customize_pass_frames: "🎖️ Рамки Battle Pass", customize_nick_color: "🎨 Колір нікнейму",
     sound_on: "Увім.", sound_off: "Вимк.",
     ref_title: "👥 Реферальне посилання", copy_btn: "Копіювати",
     promo_title: "🎁 Промокод", promo_placeholder: "Введіть промокод",
@@ -440,17 +579,30 @@ const I18N = {
     upgrade_pick_target_first: "Вкажи ціль апгрейду",
     bet_label: "Ставка (💎)", cashout_label: "Забрати на", play_btn: "Грати",
     earn_title: "Заробити", earn_ad_title: "Переглянути відео",
-    earn_ad_desc: "Отримай +2000 💎 віртуального балансу", watch_btn: "Дивитись",
+    earn_ad_desc: "Отримай від {min} до {max} {icon} віртуального балансу", watch_btn: "Дивитись",
     earn_giveaway_title: "Розіграші", earn_giveaway_desc: "Бери участь і вигравай рідкісні скіни",
     earn_vip_title: "VIP-статус", earn_vip_desc: "Без реклами + косметичні бонуси",
+    earn_vip_perk_ads: "🚫 Жодної реклами", earn_vip_perk_wheel: "🎡 Більше золота з Колеса удачі",
+    earn_vip_perk_cosmetics: "🖼️ Ексклюзивні фони та косметика",
     buy_btn: "Купити", tab_cases: "Кейси", tab_inventory: "Інвентар",
     tab_profile: "Профіль", tab_minigames: "Міні-ігри", tab_earn: "Заробити", tab_chat: "Чат",
     chat_title: "Глобальний чат", chat_input_ph: "Написати повідомлення…", chat_send: "Надіслати",
     chat_empty: "Повідомлень ще немає. Будь першим!", chat_report: "Поскаржитися",
     chat_report_done: "Скаргу надіслано", chat_muted: "Ви в муті й не можете писати",
     chat_banned: "Вас заблоковано в чаті", chat_you: "Ви",
+    chat_delete: "Видалити", chat_delete_confirm: "Видалити повідомлення?",
+    chat_admin_badge: "Адміністрація", chat_locked_readonly: "🔒 Чат тимчасово закрито адміністрацією (лише читання)",
+    chat_rules_title: "📜 Правила чату", chat_action_title: "Дія",
+    chat_view_profile: "👤 Переглянути профіль",
+    footer_terms_link: "📄 Користувацька угода",
+    terms_last_updated_label: "Останнє оновлення:",
     open_case_btn: "Відкрити кейс", contents_title: "📋 Вміст кейса",
     win_title: "🎉 Випало!", keep_btn: "У колекцію", sell_btn: "Продати", open_again_btn: "Відкрити ще",
+    // ПРАВКИ В ТЗ №14: кнопка "Поділитися" і шаблон тексту поста.
+    share_btn: "Поділитися", share_sent_toast: "Готово! Обери, куди надіслати пост.",
+    share_category_knife: "ніж", share_category_gloves: "рукавички",
+    share_category_skin: "скін", share_category_sticker: "наклейка",
+    share_text_template: "Дарова! Ось мені в {app} випав ось такий {category}! Якщо хочеш відчути такі ж емоції, заходь у цей симулятор!",
     insufficient_balance: "Недостатньо Кристаликів 💎. Подивись рекламу на вкладці «Заробити»!",
     link_copied: "Посилання скопійовано!", sell_label: "Продати",
     upgrade_success: "🎉 Успіх! Нова ціна:", upgrade_fail: "💥 Невдача. Предмет згорів.",
@@ -461,15 +613,37 @@ const I18N = {
     back_btn: "Назад", open_count_label: "Кількість відкриттів", open_speed_label: "Режим швидкості",
     speed_slow: "Повільно", speed_fast: "Швидко", sell_all_btn: "Продати все",
     sell_all_for_btn: "Продати все за", keep_all_btn: "Забрати все в інвентар",
+    sell_showcase_confirm_title: "Скін на вітрині",
+    sell_showcase_confirm_text: "Цей скін знаходиться на вітрині. Зняти з вітрини і продати?",
+    sell_rare_confirm_title: "Продаж рідкісного скіна",
+    sell_rare_confirm_checkbox: "Я впевнений, що хочу продати цей рідкісний скін",
+    sell_rare_confirm_btn: "Підтвердити продаж",
+    confirm_yes_btn: "Так", confirm_cancel_btn: "Скасувати",
+    inventory_filter_all: "Усі категорії",
+    inventory_filter_knifegloves: "★ Ножі/Рукавички",
+    sort_group_price: "Ціна", sort_group_date: "Дата отримання", sort_group_rarity: "Рідкість",
+    sort_date_new_first: "Спочатку нові", sort_date_old_first: "Спочатку старі",
+    sort_rarity_rare_first: "Спочатку рідкісні", sort_rarity_common_first: "Спочатку звичайні",
+    inventory_filter_empty: "Немає предметів у цій категорії",
+    bulk_sell_open_btn: "Продати дешевше…",
+    bulk_sell_title: "💰 Продати дешевше суми",
+    bulk_sell_price_label: "Максимальна ціна (💎)",
+    bulk_sell_protect_label: "Не чіпати вітрину і рідкісні ножі/рукавички",
+    bulk_sell_preview_empty: "Введи суму, щоб побачити добірку",
+    bulk_sell_preview_none: "Під цю суму нічого не підходить",
+    bulk_sell_preview_count: "Обрано {count} скінів на суму {total}",
+    bulk_sell_confirm_btn: "Продати все",
+    bulk_sell_confirm_question: "Продати {count} скінів на суму {total}?",
+    bulk_sell_success: "Продано {count} скінів на суму {total}!",
     sell_for_btn: "Продати за", sold_label: "Продано",
     multi_results_total_label: "Отримано предметів на суму:",
     select_all_label: "Виділити все", disintegrate_btn: "Продати вибране",
     sort_expensive_first: "Спочатку дорогі", sort_cheap_first: "Спочатку дешеві",
     disintegrate_success: "Предмети продано!", nothing_selected: "Обери хоча б один предмет",
     open_case_for_btn: "Відкрити за",
-    games_hub_hint: "Обери гру", game_rocket: "Ракета", game_upgrader: "Покращувач",
+    games_hub_hint: "Обери гру", game_rocket: "Ракета", game_upgrader: "Покращувач/Синтезатор",
     game_wheel: "Колесо", game_miner: "Мінер", game_tower: "Вежа", game_ladder: "Драбинка",
-    bonus_btn: "Бонус 💎 2000", bonus_claimed_toast: "нараховано бонусом!",
+    bonus_btn: "Бонус {icon} {amount}", bonus_claimed_toast: "нараховано бонусом!",
     bonus_wait_prefix: "Бонус через", mines_count_label: "Кількість мін",
     cashout_btn: "Забрати", bust_msg: "💥 Бум! Раунд завершено.", cleared_msg: "🎉 Усі безпечні клітинки відкрито!",
     level_label: "Рівень", pick_tile_hint: "Обери плитку, щоб просунутись далі",
@@ -483,7 +657,7 @@ const I18N = {
     droprate_chance_label: "Точний шанс випадіння", droprate_price_label: "Приблизна вартість",
     ok_btn: "Чудово!",
     daily_title: "🎁 Щоденний бонус", daily_earn_title: "Щоденний бонус",
-    daily_earn_desc: "Заходь щодня — нагороди зростають до 7 дня!",
+    daily_earn_desc: "Заходь щодня — нагороди зростають до 30 дня!",
     daily_claim_btn: "Забрати нагороду", daily_claimed_btn: "Вже забрано сьогодні",
     daily_hint: "Заходь щодня, щоб не втратити серію! Пропустиш день — серія скинеться.",
     daily_streak_label: "Серія: {n} дн. поспіль", daily_day_label: "День {n}",
@@ -493,8 +667,10 @@ const I18N = {
     daily_mega_hint: "Ще {n} дн. поспіль — і отримаєш мега-бонус +{gold} 💰",
     daily_mega_bonus_toast: "🔥 Мега-бонус за 30 днів поспіль!",
     daily_already_claimed_toast: "Щоденний бонус уже отримано сьогодні. Повертайся завтра!",
+    daily_next_in: "Наступна нагорода через",
     tasks_earn_title: "Завдання", tasks_earn_desc: "Підписки та реферали — безкоштовне 💰 Золото",
     tasks_title: "✅ Завдання",
+    new_badge: "NEW",
     task_open_btn: "Перейти", task_check_btn: "Перевірити", task_done_btn: "Виконано ✓",
     task_completed_toast: "Завдання виконано! +{gold} 💰 Золота",
     task_not_verified_toast: "Умову ще не виконано — спробуй ще раз трохи пізніше",
@@ -519,16 +695,21 @@ const I18N = {
     crafter_pick_target_first: "Обери цільовий предмет із каталогу",
     crafter_catalog_empty: "Нічого не знайдено",
     crafter_catalog_hint: "Знайди цільовий предмет за назвою або діапазоном цін",
+    crafter_target_too_cheap: "Цільовий предмет має бути дорожчим за твою ставку — обери дорожчу ціль",
     wheel_earn_title: "Колесо удачі", wheel_earn_desc: "Крути раз на день безкоштовно — або за 💰 Золото",
     wheel_title: "🎡 Колесо удачі", wheel_spin_btn: "Крутити", wheel_spinning: "Крутиться…",
     wheel_free_hint: "Безкоштовний спін доступний!", wheel_free_in: "Безкоштовний спін через",
     wheel_paid_hint: "Платний спін — 💰 5 Золота", wheel_paid_left: "Залишилось платних спінів сьогодні",
     wheel_no_spins_left: "Спіни на сьогодні закінчились",
     wheel_no_gold: "Не вистачає 💰 Золота для платного спіна",
+    wheel_open_for_gold_btn: "Відкрити за {cost} 💰",
     wheel_result_title: "🎉 Приз колеса!", wheel_ok_btn: "Чудово!",
     wheel_sector_crystals: "Кристали", wheel_sector_gold: "Золото",
     wheel_sector_vip: "VIP-статус на 3 години", wheel_sector_case: "Кейс «Revolution»",
     gold_label: "Золото",
+    referrals_open_btn: "👥 Мої реферали", referrals_title: "👥 Мої реферали",
+    referrals_total_label: "Всього отримано пасивно: {amount}",
+    referrals_empty: "Поки немає друзів, які приносять дохід — поділись реферальним посиланням!",
     // ---- Спринт 10: рівень, титули/рамки, вітрина, друзі ----
     level_label: "Рівень акаунту", level_short: "рів.",
     level_max_line: "{xp} XP · Максимальний рівень",
@@ -539,7 +720,7 @@ const I18N = {
     levelup_slot_gained: "🏅 +1 слот Вітрини! Тепер їх {slots}",
     showcase_title: "🏅 Вітрина найкращих скінів",
     showcase_hint: "Закріпи найкращі скіни з інвентарю. +1 слот на {level} рівні.",
-    showcase_hint_max: "Усі слоти вітрини відкриті — максимум 10.",
+    showcase_hint_max: "Усі слоти вітрини відкриті — максимум 9.",
     showcase_add: "У вітрину", showcase_remove: "Пр��брати з вітрини",
     showcase_empty_friend: "Вітрина порожня",
     titles_label: "🎖️ Титул", frames_label: "🖼️ Рамка аватара",
@@ -576,13 +757,19 @@ function applyTranslations() {
   document.querySelectorAll("[data-i18n-placeholder]").forEach(el => {
     el.placeholder = t(el.dataset.i18nPlaceholder);
   });
+  // ПРАВКИ В ТЗ №5: title-подсказки для новых иконок (🎁 Промокод, ⚙️ Настройки)
+  document.querySelectorAll("[data-i18n-title]").forEach(el => {
+    el.title = t(el.dataset.i18nTitle);
+  });
   document.querySelectorAll(".lang-btn").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.lang === state.lang);
   });
   const soundLabel = document.getElementById("sound-switch-label");
   if (soundLabel) soundLabel.textContent = state.soundEnabled ? t("sound_on") : t("sound_off");
-  document.getElementById("earn-ad-desc").textContent = t("earn_ad_desc");
+  updateEarnDynamicTexts();
   applyTermsBodyTranslation();
+  applyChatRulesTranslation();
+  updateInventoryFilterOptionLabels();
 }
 
 // ============================================
@@ -608,7 +795,12 @@ const TERMS_TEXT = {
     профиля и лидербордов.
     <br><br>
     4. Продолжая, ты подтверждаешь, что ознакомился(ась) с условиями
-    использования и согласен(на) с ними.`,
+    использования и согласен(на) с ними.
+    <br><br>
+    5. Используя приложение, Пользователь даёт согласие на обработку
+    публичных идентификационных данных Telegram (ID, Юзернейм, Имя и
+    Фамилия) в целях обеспечения работы сервиса, ведения статистики,
+    безопасности и административного учёта.`,
   en: `Welcome! Before you start, please review the terms:
     <br><br>
     1. This is an entertainment app. All 💎 Crystals and items are purely
@@ -624,7 +816,12 @@ const TERMS_TEXT = {
     leaderboards.
     <br><br>
     4. By continuing, you confirm that you have read and agree to these
-    terms of use.`,
+    terms of use.
+    <br><br>
+    5. By using the app, the User consents to the processing of public
+    Telegram identification data (ID, Username, First and Last Name) for
+    the purposes of running the service, maintaining statistics, ensuring
+    security, and administrative record-keeping.`,
   uk: `Ласкаво просимо! Перш ніж почати, ознайомся з умовами:
     <br><br>
     1. Це розважальний застосунок. Усі "Кристалики" 💎 та предмети —
@@ -641,12 +838,22 @@ const TERMS_TEXT = {
     відображення профілю та лідербордів.
     <br><br>
     4. Продовжуючи, ти підтверджуєш, що ознайомився(лась) з умовами
-    використання і згоден(на) з ними.`,
+    використання і згоден(на) з ними.
+    <br><br>
+    5. Використовуючи застосунок, Користувач дає згоду на обробку
+    публічних ідентифікаційних даних Telegram (ID, Юзернейм, Ім'я та
+    Прізвище) з метою забезпечення роботи сервісу, ведення статистики,
+    безпеки та адміністративного обліку.`,
 };
 
 function applyTermsBodyTranslation() {
+  const html = TERMS_TEXT[state.lang] || TERMS_TEXT.ru;
   const el = document.getElementById("terms-body");
-  if (el) el.innerHTML = TERMS_TEXT[state.lang] || TERMS_TEXT.ru;
+  if (el) el.innerHTML = html;
+  // ТЗ №3: та же вёрстка соглашения используется и в модалке "посмотреть
+  // в любой момент" (#terms-view-modal), открываемой из футера.
+  const viewEl = document.getElementById("terms-view-body");
+  if (viewEl) viewEl.innerHTML = html;
 }
 
 // Показывает модалку соглашения, если она ещё не была принята. Источник
@@ -678,6 +885,231 @@ document.getElementById("terms-accept-btn").addEventListener("click", async () =
     document.getElementById("terms-overlay").classList.remove("active");
     btn.disabled = false;
   }
+});
+
+// ============================================
+// ТЗ №3: просмотр Пользовательского соглашения из футера (в любой момент,
+// без требования "принять") — плюс динамическая дата последнего обновления.
+// ============================================
+// Дата фиксируется здесь как константа: на бэкенде отдельного поля
+// "дата обновления текста соглашения" нет, а сам текст меняется вручную
+// разработчиком — при следующей правке текста нужно обновить и эту дату.
+const TERMS_LAST_UPDATED = "2026-08-08";
+
+function formatTermsUpdatedDate() {
+  try {
+    const d = new Date(TERMS_LAST_UPDATED + "T00:00:00Z");
+    const dd = String(d.getUTCDate()).padStart(2, "0");
+    const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const yyyy = d.getUTCFullYear();
+    return `${dd}.${mm}.${yyyy}`;
+  } catch (_) { return TERMS_LAST_UPDATED; }
+}
+
+function openTermsViewModal() {
+  applyTermsBodyTranslation();
+  const dateEl = document.getElementById("terms-view-updated");
+  if (dateEl) dateEl.textContent = `${t("terms_last_updated_label")} ${formatTermsUpdatedDate()}`;
+  document.getElementById("terms-view-modal")?.classList.add("active");
+}
+
+document.getElementById("terms-view-open-btn")?.addEventListener("click", openTermsViewModal);
+document.getElementById("terms-view-close-btn")?.addEventListener("click", () => {
+  document.getElementById("terms-view-modal")?.classList.remove("active");
+});
+
+// ============================================
+// ПРАВКИ В ТЗ №5: модалка Промокода (иконка 🎁 в шапке приложения)
+// ============================================
+document.getElementById("promo-modal-open-btn")?.addEventListener("click", () => {
+  document.getElementById("promo-modal")?.classList.add("active");
+});
+document.getElementById("promo-modal-close-btn")?.addEventListener("click", () => {
+  document.getElementById("promo-modal")?.classList.remove("active");
+});
+
+// ============================================
+// ПРАВКИ В ТЗ №5: модалка Настроек/Кастомизации (иконка ⚙️ в шапке профиля)
+// Фон профиля / рамка аватарки / цвет ника переехали сюда из Профиля —
+// сами контролы (#bg-picker-grid, #frames-row, #pass-frames-row,
+// #pass-nick-colors-row) физически лежат внутри этой модалки, а рендерят
+// их всё те же renderBackgroundPicker()/renderCosmeticRow()/renderPassCosmetics(),
+// что и раньше — здесь только пересобираем их на всякий случай при
+// открытии (например, если модалка открыта раньше первой загрузки профиля).
+function openCustomizeModal() {
+  document.getElementById("customize-modal")?.classList.add("active");
+  renderBackgroundPicker();
+  if (state.lastProfile) {
+    // ПРАВКИ В ТЗ №12, п.1: титул переехал сюда с экрана Профиля — на всякий
+    // случай пересобираем и его тоже (не только рамку), если модалка
+    // открыта раньше первой отрисовки профиля.
+    renderCosmeticRow("titles-row", state.lastProfile.titles || [], state.lastProfile.selected_title, "title");
+    renderCosmeticRow("frames-row", state.lastProfile.frames || [], state.lastProfile.selected_frame, "frame");
+  }
+  if (typeof renderPassCosmetics === "function") renderPassCosmetics();
+  initCustomizePreview();
+}
+document.getElementById("profile-settings-open-btn")?.addEventListener("click", openCustomizeModal);
+document.getElementById("customize-modal-close-btn")?.addEventListener("click", () => {
+  document.getElementById("customize-modal")?.classList.remove("active");
+});
+
+// ==================== ПРАВКИ В ТЗ №12, п.2: живое превью кастомизации ====================
+// Карточка #customize-preview-card в модалке Настроек. initCustomizePreview()
+// раскладывает в неё ТЕКУЩЕЕ применённое состояние (при открытии модалки),
+// а updateCustomizePreview*() дальше вызываются СИНХРОННО из обработчиков
+// клика по чипам — до/независимо от ответа бэкенда (apiPost уходит в фоне),
+// поэтому превью обновляется мгновенно, как и требует ТЗ ("без
+// предварительного сохранения").
+function initCustomizePreview() {
+  const profile = state.lastProfile;
+
+  const nameEl = document.getElementById("customize-preview-name");
+  if (nameEl) nameEl.textContent = document.getElementById("profile-name")?.textContent || "Игрок";
+
+  const avatarImg = document.getElementById("customize-preview-avatar-img");
+  const avatarEmoji = document.getElementById("customize-preview-avatar");
+  const srcImg = document.getElementById("profile-avatar-img");
+  if (avatarImg && avatarEmoji) {
+    if (srcImg && srcImg.style.display !== "none" && srcImg.src) {
+      avatarImg.src = srcImg.src;
+      avatarImg.style.display = "";
+      avatarEmoji.style.display = "none";
+    } else {
+      avatarImg.style.display = "none";
+      avatarEmoji.style.display = "";
+    }
+  }
+
+  updateCustomizePreviewTitle(profile?.selected_title_info || null);
+  updateCustomizePreviewFrame(profile?.selected_frame_info || null);
+
+  // Косметика Battle Pass живёт в своей отдельной системе (pass.js) — берём
+  // из passState, если она уже успела загрузиться в этой сессии.
+  const ps = (typeof passState !== "undefined") ? passState.status : null;
+  updateCustomizePreviewPassFrame(ps?.selected_pass_frame || null);
+  updateCustomizePreviewNickColor(ps?.selected_pass_nick_color || null);
+}
+
+// info — объект титула (cosmetics.title_public: key/name/color/icon) или null.
+function updateCustomizePreviewTitle(info) {
+  applyTitlePill(document.getElementById("customize-preview-title-pill"), info);
+}
+
+// info — объект рамки (cosmetics.frame_public: key/name/color/style) или null.
+function updateCustomizePreviewFrame(info) {
+  applyAvatarFrame(document.getElementById("customize-preview-avatar-wrap"), info);
+}
+
+// key — ключ рамки Battle Pass (PASS_FRAME_STYLE в pass.js) или null/"".
+function updateCustomizePreviewPassFrame(key) {
+  const def = key && typeof PASS_FRAME_STYLE !== "undefined" ? PASS_FRAME_STYLE[key] : null;
+  [document.getElementById("customize-preview-avatar"), document.getElementById("customize-preview-avatar-img")]
+    .forEach(el => { if (el) el.style.boxShadow = def ? def.css : ""; });
+}
+
+// key — ключ цвета ника Battle Pass (PASS_NICK_COLOR_STYLE в pass.js) или null/"".
+function updateCustomizePreviewNickColor(key) {
+  const def = key && typeof PASS_NICK_COLOR_STYLE !== "undefined" ? PASS_NICK_COLOR_STYLE[key] : null;
+  const nameEl = document.getElementById("customize-preview-name");
+  if (!nameEl) return;
+  if (def && def.css.startsWith("linear-gradient")) {
+    nameEl.style.background = def.css;
+    nameEl.style.webkitBackgroundClip = "text";
+    nameEl.style.webkitTextFillColor = "transparent";
+    nameEl.style.backgroundClip = "text";
+  } else {
+    nameEl.style.background = "none";
+    nameEl.style.webkitTextFillColor = "";
+    nameEl.style.color = def ? def.css : "";
+  }
+}
+
+// ============================================
+// ТЗ №3: правила чата (кнопка ℹ️ в шапке вкладки "Чат")
+// ============================================
+const CHAT_RULES_TEXT = {
+  ru: `Общаясь в чате, соблюдай простые правила:
+    <br><br>
+    1. Никакой рекламы сторонних сайтов, кейс-батл площадок, казино,
+    ставок, VPN-сервисов и посторонних каналов.
+    <br><br>
+    2. Никаких оскорблений, травли и разжигания конфликтов между
+    участниками.
+    <br><br>
+    3. Не публикуй личные данные — свои и чужие: телефон, банковскую
+    карту, адрес.
+    <br><br>
+    4. Запрещены продажа и реклама запрещённых веществ, а также любой
+    18+ и нелегальный контент.
+    <br><br>
+    5. Спам и флуд одинаковыми сообщениями не приветствуются.
+    <br><br>
+    Нарушения караются временным мутом, повторные — баном в чате.
+    Автомодерация фильтрует сообщения ещё до публикации.`,
+  en: `While chatting, please follow a few simple rules:
+    <br><br>
+    1. No advertising of third-party sites, case-battle platforms,
+    casinos, betting, VPN services, or unrelated channels.
+    <br><br>
+    2. No insults, harassment, or inciting conflict between players.
+    <br><br>
+    3. Do not post personal data — yours or anyone else's: phone
+    numbers, bank cards, addresses.
+    <br><br>
+    4. Selling or advertising illegal substances, and any 18+ or
+    illegal content, is forbidden.
+    <br><br>
+    5. Spam and flooding with repeated messages are not welcome.
+    <br><br>
+    Violations lead to a temporary mute, repeated ones — to a chat ban.
+    Auto-moderation filters messages before they're published.`,
+  uk: `Спілкуючись у чаті, дотримуйся простих правил:
+    <br><br>
+    1. Жодної реклами сторонніх сайтів, кейс-батл майданчиків, казино,
+    ставок, VPN-сервісів і сторонніх каналів.
+    <br><br>
+    2. Жодних образ, цькування та розпалювання конфліктів між
+    учасниками.
+    <br><br>
+    3. Не публікуй особисті дані — свої й чужі: телефон, банківську
+    картку, адресу.
+    <br><br>
+    4. Заборонено продаж і рекламу заборонених речовин, а також будь-
+    який 18+ і нелегальний контент.
+    <br><br>
+    5. Спам і флуд однаковими повідомленнями не вітаються.
+    <br><br>
+    Порушення караються тимчасовим мутом, повторні — баном у чаті.
+    Автомодерація фільтрує повідомлення ще до публікації.`,
+};
+
+function applyChatRulesTranslation() {
+  const el = document.getElementById("chat-rules-body");
+  if (el) el.innerHTML = CHAT_RULES_TEXT[state.lang] || CHAT_RULES_TEXT.ru;
+}
+
+document.getElementById("chat-rules-open-btn")?.addEventListener("click", () => {
+  applyChatRulesTranslation();
+  document.getElementById("chat-rules-modal")?.classList.add("active");
+});
+document.getElementById("chat-rules-close-btn")?.addEventListener("click", () => {
+  document.getElementById("chat-rules-modal")?.classList.remove("active");
+});
+
+// ============================================
+// ТЗ №3: модалка выбора действия по клику на аватар/ник в чате
+// ============================================
+document.getElementById("chat-action-close-btn")?.addEventListener("click", closeChatUserActionModal);
+document.getElementById("chat-action-view-profile-btn")?.addEventListener("click", () => {
+  const telegramId = chatActionState.telegramId;
+  closeChatUserActionModal();
+  if (telegramId) openFriendProfile(telegramId);
+});
+document.getElementById("chat-action-report-btn")?.addEventListener("click", () => {
+  const messageId = chatActionState.messageId;
+  closeChatUserActionModal();
+  if (messageId) reportChatMessage(messageId);
 });
 
 function setLang(lang) {
@@ -889,6 +1321,30 @@ function toggleSound() {
 document.getElementById("header-sound-toggle").addEventListener("click", toggleSound);
 document.getElementById("sound-switch").addEventListener("click", toggleSound);
 
+// ============================================
+// ПРАВКИ В ТЗ №5: переключатель всплывающих уведомлений
+// ============================================
+// Независим от звука: можно выключить только всплывающие
+// tg.showAlert()/toast-и о событиях (новый ранг/уровень, разблокировка
+// косметики и т.п.), оставив звуковые эффекты включёнными, и наоборот.
+function updateNotificationsToggleUI() {
+  const switchBtn = document.getElementById("notif-switch");
+  if (!switchBtn) return;
+  switchBtn.classList.toggle("off", !state.notificationsEnabled);
+  const label = document.getElementById("notif-switch-label");
+  if (label) label.textContent = state.notificationsEnabled ? t("sound_on") : t("sound_off");
+}
+
+function toggleNotifications() {
+  state.notificationsEnabled = !state.notificationsEnabled;
+  localStorage.setItem("cs2_notifications", state.notificationsEnabled ? "1" : "0");
+  updateNotificationsToggleUI();
+  if (state.soundEnabled) playSound("click");
+  apiPost("/user/settings", { telegram_id: state.telegramId, notifications_enabled: state.notificationsEnabled }).catch(() => {});
+}
+
+document.getElementById("notif-switch")?.addEventListener("click", toggleNotifications);
+
 // клик по любой кнопке — короткий звук
 document.addEventListener("click", (e) => {
   if (e.target.closest("button")) playSound("click");
@@ -927,6 +1383,18 @@ function currencyIcon() {
   return CURRENCY_ICON[state.currency] || "💎";
 }
 
+// ============================================
+// ПРАВКИ В ТЗ №7 (валюты и значки): 💰 Золото — отдельная премиум-валюта,
+// НЕ пересчитывается по курсу ₽/$/₴ (см. currency.py) и поэтому не
+// участвует в currencyIcon()/convertCrystals() выше. У неё свой
+// собственный графический значок (SVG-монетка), который используется
+// везде вместо эмодзи 💰 или просто подсвеченного жёлтым текста.
+// Возвращает готовую HTML-разметку <img> — использовать через
+// innerHTML, а не textContent.
+function goldIconHTML(extraClass = "") {
+  return `<img class="gold-coin-icon${extraClass ? " " + extraClass : ""}" src="assets/icons/gold-coin.svg" alt="💰">`;
+}
+
 // Крестики (=₽) -> число в выбранной валюте отображения.
 function convertCrystals(n) {
   const rate = state.currencyRates[state.currency];
@@ -955,6 +1423,7 @@ function refreshCurrencyDisplay() {
   });
   document.getElementById("header-currency-toggle").textContent = currencyIcon();
   document.querySelectorAll(".balance-icon").forEach(el => { el.textContent = currencyIcon(); });
+  updateEarnDynamicTexts();
 
   updateBalanceDisplay();
   if (state.cases && state.cases.length) renderCases();
@@ -1022,13 +1491,23 @@ function applyBackground(key) {
     }
     video.play().catch(() => {}); // автоплей может блокироваться до первого тача — не критично, muted облегчает разрешение
   } else {
-    // "dark" / любой неизвестный ключ — просто откатываемся к обычной теме
+    // "dark" / "gradient" (ПРАВКИ В ТЗ №5) / любой неизвестный ключ —
+    // просто откатываемся к обычной теме; сам градиент показывается
+    // только на плитке выбора (renderBackgroundPicker), не на весь экран.
     img.classList.remove("active");
     video.classList.remove("active");
     video.pause();
   }
 
   renderBackgroundPicker(); // перерисовать активную рамку в сетке выбора
+}
+
+// ПРАВКИ В ТЗ №5: заблокирован ли фон для текущего игрока — общедоступные
+// фоны (unlock == null) открыты всегда, наградные — только если их ключ
+// есть в state.unlockedBackgrounds (см. profile.unlocked_backgrounds).
+function isBackgroundLocked(opt) {
+  if (!opt.unlock) return false;
+  return !(state.unlockedBackgrounds || []).includes(opt.key);
 }
 
 // Отрисовывает сетку превью в Настройках. Идемпотентна — можно дёргать
@@ -1041,11 +1520,16 @@ function renderBackgroundPicker() {
 
   grid.innerHTML = options.map(opt => {
     const active = opt.key === (state.background || DEFAULT_BACKGROUND);
-    const thumbStyle = opt.thumb ? ` style="background-image:url('${opt.thumb}')"` : "";
-    const icon = opt.type === "theme" ? "🌑" : (opt.type === "video" ? "🎬" : "");
+    const locked = isBackgroundLocked(opt);
+    // ПРАВКИ В ТЗ №5: наградные фоны без картинки/видео рендерятся
+    // цветовым градиентом (opt.type === "gradient", opt.css из main.py).
+    const thumbStyle = opt.type === "gradient"
+      ? ` style="background-image:${opt.css}"`
+      : (opt.thumb ? ` style="background-image:url('${opt.thumb}')"` : "");
+    const icon = opt.type === "theme" ? "🌑" : (opt.type === "video" ? "🎬" : (opt.type === "gradient" ? "✨" : ""));
     return `
-      <button class="bg-picker-item${active ? " active" : ""}" data-bg="${opt.key}">
-        <span class="bg-picker-thumb${opt.type === "theme" ? " bg-picker-thumb-theme" : ""}"${thumbStyle}>${icon}</span>
+      <button class="bg-picker-item${active ? " active" : ""}${locked ? " locked" : ""}" data-bg="${opt.key}" data-locked="${locked ? "1" : "0"}">
+        <span class="bg-picker-thumb${opt.type === "theme" ? " bg-picker-thumb-theme" : ""}"${thumbStyle}>${locked ? "🔒" : icon}</span>
         <span class="bg-picker-name">${opt.label}</span>
       </button>`;
   }).join("");
@@ -1055,6 +1539,13 @@ document.getElementById("bg-picker-grid").addEventListener("click", (e) => {
   const btn = e.target.closest(".bg-picker-item");
   if (!btn) return;
   const key = btn.dataset.bg;
+
+  // ПРАВКИ В ТЗ №5: наградной фон, ещё не открытый игроком — не применяем,
+  // а показываем подсказку, что его нужно заработать (см. bg_locked_hint).
+  if (btn.dataset.locked === "1") {
+    tg?.showAlert?.(t("bg_locked_hint"));
+    return;
+  }
   if (key === state.background) return;
 
   applyBackground(key); // мгновенно, до ответа сервера
@@ -1076,8 +1567,57 @@ function fmt(n) {
   return `${currencyIcon()} ${fmtNumber(n)}`;
 }
 
+// ============================================
+// ПРАВКИ В ТЗ №7 (валюты и значки): тексты наград вкладки "Заработать"
+// (карточка "Посмотреть видео" и кнопка минутного бонуса) пересчитываются
+// под текущую выбранную валюту (₽/$/₴) — суммы приходят из /app-config
+// (state.adRewardMin/Max, state.bonusRewardAmount) и конвертируются той
+// же логикой, что и остальной баланс (fmtNumber/currencyIcon).
+function earnAdDescText() {
+  return t("earn_ad_desc")
+    .replace("{min}", fmtNumber(state.adRewardMin))
+    .replace("{max}", fmtNumber(state.adRewardMax))
+    .replace("{icon}", currencyIcon());
+}
+
+function bonusBtnLabel() {
+  return t("bonus_btn")
+    .replace("{amount}", fmtNumber(state.bonusRewardAmount))
+    .replace("{icon}", currencyIcon());
+}
+
+// Пересобирает оба текста и подставляет в DOM — вызывается при смене
+// языка (applyTranslations), смене валюты (refreshCurrencyDisplay) и
+// после загрузки /app-config (когда становятся известны реальные суммы).
+function updateEarnDynamicTexts() {
+  const adDescEl = document.getElementById("earn-ad-desc");
+  if (adDescEl) adDescEl.textContent = earnAdDescText();
+
+  // Кнопку бонуса не трогаем, пока она на кулдауне (там сейчас таймер
+  // "Бонус через N с" — startBonusCountdown() сам восстановит текст
+  // bonusBtnLabel() по истечении отсчёта).
+  const bonusBtn = document.getElementById("claim-bonus-btn");
+  if (bonusBtn && !bonusBtn.classList.contains("on-cooldown")) {
+    bonusBtn.textContent = bonusBtnLabel();
+  }
+}
+
 function rarityClass(rarity) {
   return "r-" + rarity.replace(" ", "-");
+}
+
+// ============================================
+// ПРАВКИ В ТЗ №6: единый форматтер обратного отсчёта ЧЧ:ММ:СС —
+// используется и колесом (кулдаун до 24ч), и ежедневным бонусом (тоже
+// может доходить почти до 24ч), т.к. простой ММ:СС (как было раньше у
+// колеса) ломается визуально после 99 минут.
+// ============================================
+function formatCountdownHMS(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const hh = String(Math.floor(s / 3600)).padStart(2, "0");
+  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
 }
 
 const RARITY_LABEL = {
@@ -1091,7 +1631,21 @@ function rarityLabel(rarity) {
 
 async function apiGet(path) {
   const res = await fetch(`${API_BASE}${path}`);
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    // Раньше сюда падал сырой текст ответа (часто — JSON-строка целиком),
+    // из-за чего в UI вместо человеческого сообщения об ошибке всплывал
+    // "{"detail":"..."}" целиком. Теперь пытаемся достать detail так же,
+    // как это делает apiPost, и только если это не JSON — берём текст как есть.
+    const raw = await res.text();
+    let message = raw || "Ошибка запроса";
+    try {
+      const parsed = JSON.parse(raw);
+      message = parsed.detail || message;
+    } catch {
+      // ответ не JSON — оставляем как есть
+    }
+    throw new Error(message);
+  }
   return res.json();
 }
 
@@ -1207,11 +1761,20 @@ function openCaseScreen(caseData) {
     const group = caseData.items.filter(it => it.rarity === rarity);
     if (!group.length) return;
     const totalChance = group.reduce((s, it) => s + (Number(it.drop_chance) || 0), 0);
-    const basePrice = group[0].base_price;
-    // Диапазон цены задаётся разбросом качества (Battle-Scarred..Factory New),
-    // те же множители, что и в main.py (QUALITY_PRICE_MULTIPLIER: 0.62–1.65).
-    const regularMin = Math.round(basePrice * 0.62);
-    const regularMax = Math.round(basePrice * 1.65);
+    // ВАЖНО: раньше здесь брался base_price только ПЕРВОГО ножа/перчаток
+    // в группе (group[0]) и от него считался весь диапазон — из-за этого
+    // ЛЮБОЙ нож/перчатки в категории показывали один и тот же диапазон
+    // цены, будто все они стоят одинаково. Теперь диапазон строится по
+    // реальному минимуму/максимуму индивидуальных base_price ВСЕХ ножей/
+    // перчаток этого конкретного кейса (у бэкенда они теперь тоже не
+    // одинаковые — см. price_tiers.py), и множители качества
+    // (Battle-Scarred..Factory New, те же 0.62–1.65, что и в main.py)
+    // применяются отдельно к самому дешёвому и самому дорогому предмету.
+    const groupPrices = group.map(it => Number(it.base_price) || 0);
+    const cheapestBase = Math.min(...groupPrices);
+    const priciestBase = Math.max(...groupPrices);
+    const regularMin = Math.round(cheapestBase * 0.62);
+    const regularMax = Math.round(priciestBase * 1.65);
     const canStattrak = rarity !== "Gloves"; // как и в игре — перчатки без StatTrak
     rareSummary[rarity] = {
       regularChance: canStattrak ? totalChance * (1 - STATTRAK_CHANCE_JS) : totalChance,
@@ -1670,6 +2233,62 @@ function runRouletteAnimation(caseData, drop) {
 // ============================================
 // Окно победы
 // ============================================
+// ============================================
+// ПРАВКИ В ТЗ №14: "Поделиться дропом" (Share Drop with Referral Link)
+// ============================================
+// Единая точка входа для всех кнопок "Поделиться" (окно выигрыша,
+// успешный Апгрейд, успешный Крафт, карточка в Инвентаре). Принимает
+// один и тот же "предмет" (drop / crafted_item / upgrade item / элемент
+// инвентаря) — во всех этих объектах есть id/rarity/name/image/price,
+// см. main.py (open-case, /api/craft, /api/minigames/upgrade) и
+// GET /api/inventory.
+//
+// Категория подставляется по item.rarity — у ножей и перчаток это
+// отдельные топ-редкости ("Knife"/"Gloves"), у всего остального —
+// обычный скин. Наклейки как категория предметов в игре сейчас не
+// встречаются (нет такого дропа в каталоге), но словарь уже готов на
+// будущее — если появится item.rarity === "Sticker"/"Stickers", просто
+// добавь ветку ниже.
+function getShareCategoryWord(item) {
+  const rarity = item?.rarity;
+  if (rarity === "Knife") return t("share_category_knife");
+  if (rarity === "Gloves") return t("share_category_gloves");
+  if (rarity === "Sticker" || rarity === "Stickers") return t("share_category_sticker");
+  return t("share_category_skin");
+}
+
+function buildShareText(item) {
+  return t("share_text_template")
+    .replace("{app}", APP_DISPLAY_NAME)
+    .replace("{category}", getShareCategoryWord(item));
+}
+
+// Строит ссылку на share-страницу бэкенда (GET /share/:id, см. main.py) —
+// у НЕЁ есть og:image/og:title/og:description с картинкой конкретного
+// предмета, и она сама мгновенно перекидывает получателя в бота по
+// персональной реферальной ссылке ТОГО, кто поделился (т.е. владельца
+// предмета — текущего игрока). Просто ссылка t.me/bot?start=ref_ID тут
+// не подходит: диплинки на ботов не отдают превью с картинкой.
+function buildShareUrl(item) {
+  return `${SITE_BASE}/share/${item.id}`;
+}
+
+// Открывает стандартный диалог шеринга Telegram (список чатов/групп/
+// каналов) с уже готовым текстом + ссылкой на share-страницу. Если
+// приложение открыто не внутри Telegram (например, тестируется в обычном
+// браузере) — просто открывает тот же URL в новой вкладке как фолбэк.
+function shareDrop(item) {
+  if (!item || !item.id) return;
+  const shareUrl = buildShareUrl(item);
+  const shareText = buildShareText(item);
+  const dialogUrl = `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(shareText)}`;
+  if (tg?.openTelegramLink) {
+    tg.openTelegramLink(dialogUrl);
+  } else {
+    window.open(dialogUrl, "_blank");
+  }
+}
+
 function showWinModal(drop) {
   document.getElementById("case-open-screen").classList.remove("active");
 
@@ -1706,6 +2325,12 @@ document.getElementById("win-keep-btn").addEventListener("click", () => {
   document.getElementById("win-modal").classList.remove("active");
   state.pendingDrop = null;
   loadProfile();
+});
+
+// ПРАВКИ В ТЗ №14: "Поделиться" не закрывает окно выигрыша — игрок может
+// поделиться, а потом всё равно решить "В коллекцию"/"Продать".
+document.getElementById("win-share-btn")?.addEventListener("click", () => {
+  shareDrop(state.pendingDrop);
 });
 
 document.getElementById("win-sell-btn").addEventListener("click", async () => {
@@ -1833,26 +2458,72 @@ async function loadInventory() {
   }
 }
 
-function getSortedInventory() {
-  // Сортировка только по цене (по возрастанию/убыванию) — сам массив
-  // state.inventory не мутируется, чтобы порядок из API не терялся.
-  return [...state.inventory].sort((a, b) =>
-    state.inventorySortDir === "asc" ? a.price - b.price : b.price - a.price
-  );
+// ПРАВКИ В ТЗ №9, п.2: единый порядок редкостей для сортировки "По редкости" —
+// та же лестница, что и в крафте (см. RARITY_ORDER_JS ниже), продублирована
+// здесь короче под именем INV_RARITY_RANK, т.к. нужна ДО объявления
+// RARITY_ORDER_JS по тексту файла (сам вызов происходит уже после полной
+// загрузки скрипта, так что порядок объявления в файле не важен, но
+// локальная копия чуть яснее читается в этом блоке).
+const INV_RARITY_RANK = {
+  Consumer: 0, Industrial: 1, "Mil-Spec": 2, Restricted: 3,
+  Classified: 4, Covert: 5, Gloves: 6, Knife: 6,
+};
+
+function itemMatchesRarityFilter(item, filter) {
+  if (!filter || filter === "all") return true;
+  if (filter === "KnifeGloves") return item.rarity === "Knife" || item.rarity === "Gloves";
+  return item.rarity === filter;
 }
+
+function getSortedInventory() {
+  // Фильтрация + сортировка — сам массив state.inventory не мутируется,
+  // чтобы порядок из API не терялся (нужен для дат/для отладки).
+  const filtered = state.inventory.filter(i => itemMatchesRarityFilter(i, state.inventoryRarityFilter));
+  const mode = state.inventorySortMode || "price_desc";
+  const dateVal = (item) => item.obtained_at_ts ?? (item.obtained_at ? Date.parse(item.obtained_at) : 0);
+  const cmp = {
+    price_desc: (a, b) => b.price - a.price,
+    price_asc: (a, b) => a.price - b.price,
+    date_desc: (a, b) => dateVal(b) - dateVal(a),
+    date_asc: (a, b) => dateVal(a) - dateVal(b),
+    rarity_desc: (a, b) => (INV_RARITY_RANK[b.rarity] ?? -1) - (INV_RARITY_RANK[a.rarity] ?? -1) || b.price - a.price,
+    rarity_asc: (a, b) => (INV_RARITY_RANK[a.rarity] ?? -1) - (INV_RARITY_RANK[b.rarity] ?? -1) || b.price - a.price,
+  }[mode] || cmp_price_desc_fallback;
+  return [...filtered].sort(cmp);
+}
+function cmp_price_desc_fallback(a, b) { return b.price - a.price; }
 
 function updateInventorySortButton() {
-  const label = document.getElementById("inventory-sort-label");
-  if (!label) return;
-  label.textContent = state.inventorySortDir === "asc"
-    ? `↑ ${t("sort_cheap_first")}`
-    : `↓ ${t("sort_expensive_first")}`;
+  // Синхронизирует <select>-ы тулбара с текущим состоянием (нужно, в
+  // частности, после programmatic-сброса фильтра/сортировки).
+  const sortSelect = document.getElementById("inventory-sort-select");
+  const filterSelect = document.getElementById("inventory-filter-select");
+  if (sortSelect) sortSelect.value = state.inventorySortMode || "price_desc";
+  if (filterSelect) filterSelect.value = state.inventoryRarityFilter || "all";
+  updateInventoryFilterOptionLabels();
 }
 
-document.getElementById("inventory-sort-btn").addEventListener("click", () => {
-  state.inventorySortDir = state.inventorySortDir === "asc" ? "desc" : "asc";
-  document.getElementById("inventory-sort-btn").dataset.dir = state.inventorySortDir;
-  updateInventorySortButton();
+// ПРАВКИ В ТЗ №9, п.2: подписи редкостей в фильтре инвентаря переиспользуют
+// ЕДИНУЮ функцию rarityLabel()/RARITY_LABEL (та же, что красит бейджи
+// редкости и карточку предмета) — вместо дублирования текста ещё раз в
+// I18N под новыми ключами. Так подписи гарантированно не разъедутся между
+// фильтром и остальным UI при добавлении нового языка.
+function updateInventoryFilterOptionLabels() {
+  const select = document.getElementById("inventory-filter-select");
+  if (!select) return;
+  ["Consumer", "Industrial", "Mil-Spec", "Restricted", "Classified", "Covert"].forEach(rarity => {
+    const opt = select.querySelector(`option[value="${rarity}"]`);
+    if (opt) opt.textContent = rarityLabel(rarity);
+  });
+}
+
+document.getElementById("inventory-sort-select")?.addEventListener("change", (e) => {
+  state.inventorySortMode = e.target.value;
+  renderInventory();
+});
+
+document.getElementById("inventory-filter-select")?.addEventListener("change", (e) => {
+  state.inventoryRarityFilter = e.target.value;
   renderInventory();
 });
 
@@ -1863,6 +2534,7 @@ function renderInventory() {
   const disintegrateBar = document.getElementById("disintegrate-bar");
 
   updateInventorySortButton();
+  updateBulkSellRowVisibility();
 
   // предметы, которых больше нет в инвентаре, снимаем с выделения
   const currentIds = new Set(state.inventory.map(i => i.id));
@@ -1873,6 +2545,7 @@ function renderInventory() {
   if (!state.inventory.length) {
     grid.innerHTML = "";
     empty.style.display = "block";
+    empty.textContent = t("inventory_empty");
     toolbar.style.display = "none";
     disintegrateBar.style.display = "none";
     return;
@@ -1884,7 +2557,15 @@ function renderInventory() {
   // (см. updateInventorySelectionUI ниже, вызывается в конце этой функции).
 
   grid.innerHTML = "";
-  getSortedInventory().forEach(item => {
+  const sortedFiltered = getSortedInventory();
+  // ПРАВКИ В ТЗ №9, п.2: инвентарь не пуст, но фильтр по редкости не дал
+  // совпадений — отдельное сообщение вместо общего "Пока пусто".
+  if (!sortedFiltered.length) {
+    empty.style.display = "block";
+    empty.textContent = t("inventory_filter_empty");
+    return;
+  }
+  sortedFiltered.forEach(item => {
     const isSelected = state.selectedInventoryIds.has(item.id);
     const card = document.createElement("div");
     card.className = `inventory-card${isSelected ? " selected" : ""}`;
@@ -1914,7 +2595,10 @@ function renderInventory() {
       ${floatLine}
       <div class="rarity-bar ${rarityClass(item.rarity)}"></div>
       <div class="inventory-card-price">${fmt(item.price)}</div>
-      <button class="sell-btn" data-id="${item.id}">${t("sell_label")}</button>
+      <div class="inv-actions-row">
+        <button class="inv-share-btn" data-id="${item.id}" title="${t("share_btn")}">🔗</button>
+        <button class="sell-btn" data-id="${item.id}">${t("sell_label")}</button>
+      </div>
     `;
     grid.appendChild(card);
   });
@@ -1938,27 +2622,251 @@ function renderInventory() {
   });
 
   grid.querySelectorAll(".sell-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
+    btn.addEventListener("click", () => {
+      requestSellSkin(Number(btn.dataset.id));
+    });
+  });
+
+  // ПРАВКИ В ТЗ №14: "Поделиться" прямо из карточки в Инвентаре.
+  grid.querySelectorAll(".inv-share-btn").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
       const id = Number(btn.dataset.id);
-      try {
-        const result = await apiPost("/sell-skin", {
-          telegram_id: state.telegramId,
-          inventory_id: id,
-        });
-        state.balance = result.new_balance;
-        state.inventory = state.inventory.filter(i => i.id !== id);
-        state.selectedInventoryIds.delete(id);
-        updateBalanceDisplay();
-        renderInventory();
-        playSound("sell");
-      } catch (e) {
-        tg?.showAlert?.(e.message);
-      }
+      const item = state.inventory.find(i => i.id === id);
+      if (item) shareDrop(item);
     });
   });
 
   updateInventorySelectionUI();
 }
+
+// ============================================
+// ПРАВКИ В ТЗ №9, п.1: защита и подтверждение при продаже
+// ============================================
+// Редкости, для которых продажа требует явного подтверждения чекбоксом —
+// Тайное (Covert), Ножи и Перчатки, а также Засекреченное (Classified),
+// как прямо перечислено в ТЗ.
+const HIGH_RARITY_SELL_CONFIRM = new Set(["Classified", "Covert", "Knife", "Gloves"]);
+// ...а также любой предмет дороже этого порога (в 💎/₽, базовая валюта
+// бэкенда), независимо от редкости — тоже требует подтверждения.
+const HIGH_VALUE_SELL_THRESHOLD = 10000;
+
+function itemNeedsRareConfirm(item) {
+  return HIGH_RARITY_SELL_CONFIRM.has(item.rarity) || item.price >= HIGH_VALUE_SELL_THRESHOLD;
+}
+
+// Точка входа для продажи ОДНОГО предмета из сетки инвентаря — сначала
+// проверяет витрину, затем редкость/цену, и только потом реально продаёт.
+function requestSellSkin(id) {
+  const item = state.inventory.find(i => i.id === id);
+  if (!item) return;
+
+  if (item.is_in_showcase) {
+    const question = t("sell_showcase_confirm_text");
+    const proceedToRareCheck = () => {
+      if (itemNeedsRareConfirm(item)) openRareSellConfirmModal(item);
+      else performSellSkin(item.id);
+    };
+    if (tg?.showConfirm) {
+      tg.showConfirm(question, (ok) => { if (ok) proceedToRareCheck(); });
+    } else if (confirm(question)) {
+      proceedToRareCheck();
+    }
+    return;
+  }
+
+  if (itemNeedsRareConfirm(item)) {
+    openRareSellConfirmModal(item);
+    return;
+  }
+
+  performSellSkin(item.id);
+}
+
+async function performSellSkin(id) {
+  try {
+    const result = await apiPost("/sell-skin", {
+      telegram_id: state.telegramId,
+      inventory_id: id,
+    });
+    state.balance = result.new_balance;
+    state.inventory = state.inventory.filter(i => i.id !== id);
+    state.selectedInventoryIds.delete(id);
+    updateBalanceDisplay();
+    renderInventory();
+    playSound("sell");
+  } catch (e) {
+    tg?.showAlert?.(e.message);
+  }
+}
+
+// ---- Модалка подтверждения продажи редкого/дорогого скина (чекбокс) ----
+const rareSellConfirmState = { itemId: null };
+
+function openRareSellConfirmModal(item) {
+  rareSellConfirmState.itemId = item.id;
+  document.getElementById("rare-sell-confirm-image").src = item.image || "";
+  document.getElementById("rare-sell-confirm-name").textContent = item.name;
+  document.getElementById("rare-sell-confirm-price").textContent = fmt(item.price);
+  const cb = document.getElementById("rare-sell-confirm-checkbox");
+  const confirmBtn = document.getElementById("rare-sell-confirm-btn");
+  cb.checked = false;
+  confirmBtn.disabled = true;
+  document.getElementById("rare-sell-confirm-modal").classList.add("active");
+}
+
+function closeRareSellConfirmModal() {
+  document.getElementById("rare-sell-confirm-modal").classList.remove("active");
+  rareSellConfirmState.itemId = null;
+}
+
+document.getElementById("rare-sell-confirm-checkbox")?.addEventListener("change", (e) => {
+  document.getElementById("rare-sell-confirm-btn").disabled = !e.target.checked;
+});
+document.getElementById("rare-sell-confirm-cancel-btn")?.addEventListener("click", closeRareSellConfirmModal);
+document.getElementById("rare-sell-confirm-close-btn")?.addEventListener("click", closeRareSellConfirmModal);
+document.getElementById("rare-sell-confirm-modal")?.addEventListener("click", (e) => {
+  if (e.target.id === "rare-sell-confirm-modal") closeRareSellConfirmModal();
+});
+document.getElementById("rare-sell-confirm-btn")?.addEventListener("click", () => {
+  const id = rareSellConfirmState.itemId;
+  if (id == null) return;
+  closeRareSellConfirmModal();
+  performSellSkin(id);
+});
+
+// ============================================
+// ПРАВКИ В ТЗ №9, п.3: массовая продажа "дешевле N"
+// ============================================
+// Только ножи/перчатки — редкости Classified/Covert умышленно НЕ входят
+// сюда (в отличие от HIGH_RARITY_SELL_CONFIRM выше): ТЗ п.3 говорит именно
+// про "редкие ножи/перчатки", а не про все высокие редкости разом.
+const BULK_SELL_RARE_KNIFE_GLOVES = new Set(["Knife", "Gloves"]);
+
+// Показываем/прячем кнопку-открывашку синхронно с остальным тулбаром
+// инвентаря (пусто — прятать всё, включая эту кнопку).
+function updateBulkSellRowVisibility() {
+  const row = document.getElementById("inventory-bulk-sell-row");
+  if (row) row.style.display = state.inventory.length ? "flex" : "none";
+}
+
+function getBulkSellMatches(maxPrice, protect) {
+  if (!(maxPrice >= 0)) return [];
+  return state.inventory.filter(item => {
+    if (item.price > maxPrice) return false;
+    if (protect && item.is_in_showcase) return false;
+    if (protect && BULK_SELL_RARE_KNIFE_GLOVES.has(item.rarity)) return false;
+    return true;
+  });
+}
+
+function openBulkSellModal() {
+  const input = document.getElementById("bulk-sell-price-input");
+  const protectCb = document.getElementById("bulk-sell-protect-checkbox");
+  input.value = "";
+  protectCb.checked = true;
+  updateBulkSellPreview();
+  document.getElementById("bulk-sell-modal").classList.add("active");
+  // На мобильных клавиатура сама открывается по фокусу — сразу подводим
+  // игрока к вводу суммы.
+  setTimeout(() => input.focus(), 50);
+}
+
+function closeBulkSellModal() {
+  document.getElementById("bulk-sell-modal").classList.remove("active");
+}
+
+function updateBulkSellPreview() {
+  const input = document.getElementById("bulk-sell-price-input");
+  const protectCb = document.getElementById("bulk-sell-protect-checkbox");
+  const previewText = document.getElementById("bulk-sell-preview-text");
+  const confirmBtn = document.getElementById("bulk-sell-confirm-btn");
+  const confirmTotal = document.getElementById("bulk-sell-confirm-total");
+
+  const raw = input.value.trim();
+  if (raw === "") {
+    previewText.textContent = t("bulk_sell_preview_empty");
+    confirmBtn.disabled = true;
+    confirmTotal.textContent = "";
+    return;
+  }
+
+  const maxPrice = Number(raw);
+  if (!Number.isFinite(maxPrice) || maxPrice < 0) {
+    previewText.textContent = t("bulk_sell_preview_empty");
+    confirmBtn.disabled = true;
+    confirmTotal.textContent = "";
+    return;
+  }
+
+  const matches = getBulkSellMatches(maxPrice, protectCb.checked);
+  const total = matches.reduce((sum, i) => sum + i.price, 0);
+
+  if (!matches.length) {
+    previewText.textContent = t("bulk_sell_preview_none");
+    confirmBtn.disabled = true;
+    confirmTotal.textContent = "";
+    return;
+  }
+
+  previewText.textContent = t("bulk_sell_preview_count")
+    .replace("{count}", fmtNumber(matches.length))
+    .replace("{total}", fmt(total));
+  confirmBtn.disabled = false;
+  confirmTotal.textContent = `— ${fmt(total)}`;
+}
+
+document.getElementById("bulk-sell-open-btn")?.addEventListener("click", openBulkSellModal);
+document.getElementById("bulk-sell-close-btn")?.addEventListener("click", closeBulkSellModal);
+document.getElementById("bulk-sell-modal")?.addEventListener("click", (e) => {
+  if (e.target.id === "bulk-sell-modal") closeBulkSellModal();
+});
+document.getElementById("bulk-sell-price-input")?.addEventListener("input", updateBulkSellPreview);
+document.getElementById("bulk-sell-protect-checkbox")?.addEventListener("change", updateBulkSellPreview);
+
+document.getElementById("bulk-sell-confirm-btn")?.addEventListener("click", async () => {
+  const input = document.getElementById("bulk-sell-price-input");
+  const protectCb = document.getElementById("bulk-sell-protect-checkbox");
+  const maxPrice = Number(input.value.trim());
+  if (!Number.isFinite(maxPrice) || maxPrice < 0) return;
+
+  const matches = getBulkSellMatches(maxPrice, protectCb.checked);
+  if (!matches.length) return;
+  const total = matches.reduce((sum, i) => sum + i.price, 0);
+  const ids = matches.map(i => i.id);
+
+  const question = t("bulk_sell_confirm_question")
+    .replace("{count}", fmtNumber(matches.length))
+    .replace("{total}", fmt(total));
+
+  const doSell = async () => {
+    try {
+      const result = await apiPost("/sell-multiple", {
+        telegram_id: state.telegramId,
+        inventory_ids: ids,
+      });
+      state.balance = result.new_balance;
+      const soldSet = new Set(ids.map(String));
+      state.inventory = state.inventory.filter(i => !soldSet.has(String(i.id)));
+      ids.forEach(id => state.selectedInventoryIds.delete(id));
+      updateBalanceDisplay();
+      closeBulkSellModal();
+      renderInventory();
+      playSound("sell");
+      tg?.showAlert?.(
+        t("bulk_sell_success").replace("{count}", fmtNumber(result.sold_count ?? matches.length)).replace("{total}", fmt(result.sold_for ?? total))
+      );
+    } catch (e) {
+      tg?.showAlert?.(e.message);
+    }
+  };
+
+  if (tg?.showConfirm) {
+    tg.showConfirm(question, (ok) => { if (ok) doSell(); });
+  } else if (confirm(question)) {
+    doSell();
+  }
+});
 
 // ============================================
 // Выделение предметов в инвентаре + «Распылить выбранное в Кристаллы»
@@ -2226,11 +3134,17 @@ function showCraftResult(item) {
   document.getElementById("craft-result-quality").textContent =
     `${item.quality_name || ""}${item.stattrak ? " · StatTrak™" : ""}`;
   document.getElementById("craft-result-price").textContent = fmt(item.price);
+  // ПРАВКИ В ТЗ №14: запоминаем предмет для кнопки "Поделиться".
+  state.lastCraftItem = item;
   document.getElementById("craft-result-modal").classList.add("active");
 }
 
 document.getElementById("craft-result-ok-btn").addEventListener("click", () => {
   document.getElementById("craft-result-modal").classList.remove("active");
+});
+
+document.getElementById("craft-result-share-btn")?.addEventListener("click", () => {
+  shareDrop(state.lastCraftItem);
 });
 
 // ============================================
@@ -2260,6 +3174,18 @@ function applyProfileData(profile) {
   if (typeof profile.sound_enabled === "boolean") {
     state.soundEnabled = profile.sound_enabled;
     updateSoundToggleUI();
+  }
+  // ПРАВКИ В ТЗ №5: настройка показа всплывающих уведомлений.
+  if (typeof profile.notifications_enabled === "boolean") {
+    state.notificationsEnabled = profile.notifications_enabled;
+    updateNotificationsToggleUI();
+  }
+  // ПРАВКИ В ТЗ №5: какие эксклюзивные фоны-награды реально открыты у
+  // игрока — влияет на заблокированные/разблокированные плитки в сетке
+  // выбора фона (см. renderBackgroundPicker).
+  if (Array.isArray(profile.unlocked_backgrounds)) {
+    state.unlockedBackgrounds = profile.unlocked_backgrounds;
+    renderBackgroundPicker();
   }
   // Спринт 12: сервер — источник истины для фона (например, игрок сменил
   // фон на другом устройстве) — применяем поверх того, что уже нарисовали
@@ -2301,6 +3227,26 @@ function renderProfileScreen(profile) {
   document.getElementById("stat-favorite").textContent = profile.favorite_case || "—";
   document.getElementById("stat-ref-count").textContent = state.referralsCount ?? 0;
   document.getElementById("stat-ref-earnings").textContent = fmtWithIcon(state.refEarningsTotal ?? 0);
+
+  // ПРАВКИ В ТЗ №5: «Общий профит» — total_returned - total_wagered с
+  // бэкенда (см. main.get_profile / main._track_wagered / _track_return).
+  // Красим в зелёный/красный в зависимости от знака, но не скрываем ноль —
+  // 0 у нового игрока это тоже валидное («ещё не играл») состояние.
+  const profitEl = document.getElementById("stat-profit");
+  if (profitEl) {
+    const profit = Number(profile.total_profit) || 0;
+    profitEl.textContent = fmt(profit);
+    profitEl.classList.toggle("positive", profit > 0);
+    profitEl.classList.toggle("negative", profit < 0);
+  }
+
+  // Статистика мини-игр — пока единственная доступная метрика с бэкенда:
+  // количество сыгранных раундов (minigames_stats.played).
+  const minigamesEl = document.getElementById("stat-minigames");
+  if (minigamesEl) {
+    const played = profile.minigames_stats?.played ?? 0;
+    minigamesEl.textContent = played > 0 ? `${played} ${t("minigames_rounds_played")}` : t("minigames_no_data");
+  }
 
   // Топ дроп — берём ИМЕННО persisted-поле top_drop с бэкенда (не
   // most_expensive_item из текущего инвентаря), чтобы карточка не
@@ -2351,7 +3297,7 @@ function renderProfileScreen(profile) {
 
   // Уведомление о свежеоткрытой косметике: бэкенд отдаёт её только в тот
   // единственный ответ, в котором условие выполнилось впервые.
-  if (Array.isArray(profile.newly_unlocked) && profile.newly_unlocked.length) {
+  if (state.notificationsEnabled && Array.isArray(profile.newly_unlocked) && profile.newly_unlocked.length) {
     const names = profile.newly_unlocked.map(x => x.name).join(", ");
     tg?.showAlert?.(`${t("cosmetic_unlocked")} ${names}`);
   }
@@ -2360,9 +3306,12 @@ function renderProfileScreen(profile) {
 // ============================================
 // СПРИНТ 10: УРОВЕНЬ АККАУНТА
 // ============================================
-// level — объект из levels.get_level_progress(): level, xp, xp_into_level,
+// level — объект из levels.get_level_progress(): level, xp, xp_in_level,
 // xp_needed, progress_percent, showcase_slots, showcase_max_slots,
 // next_showcase_slot_level, is_max.
+// ПРАВКИ В ТЗ №5: тут был баг "0 / 20 254 XP" — бэкенд отдаёт поле
+// `xp_in_level`, а тут читалось несуществующее `xp_into_level` (всегда
+// undefined -> 0). Поле переименовано в соответствие с levels.py.
 function renderLevelCard(level) {
   const card = document.getElementById("level-card");
   if (!card) return;
@@ -2374,7 +3323,7 @@ function renderLevelCard(level) {
 
   document.getElementById("level-xp-line").textContent = level.is_max
     ? t("level_max_line").replace("{xp}", fmtNumber2(level.xp))
-    : `${fmtNumber2(level.xp_into_level)} / ${fmtNumber2(level.xp_needed)} XP`;
+    : `${fmtNumber2(level.xp_in_level)} / ${fmtNumber2(level.xp_needed)} XP`;
 
   // Подсказка про слоты витрины: пока лимит не выбран — говорим, на каком
   // уровне откроется следующий; на максимуме — что все уже открыты.
@@ -2639,11 +3588,14 @@ async function toggleShowcaseItem() {
   }
 }
 
-// Точное значение Float с 6 знаками — ТЗ требует вид "Float: 0.013412",
-// поэтому нули в конце НЕ обрезаем (иначе 0.013400 выглядел бы как 0.0134
-// и терял ощущение точного измерения).
+// Точное значение Float — ПРАВКИ В ТЗ №9.5: раньше округляли до 6 знаков
+// фиксированной строкой, теперь показываем 8 знаков (тот же вид, что и
+// пример из ТЗ — "0.15482914"), нули в конце НЕ обрезаем: toFixed сам
+// добивает ими короткие хвосты, но т.к. генератор бэкенда (main.py::
+// _roll_float_in_range) больше не округляет при роллах, реальные хвосты
+// теперь почти всегда "живые" случайные цифры, а не искусственные нули.
 function formatFloatValue(v) {
-  return Number(v).toFixed(6);
+  return Number(v).toFixed(8);
 }
 
 // ---- Утилиты экранирования ----
@@ -2733,6 +3685,48 @@ function showNextRankUp() {
     itemCard.style.display = "none";
   }
 
+  // ---- ПРАВКИ В ТЗ №5: секретный скин (гарантированный нож/перчатки) ----
+  const secretCard = document.getElementById("rankup-secret-item-card");
+  if (secretCard) {
+    if (ev.secret_skin_item) {
+      document.getElementById("rankup-secret-item-image").src = ev.secret_skin_item.image || "";
+      document.getElementById("rankup-secret-item-name").textContent = ev.secret_skin_item.name;
+      document.getElementById("rankup-secret-item-price").textContent = fmt(ev.secret_skin_item.price);
+      secretCard.style.display = "block";
+    } else {
+      secretCard.style.display = "none";
+    }
+  }
+
+  // ---- Эксклюзивная рамка аватара за ранг ----
+  const frameLine = document.getElementById("rankup-frame-line");
+  if (frameLine) {
+    if (ev.new_frame) {
+      const frameName = state.lang === "en" ? ev.new_frame.name_en : (state.lang === "uk" ? ev.new_frame.name_uk : ev.new_frame.name);
+      frameLine.textContent = t("rankup_new_frame_label").replace("{name}", frameName || ev.new_frame.name);
+      frameLine.style.display = "block";
+    } else {
+      frameLine.style.display = "none";
+    }
+  }
+
+  // ---- Эксклюзивный фон профиля за ранг ----
+  const bgLine = document.getElementById("rankup-background-line");
+  if (bgLine) {
+    if (ev.new_background) {
+      bgLine.textContent = t("rankup_new_background_label").replace("{name}", ev.new_background.label || "");
+      bgLine.style.display = "block";
+      // Разблокированный фон должен сразу перестать быть "заблокированным"
+      // в сетке выбора, не дожидаясь следующей полной загрузки профиля.
+      if (!state.unlockedBackgrounds.includes(ev.new_background.key)) {
+        state.unlockedBackgrounds.push(ev.new_background.key);
+      }
+      renderBackgroundPicker();
+    } else {
+      bgLine.style.display = "none";
+    }
+  }
+
   playSound("fanfare");
   haptic("success");
   document.getElementById("rankup-modal").classList.add("active");
@@ -2761,18 +3755,28 @@ document.getElementById("item-detail-close-btn").addEventListener("click", () =>
 });
 document.getElementById("item-detail-showcase-btn").addEventListener("click", toggleShowcaseItem);
 
-// Выбор титула/рамки — делегированно на контейнер: чипы полностью
-// перерисовываются при каждом рендере профиля, поэтому слушатели на самих
-// чипах умирали бы вместе с innerHTML.
-document.getElementById("cosmetics-card").addEventListener("click", (e) => {
+// Выбор титула/рамки — делегированно на модалку Настроек (оба ряда,
+// #titles-row и #frames-row, физически переехали внутрь неё по ПРАВКАМ В
+// ТЗ №5/№12): чипы полностью перерисовываются при каждом рендере профиля,
+// поэтому слушатели на самих чипах умирали бы вместе с innerHTML.
+document.getElementById("customize-modal").addEventListener("click", (e) => {
   const chip = e.target.closest(".cosmetic-chip");
   if (!chip) return;
-  selectCosmetic(
-    chip.dataset.cosmeticKind,
-    chip.dataset.cosmeticKey,
-    chip.dataset.cosmeticLocked === "1",
-    chip.dataset.cosmeticHint,
-  );
+  const kind = chip.dataset.cosmeticKind;
+  const key = chip.dataset.cosmeticKey;
+  const locked = chip.dataset.cosmeticLocked === "1";
+
+  // ПРАВКИ В ТЗ №12, п.2: обновляем карточку превью СРАЗУ, синхронно, не
+  // дожидаясь ответа apiPost из selectCosmetic() ниже — только для доступной
+  // (не locked) косметики, как и требует ТЗ ("любую доступную рамку/титул").
+  if (!locked) {
+    const catalog = kind === "title" ? (state.lastProfile?.titles || []) : (state.lastProfile?.frames || []);
+    const info = key ? (catalog.find(it => it.key === key) || null) : null;
+    if (kind === "title") updateCustomizePreviewTitle(info);
+    else if (kind === "frame") updateCustomizePreviewFrame(info);
+  }
+
+  selectCosmetic(kind, key, locked, chip.dataset.cosmeticHint);
 });
 
 // Тап по предмету в витрине открывает ту же карточку Float/StatTrak, что и
@@ -2826,7 +3830,25 @@ function showNextLevelUp() {
   }
 
   const unlockLine = document.getElementById("levelup-unlock-line");
-  unlockLine.style.display = "none";
+  // ---- ПРАВКИ В ТЗ №5: награда за веху уровня аккаунта (кристаллы + иногда предмет) ----
+  if (ev.milestone_crystals) {
+    unlockLine.textContent = t("levelup_milestone_crystals").replace("{crystals}", fmt(ev.milestone_crystals));
+    unlockLine.style.display = "block";
+  } else {
+    unlockLine.style.display = "none";
+  }
+
+  const milestoneCard = document.getElementById("levelup-item-card");
+  if (milestoneCard) {
+    if (ev.milestone_item) {
+      document.getElementById("levelup-item-image").src = ev.milestone_item.image || "";
+      document.getElementById("levelup-item-name").textContent = ev.milestone_item.name;
+      document.getElementById("levelup-item-price").textContent = fmt(ev.milestone_item.price);
+      milestoneCard.style.display = "block";
+    } else {
+      milestoneCard.style.display = "none";
+    }
+  }
 
   playSound("fanfare");
   haptic("success");
@@ -3004,7 +4026,7 @@ function maybeShowInterstitial() {
 }
 
 // ============================================
-// Кнопка «Бонус 💎 2000» — таймер повторного получения раз в 60 секунд
+// Кнопка «Бонус 💎 5000» — таймер повторного получения раз в 60 секунд
 // ============================================
 let bonusCountdownInterval = null;
 
@@ -3015,7 +4037,7 @@ function startBonusCountdown(secondsLeft) {
   if (secondsLeft <= 0) {
     btn.disabled = false;
     btn.classList.remove("on-cooldown");
-    btn.textContent = t("bonus_btn");
+    btn.textContent = bonusBtnLabel();
     return;
   }
 
@@ -3030,7 +4052,7 @@ function startBonusCountdown(secondsLeft) {
       clearInterval(bonusCountdownInterval);
       btn.disabled = false;
       btn.classList.remove("on-cooldown");
-      btn.textContent = t("bonus_btn");
+      btn.textContent = bonusBtnLabel();
     } else {
       btn.textContent = `${t("bonus_wait_prefix")} ${remaining}с`;
     }
@@ -3040,6 +4062,7 @@ function startBonusCountdown(secondsLeft) {
 async function loadBonusStatus() {
   try {
     const res = await apiGet(`/bonus-status?telegram_id=${state.telegramId}`);
+    if (typeof res.reward === "number") state.bonusRewardAmount = res.reward;
     startBonusCountdown(res.seconds_left);
   } catch (e) {
     console.error("Ошибка загрузки статуса бонуса:", e);
@@ -3062,12 +4085,13 @@ document.getElementById("claim-bonus-btn").addEventListener("click", async () =>
 // ============================================
 // Ежедневный бонус (Daily Streak, 1-7 день)
 // ============================================
-const DAILY_DAY_ICONS = { crystals: "💎", case: "🎁", gold: "💰", vip: "⭐" };
+// gold использует goldIconHTML() отдельно (не эмодзи) — см. renderDailyDays.
+const DAILY_DAY_ICONS = { crystals: "💎", case: "🎁", vip: "⭐" };
 
 function dailyRewardLabel(rewardDef) {
   if (rewardDef.type === "crystals") return fmtWithIcon(rewardDef.amount);
   if (rewardDef.type === "case") return t("daily_reward_case");
-  if (rewardDef.type === "gold") return `${rewardDef.amount} 💰`;
+  if (rewardDef.type === "gold") return `${rewardDef.amount} ${goldIconHTML("inline")}`;
   if (rewardDef.type === "vip") return t("daily_reward_vip").replace("{h}", rewardDef.hours);
   return "";
 }
@@ -3079,10 +4103,10 @@ function renderDailyDays(data) {
     const isClaimedDay = r.day < data.current_day || (r.day === data.current_day && data.claimed_today);
     const isCurrent = r.day === data.current_day && !data.claimed_today;
     const el = document.createElement("div");
-    el.className = `daily-day-card ${isClaimedDay ? "claimed" : ""} ${isCurrent ? "current" : ""} ${r.day === 7 ? "jackpot" : ""}`.trim();
+    el.className = `daily-day-card ${isClaimedDay ? "claimed" : ""} ${isCurrent ? "current" : ""} ${r.day === (data.cycle_length || 30) ? "jackpot" : ""}`.trim();
     el.innerHTML = `
       <div class="day-num">${t("daily_day_label").replace("{n}", r.day)}</div>
-      <div class="day-icon">${DAILY_DAY_ICONS[r.type] || currencyIcon()}</div>
+      <div class="day-icon">${r.type === "gold" ? goldIconHTML("large") : (DAILY_DAY_ICONS[r.type] || currencyIcon())}</div>
       <div class="day-reward">${dailyRewardLabel(r)}</div>
     `;
     grid.appendChild(el);
@@ -3102,6 +4126,45 @@ function renderDailyDays(data) {
   const btn = document.getElementById("daily-claim-btn");
   btn.textContent = data.claimed_today ? t("daily_claimed_btn") : t("daily_claim_btn");
   btn.disabled = !!data.claimed_today;
+
+  // ПРАВКИ В ТЗ №6: таймер ЧЧ:ММ:СС до полуночи UTC, когда бонус уже
+  // забран сегодня — используем seconds_until_next_claim с бэкенда, а не
+  // считаем на фронте, чтобы не рассинхронизироваться с часовым поясом
+  // сервера (см. _seconds_until_next_claim в routers/streak.py).
+  if (data.claimed_today && data.seconds_until_next_claim > 0) {
+    startDailyCountdown(data.seconds_until_next_claim);
+  } else {
+    stopDailyCountdown();
+    document.getElementById("daily-countdown").textContent = "";
+  }
+}
+
+let dailyCountdownInterval = null;
+
+function stopDailyCountdown() {
+  if (dailyCountdownInterval) {
+    clearInterval(dailyCountdownInterval);
+    dailyCountdownInterval = null;
+  }
+}
+
+function startDailyCountdown(secondsLeft) {
+  stopDailyCountdown();
+  let remaining = secondsLeft;
+  const el = document.getElementById("daily-countdown");
+
+  function tick() {
+    if (remaining <= 0) {
+      stopDailyCountdown();
+      loadDailyStatus();
+      return;
+    }
+    el.innerHTML = `${t("daily_next_in")} <b>${formatCountdownHMS(remaining)}</b>`;
+    remaining -= 1;
+  }
+
+  tick();
+  dailyCountdownInterval = setInterval(tick, 1000);
 }
 
 async function loadDailyStatus() {
@@ -3123,9 +4186,13 @@ document.getElementById("open-daily-modal-btn").addEventListener("click", openDa
 
 document.getElementById("daily-close-btn").addEventListener("click", () => {
   document.getElementById("daily-modal").classList.remove("active");
+  stopDailyCountdown();
 });
 document.getElementById("daily-modal").addEventListener("click", (e) => {
-  if (e.target.id === "daily-modal") e.currentTarget.classList.remove("active");
+  if (e.target.id === "daily-modal") {
+    e.currentTarget.classList.remove("active");
+    stopDailyCountdown();
+  }
 });
 
 function showDailyResult(result) {
@@ -3147,9 +4214,9 @@ function showDailyResult(result) {
     nameEl.textContent = `${reward.case_name}: ${reward.item.name}`;
     valueEl.textContent = fmt(reward.item.price);
   } else if (reward.type === "gold") {
-    icon.textContent = "💰";
+    icon.innerHTML = goldIconHTML("large");
     nameEl.textContent = t("daily_reward_gold");
-    valueEl.textContent = `${reward.amount} 💰`;
+    valueEl.innerHTML = `${reward.amount} ${goldIconHTML("inline")}`;
   } else if (reward.type === "vip") {
     icon.textContent = "⭐";
     nameEl.textContent = reward.already_permanent_vip
@@ -3160,7 +4227,7 @@ function showDailyResult(result) {
 
   if (result.mega_bonus_awarded) {
     promoEl.style.display = "block";
-    promoEl.textContent = `${t("daily_mega_bonus_toast")} +${result.mega_bonus_gold} 💰`;
+    promoEl.innerHTML = `${t("daily_mega_bonus_toast")} +${result.mega_bonus_gold} ${goldIconHTML("inline")}`;
   }
 
   playSound(reward.type === "case" || reward.type === "vip" ? "fanfare" : "win");
@@ -3190,7 +4257,7 @@ document.getElementById("daily-claim-btn").addEventListener("click", async () =>
 // ============================================
 function wheelSectorIcon(sector) {
   if (sector.type === "crystals") return "💎";
-  if (sector.type === "gold") return "💰";
+  if (sector.type === "gold") return goldIconHTML("small");
   if (sector.type === "vip") return "⭐";
   if (sector.type === "case") return "🎁";
   return "🎲";
@@ -3254,7 +4321,12 @@ function updateWheelHintAndButton(status) {
   const goldOk = (state.goldBalance || 0) >= status.paid_spin_gold_cost;
   hintEl.innerHTML = `${t("wheel_paid_hint")} · ${t("wheel_paid_left")}: <b>${status.paid_spins_left}</b>`;
   btn.disabled = !goldOk;
-  btn.textContent = goldOk ? t("wheel_spin_btn") : t("wheel_no_gold");
+  // ПРАВКИ В ТЗ №6: когда бесплатный спин на кулдауне, но золота хватает —
+  // кнопка явно предлагает платный спин ("Открыть за 5 💰"), а не просто
+  // "Крутить", чтобы игрок понимал, что клик спишет золото.
+  btn.textContent = goldOk
+    ? t("wheel_open_for_gold_btn").replace("{cost}", status.paid_spin_gold_cost)
+    : t("wheel_no_gold");
 }
 
 function stopWheelCountdown() {
@@ -3276,9 +4348,7 @@ function startWheelCountdown(secondsLeft) {
       loadWheelStatus();
       return;
     }
-    const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
-    const ss = String(remaining % 60).padStart(2, "0");
-    hintEl.innerHTML = `${t("wheel_free_in")} <b>${mm}:${ss}</b>`;
+    hintEl.innerHTML = `${t("wheel_free_in")} <b>${formatCountdownHMS(remaining)}</b>`;
     remaining -= 1;
   }
 
@@ -3338,9 +4408,12 @@ function showWheelResult(result) {
     nameEl.textContent = t("wheel_sector_crystals");
     valueEl.textContent = fmt(reward.amount);
   } else if (reward.type === "gold") {
-    icon.textContent = "💰";
+    icon.innerHTML = goldIconHTML("large");
     nameEl.textContent = t("wheel_sector_gold");
-    valueEl.textContent = `💰 ${reward.amount}`;
+    // ПРАВКИ В ТЗ №7: раньше сумма отличалась ТОЛЬКО цветом текста
+    // (.wheel-result-gold { color: #ffd15c }) — теперь ещё и графическим
+    // значком монеты, .wheel-result-gold остаётся как акцентный цвет числа.
+    valueEl.innerHTML = `${reward.amount} ${goldIconHTML("inline")}`;
     valueEl.classList.add("wheel-result-gold");
   } else if (reward.type === "vip") {
     icon.textContent = "⭐";
@@ -3425,9 +4498,12 @@ function renderTasks(data) {
     el.innerHTML = `
       <div class="task-icon">${TASK_ICONS[task.task_type] || "✅"}</div>
       <div class="task-info">
-        <div class="task-title">${task.title}</div>
+        <div class="task-title-row">
+          <div class="task-title">${task.title}</div>
+          ${task.is_new && !task.completed ? `<span class="new-badge">${t("new_badge")}</span>` : ""}
+        </div>
         <div class="task-desc">${task.description || ""}</div>
-        <div class="task-reward">+${task.reward_gold} 💰</div>
+        <div class="task-reward">+${task.reward_gold} ${goldIconHTML("inline small")}</div>
       </div>
       <button class="btn-primary small task-action-btn" data-task-key="${task.key}">
         ${task.completed ? t("task_done_btn") : (task.action_url ? t("task_open_btn") : t("task_check_btn"))}
@@ -3503,13 +4579,71 @@ document.getElementById("tasks-modal").addEventListener("click", (e) => {
 });
 
 // ============================================
+// ПРАВКИ В ТЗ №6: "Мои рефералы" — модалка с построчным профитом по
+// каждому приглашённому другу (см. GET /api/referrals/list в main.py).
+// ============================================
+function renderReferralsList(data) {
+  const listEl = document.getElementById("referrals-list");
+  const emptyEl = document.getElementById("referrals-empty");
+  const totalEl = document.getElementById("referrals-total");
+
+  totalEl.innerHTML = t("referrals_total_label").replace("{amount}", `<b>${fmt(data.total_earnings)}</b>`);
+
+  listEl.innerHTML = "";
+  if (!data.friends.length) {
+    emptyEl.hidden = false;
+    return;
+  }
+  emptyEl.hidden = true;
+
+  data.friends.forEach((friend, idx) => {
+    const row = document.createElement("div");
+    row.className = "referral-row";
+    row.innerHTML = `
+      <div class="referral-rank">#${idx + 1}</div>
+      <div class="referral-info">
+        <div class="referral-nickname">${friend.nickname}</div>
+        <div class="referral-bar-track"><div class="referral-bar-fill" style="width:${friend.percent}%"></div></div>
+      </div>
+      <div class="referral-amount">
+        <div class="referral-amount-value">${fmt(friend.amount)}</div>
+        <div class="referral-amount-percent">${friend.percent}%</div>
+      </div>
+    `;
+    listEl.appendChild(row);
+  });
+}
+
+async function loadReferralsList() {
+  try {
+    const data = await apiGet(`/referrals/list?telegram_id=${state.telegramId}`);
+    renderReferralsList(data);
+  } catch (e) {
+    console.error("Ошибка загрузки списка рефералов:", e);
+  }
+}
+
+function openReferralsModal() {
+  document.getElementById("referrals-modal").classList.add("active");
+  loadReferralsList();
+}
+
+document.getElementById("open-referrals-modal-btn").addEventListener("click", openReferralsModal);
+
+document.getElementById("referrals-close-btn").addEventListener("click", () => {
+  document.getElementById("referrals-modal").classList.remove("active");
+});
+document.getElementById("referrals-modal").addEventListener("click", (e) => {
+  if (e.target.id === "referrals-modal") e.currentTarget.classList.remove("active");
+});
+
+// ============================================
 // ХАБ МИНИ-ИГР — единый полноэкранный контейнер,
 // в который динамически подгружается разметка нужной игры.
 // ============================================
 const GAME_TITLES = {
   rocket: () => `🚀 ${t("game_rocket")}`,
   upgrader: () => `🔺 ${t("game_upgrader")}`,
-  crafter: () => `🧪 ${t("game_crafter")}`,
   wheel: () => `🎡 ${t("game_wheel")}`,
   miner: () => `💣 ${t("game_miner")}`,
   tower: () => `🗼 ${t("game_tower")}`,
@@ -3942,516 +5076,32 @@ const RocketGame = {
 // всегда приходит с бэкенда (/api/upgrade), сам вращение только красиво
 // "доигрывает" уже известный исход после ответа сервера.
 
-const UPGRADER_MULTIPLIER_PRESETS = [2, 3, 5];
-const UPGRADER_CHANCE_PRESETS = [30, 55, 75];
-
-function calcUpgradeChance(multiplier) {
-  const targetHouseEdge = 0.85;
-  const chance = targetHouseEdge / multiplier;
-  return Math.max(0.01, Math.min(0.80, chance));
-}
-
-const UpgraderGame = {
-  mode: "multiplier",       // item | price | multiplier | chance
-  selectedItemIds: [],      // выбранные предметы ИЗ ИНВЕНТАРЯ (что улучшаем) — до 6 штук
-  sortDir: "asc",           // сортировка списка своих предметов: asc | desc
-  targetEntry: null,        // выбранный ЦЕЛЕВОЙ скин (для mode === "item")
-  multiplier: 2,
-  chance: 42,
-  searchTimer: null,
-  spinning: false,
-
-  render() {
-    return `
-      <div class="game-panel-desc">${t("upgrade_desc")}</div>
-
-      <div class="mg-row">
-        <div class="upg-your-items-header">
-          <label class="mg-label">${t("upgrade_your_item_label")} <span id="upgrader-picked-count">(0/6)</span></label>
-          <button type="button" class="upg-sort-btn" id="upgrader-sort-btn" data-dir="asc">
-            <span id="upgrader-sort-label">↑ ${t("sort_price_label")}</span>
-          </button>
-        </div>
-        <div class="upg-your-items-grid" id="upgrader-items-grid"></div>
-      </div>
-
-      <div class="upg-mode-tabs" id="upgrader-mode-tabs">
-        <button type="button" class="upg-mode-tab active" data-mode="multiplier">${t("upgrade_mode_multiplier")}</button>
-        <button type="button" class="upg-mode-tab" data-mode="chance">${t("upgrade_mode_chance")}</button>
-        <button type="button" class="upg-mode-tab" data-mode="item">${t("upgrade_mode_item")}</button>
-        <button type="button" class="upg-mode-tab" data-mode="price">${t("upgrade_mode_price")}</button>
-      </div>
-
-      <!-- mode: multiplier -->
-      <div class="upg-mode-pane" id="upg-pane-multiplier">
-        <div class="upg-preset-row">
-          ${UPGRADER_MULTIPLIER_PRESETS.map(m => `<button type="button" class="upg-preset-btn" data-mult="${m}">x${m}</button>`).join("")}
-        </div>
-        <div class="mg-row">
-          <label class="mg-label"><span>${t("multiplier_label")}</span>: <span id="upgrader-multiplier-value">2.0x</span></label>
-          <input type="range" id="upgrader-multiplier-slider" min="1.05" max="20" step="0.05" value="2.0">
-        </div>
-      </div>
-
-      <!-- mode: chance -->
-      <div class="upg-mode-pane" id="upg-pane-chance" style="display:none;">
-        <div class="upg-preset-row">
-          ${UPGRADER_CHANCE_PRESETS.map(c => `<button type="button" class="upg-preset-btn" data-chance="${c}">${c}%</button>`).join("")}
-        </div>
-        <div class="mg-row">
-          <label class="mg-label"><span>${t("chance_preview_label")}</span>: <span id="upgrader-chance-value">42%</span></label>
-          <input type="range" id="upgrader-chance-slider" min="1" max="80" step="1" value="42">
-        </div>
-      </div>
-
-      <!-- mode: item (поиск по глобальной базе скинов) -->
-      <div class="upg-mode-pane" id="upg-pane-item" style="display:none;">
-        <input type="text" id="upgrader-search-input" class="mg-input" placeholder="${t("upgrade_search_placeholder")}">
-        <div class="upg-search-results" id="upgrader-search-results"></div>
-        <div class="upg-target-picked" id="upgrader-target-picked" style="display:none;"></div>
-      </div>
-
-      <!-- mode: price (своя стоимость) -->
-      <div class="upg-mode-pane" id="upg-pane-price" style="display:none;">
-        <label class="mg-label">${t("upgrade_target_price_label")}</label>
-        <input type="number" id="upgrader-price-input" class="mg-input" min="1" step="1" placeholder="${t("upgrade_target_price_placeholder")}">
-      </div>
-
-      <!-- Круговой индикатор шанса + стрелка (визуал) -->
-      <div class="upg-wheel-wrap" id="upgrader-wheel-wrap">
-        <svg width="200" height="200" viewBox="0 0 200 200" class="upg-wheel-svg">
-          <circle class="upg-track-bg" cx="100" cy="100" r="82"></circle>
-          <circle class="upg-track-progress" id="upgrader-track-progress" cx="100" cy="100" r="82"
-            stroke-dasharray="0 515.2" transform="rotate(-90 100 100)"></circle>
-        </svg>
-        <div class="upg-needle-pivot" id="upgrader-needle-pivot"><div class="upg-needle"></div></div>
-        <div class="upg-wheel-center">
-          <div class="upg-wheel-percent"><span id="upgrader-wheel-percent">42</span>%</div>
-          <div class="upg-wheel-sub">${t("chance_preview_label")}</div>
-        </div>
-      </div>
-
-      <div class="upg-summary-row">
-        <div class="upg-summary-box">
-          <div class="upg-summary-label">${t("upgrade_your_item_label")}</div>
-          <div class="upg-summary-value" id="upgrader-summary-old">— ${currencyIcon()}</div>
-        </div>
-        <div class="upg-summary-arrow">→</div>
-        <div class="upg-summary-box">
-          <div class="upg-summary-label">${t("upgrade_target_label")}</div>
-          <div class="upg-summary-value" id="upgrader-summary-target">— ${currencyIcon()}</div>
-        </div>
-      </div>
-
-      <button class="btn-primary full" id="upgrader-play-btn">${t("upgrade_spin_btn")}</button>
-    `;
-  },
-
-  init() {
-    this.mode = "multiplier";
-    this.selectedItemIds = [];
-    this.sortDir = "asc";
-    this.targetEntry = null;
-    this.multiplier = 2;
-    this.chance = 42;
-    this.spinning = false;
-
-    this.renderItemsGrid();
-
-    document.getElementById("upgrader-sort-btn").addEventListener("click", () => {
-      this.sortDir = this.sortDir === "asc" ? "desc" : "asc";
-      this.renderItemsGrid();
-    });
-
-    document.getElementById("upgrader-mode-tabs").addEventListener("click", (e) => {
-      const btn = e.target.closest(".upg-mode-tab");
-      if (!btn) return;
-      this.setMode(btn.dataset.mode);
-    });
-
-    // Быстрые кнопки-множители (x2/x3/x5)
-    document.querySelectorAll("#upg-pane-multiplier .upg-preset-btn").forEach(btn => {
-      btn.addEventListener("click", () => {
-        this.multiplier = parseFloat(btn.dataset.mult);
-        document.getElementById("upgrader-multiplier-slider").value = this.multiplier;
-        this.onMultiplierChange();
-      });
-    });
-    document.getElementById("upgrader-multiplier-slider").addEventListener("input", (e) => {
-      this.multiplier = parseFloat(e.target.value);
-      this.onMultiplierChange();
-    });
-
-    // Быстрые кнопки-шансы (30/55/75%)
-    document.querySelectorAll("#upg-pane-chance .upg-preset-btn").forEach(btn => {
-      btn.addEventListener("click", () => {
-        this.chance = parseFloat(btn.dataset.chance);
-        document.getElementById("upgrader-chance-slider").value = this.chance;
-        this.onChanceChange();
-      });
-    });
-    document.getElementById("upgrader-chance-slider").addEventListener("input", (e) => {
-      this.chance = parseFloat(e.target.value);
-      this.onChanceChange();
-    });
-
-    // Поиск целевого скина по глобальной базе (items_data на бэкенде)
-    const searchInput = document.getElementById("upgrader-search-input");
-    searchInput.addEventListener("input", () => {
-      clearTimeout(this.searchTimer);
-      this.searchTimer = setTimeout(() => this.runItemSearch(searchInput.value), 250);
-    });
-
-    // Своя стоимость
-    document.getElementById("upgrader-price-input").addEventListener("input", () => {
-      this.updateSummary();
-    });
-
-    document.getElementById("upgrader-play-btn").addEventListener("click", () => this.play());
-
-    this.onMultiplierChange();
-    this.updateSummary();
-  },
-
-  destroy() {
-    clearTimeout(this.searchTimer);
-  },
-
-  setMode(mode) {
-    this.mode = mode;
-    document.querySelectorAll(".upg-mode-tab").forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
-    ["multiplier", "chance", "item", "price"].forEach(m => {
-      document.getElementById(`upg-pane-${m}`).style.display = m === mode ? "" : "none";
-    });
-    this.updateSummary();
-  },
-
-  populateSelect() {
-    // Оставлено для обратной совместимости вызовов — реальный рендер
-    // теперь в renderItemsGrid() (карточки с чекбоксами + сортировка).
-    this.renderItemsGrid();
-  },
-
-  // Рисует сетку своих предметов (карточки с чекбоксом) с учётом текущей
-  // сортировки по цене; позволяет отметить до MAX_UPGRADE_ITEMS штук —
-  // их суммарная стоимость становится "старой ценой" апгрейда.
-  renderItemsGrid() {
-    const MAX_ITEMS = 6;
-    const grid = document.getElementById("upgrader-items-grid");
-    const sortBtn = document.getElementById("upgrader-sort-btn");
-    const sortLabel = document.getElementById("upgrader-sort-label");
-    if (!grid) return;
-
-    if (sortBtn) sortBtn.dataset.dir = this.sortDir;
-    if (sortLabel) sortLabel.textContent = `${this.sortDir === "asc" ? "↑" : "↓"} ${t("sort_price_label")}`;
-
-    // убираем из выбранных предметы, которых больше нет в инвентаре
-    this.selectedItemIds = this.selectedItemIds.filter(id =>
-      state.inventory.some(i => String(i.id) === String(id))
-    );
-
-    grid.innerHTML = "";
-    if (!state.inventory.length) {
-      grid.innerHTML = `<div class="upg-items-empty">${t("inventory_empty")}</div>`;
-      this.updatePickedCount();
-      return;
-    }
-
-    const sorted = [...state.inventory].sort((a, b) =>
-      this.sortDir === "asc" ? a.price - b.price : b.price - a.price
-    );
-
-    sorted.forEach(item => {
-      const picked = this.selectedItemIds.some(id => String(id) === String(item.id));
-      const disableUnpicked = !picked && this.selectedItemIds.length >= MAX_ITEMS;
-      const el = document.createElement("div");
-      el.className = `upg-item-card ${rarityClass(item.rarity)}${picked ? " picked" : ""}${disableUnpicked ? " disabled" : ""}`;
-      el.innerHTML = `
-        <img src="${item.image}" alt="${item.name}" loading="lazy">
-        <div class="upg-item-card-name">${item.name}</div>
-        <div class="upg-item-card-price">${fmt(item.price)}</div>
-        <div class="upg-item-card-check">${picked ? "✓" : ""}</div>
-      `;
-      el.addEventListener("click", () => {
-        if (picked) {
-          this.selectedItemIds = this.selectedItemIds.filter(id => String(id) !== String(item.id));
-        } else {
-          if (this.selectedItemIds.length >= MAX_ITEMS) return; // лимит 6 штук
-          this.selectedItemIds.push(item.id);
-        }
-        this.renderItemsGrid();
-        this.updateSummary();
-      });
-      grid.appendChild(el);
-    });
-
-    this.updatePickedCount();
-  },
-
-  updatePickedCount() {
-    const el = document.getElementById("upgrader-picked-count");
-    if (el) el.textContent = `(${this.selectedItemIds.length}/6)`;
-  },
-
-  getSelectedItems() {
-    return this.selectedItemIds
-      .map(id => state.inventory.find(i => String(i.id) === String(id)))
-      .filter(Boolean);
-  },
-
-  // Суммарная стоимость всех выбранных предметов — она же "старая цена"
-  // апгрейда (несколько скинов объединяются в один апгрейд).
-  getSelectedTotalPrice() {
-    return this.getSelectedItems().reduce((sum, i) => sum + i.price, 0);
-  },
-
-  onMultiplierChange() {
-    document.getElementById("upgrader-multiplier-value").textContent = this.multiplier.toFixed(2) + "x";
-    document.querySelectorAll("#upg-pane-multiplier .upg-preset-btn").forEach(b => {
-      b.classList.toggle("active", parseFloat(b.dataset.mult) === this.multiplier);
-    });
-    this.chance = calcUpgradeChance(this.multiplier) * 100;
-    this.updateSummary();
-  },
-
-  onChanceChange() {
-    document.getElementById("upgrader-chance-value").textContent = Math.round(this.chance) + "%";
-    document.querySelectorAll("#upg-pane-chance .upg-preset-btn").forEach(b => {
-      b.classList.toggle("active", parseFloat(b.dataset.chance) === this.chance);
-    });
-    this.multiplier = 0.85 / (this.chance / 100);
-    this.updateSummary();
-  },
-
-  async runItemSearch(query) {
-    const box = document.getElementById("upgrader-search-results");
-    if (!box) return;
-    try {
-      const data = await apiGet(`/items/search?q=${encodeURIComponent(query)}&limit=20`);
-      if (!data.results.length) {
-        box.innerHTML = `<div class="upg-search-empty">${t("upgrade_search_empty")}</div>`;
-        return;
-      }
-      box.innerHTML = "";
-      data.results.forEach(entry => {
-        const el = document.createElement("div");
-        el.className = `upg-search-item ${rarityClass(entry.rarity)}`;
-        el.innerHTML = `
-          <img src="${entry.image}" alt="">
-          <div class="upg-search-item-info">
-            <div class="upg-search-item-name">${entry.name}</div>
-            <div class="upg-search-item-price">${fmtWithIcon(entry.base_price)}</div>
-          </div>
-        `;
-        el.addEventListener("click", () => {
-          this.targetEntry = entry;
-          box.innerHTML = "";
-          document.getElementById("upgrader-search-input").value = entry.name;
-          this.showPickedTarget();
-          this.updateSummary();
-        });
-        box.appendChild(el);
-      });
-    } catch (e) { /* тихо игнорируем сетевые сбои поиска */ }
-  },
-
-  showPickedTarget() {
-    const el = document.getElementById("upgrader-target-picked");
-    if (!this.targetEntry) { el.style.display = "none"; return; }
-    el.style.display = "flex";
-    el.innerHTML = `
-      <img src="${this.targetEntry.image}" alt="">
-      <div>
-        <div class="upg-search-item-name">${this.targetEntry.name}</div>
-        <div class="upg-search-item-price">${fmtWithIcon(this.targetEntry.base_price)}</div>
-      </div>
-    `;
-  },
-
-  // Пересчитывает и показывает старую/целевую стоимость + дугу-индикатор
-  // ЧИСТО НА ФРОНТЕ (для мгновенного превью) — финальные цифры при
-  // фактическом апгрейде всегда пересчитываются и проверяются на бэкенде.
-  updateSummary() {
-    const items = this.getSelectedItems();
-    const oldPrice = this.getSelectedTotalPrice();
-    document.getElementById("upgrader-summary-old").textContent = items.length ? fmt(oldPrice) : "—";
-
-    let targetPrice = 0;
-    let chancePct = this.chance;
-
-    if (this.mode === "item") {
-      targetPrice = this.targetEntry ? this.targetEntry.base_price : 0;
-      if (items.length && targetPrice > oldPrice) chancePct = calcUpgradeChance(targetPrice / oldPrice) * 100;
-    } else if (this.mode === "price") {
-      const manual = parseFloat(document.getElementById("upgrader-price-input").value);
-      targetPrice = manual > 0 ? manual : 0;
-      if (items.length && targetPrice > oldPrice) chancePct = calcUpgradeChance(targetPrice / oldPrice) * 100;
-    } else if (this.mode === "multiplier") {
-      targetPrice = oldPrice * this.multiplier;
-      chancePct = calcUpgradeChance(this.multiplier) * 100;
-    } else if (this.mode === "chance") {
-      const mult = 0.85 / (this.chance / 100);
-      targetPrice = oldPrice * mult;
-      chancePct = this.chance;
-    }
-
-    document.getElementById("upgrader-summary-target").textContent = targetPrice > 0 ? fmt(targetPrice) : "—";
-    this.setWheelChance(chancePct);
-  },
-
-  setWheelChance(chancePct) {
-    chancePct = Math.max(0, Math.min(100, chancePct || 0));
-    const CIRC = 2 * Math.PI * 82;
-    const dash = (chancePct / 100) * CIRC;
-    document.getElementById("upgrader-track-progress").style.strokeDasharray = `${dash} ${CIRC - dash}`;
-    document.getElementById("upgrader-wheel-percent").textContent = Math.round(chancePct);
-  },
-
-  buildRequestBody() {
-    const items = this.getSelectedItems();
-    if (!items.length) return null;
-    const body = {
-      telegram_id: state.telegramId,
-      inventory_ids: items.map(i => Number(i.id)),
-      mode: this.mode,
-    };
-    if (this.mode === "item") {
-      if (!this.targetEntry) return null;
-      body.target_name = this.targetEntry.name;
-    } else if (this.mode === "price") {
-      const manual = parseFloat(document.getElementById("upgrader-price-input").value);
-      if (!(manual > 0)) return null;
-      body.target_price = manual;
-    } else if (this.mode === "multiplier") {
-      body.multiplier = this.multiplier;
-    } else if (this.mode === "chance") {
-      body.chance = this.chance;
-    }
-    return body;
-  },
-
-  async play() {
-    if (this.spinning) return;
-    const items = this.getSelectedItems();
-    if (!items.length) { tg?.showAlert?.(t("upgrade_pick_item_first")); return; }
-
-    const body = this.buildRequestBody();
-    if (!body) { tg?.showAlert?.(t("upgrade_pick_target_first")); return; }
-
-    const playBtn = document.getElementById("upgrader-play-btn");
-    this.spinning = true;
-    playBtn.disabled = true;
-    playBtn.textContent = t("upgrade_spinning");
-
-    try {
-      const result = await apiPost("/upgrade", body);
-      this.spinWheelToResult(result);
-    } catch (e) {
-      tg?.showAlert?.(e.message);
-      this.spinning = false;
-      playBtn.disabled = false;
-      playBtn.textContent = t("upgrade_spin_btn");
-    }
-  },
-
-  // Крутит стрелку "вслепую" (визуально), а по окончании анимации
-  // показывает уже известный (пришедший с сервера) результат.
-  spinWheelToResult(result) {
-    const pivot = document.getElementById("upgrader-needle-pivot");
-    const chanceUsed = result.chance_used;
-    // Угол "победной" зоны — от 0 до chanceUsed% окружности.
-    const winThreshold = chanceUsed * 3.6;
-    const landingAngle = result.result === "win"
-      ? Math.random() * winThreshold
-      : winThreshold + Math.random() * (360 - winThreshold);
-
-    const extraSpins = 5 + Math.floor(Math.random() * 3);
-    const targetRotation = extraSpins * 360 + landingAngle;
-
-    pivot.style.transition = "transform 3.6s cubic-bezier(0.12, 0.75, 0.15, 1)";
-    pivot.style.transform = `translate(-50%,-50%) rotate(${targetRotation}deg)`;
-
-    setTimeout(() => this.finishRound(result), 3800);
-  },
-
-  async finishRound(result) {
-    playSound(result.result === "win" ? "win" : "lose");
-
-    if (result.result === "win") {
-      showUpgradeResult(true, result.item);
-    } else if (result.compensation) {
-      showUpgradeResult(false, result.compensation);
-    } else {
-      // Ставка была меньше порога компенсации — скин не выдаётся,
-      // вместо этого утешительные крохи 💎 зачислены прямо на баланс.
-      showUpgradeResult(false, null, result.compensation_crystals);
-    }
-
-    state.inventory = state.inventory.filter(i => !this.selectedItemIds.some(id => String(id) === String(i.id)));
-    await loadInventory();
-    this.selectedItemIds = [];
-    this.renderItemsGrid();
-    this.targetEntry = null;
-    document.getElementById("upgrader-search-input").value = "";
-    this.showPickedTarget();
-    this.updateSummary();
-    loadProfile();
-
-    const playBtn = document.getElementById("upgrader-play-btn");
-    this.spinning = false;
-    playBtn.disabled = false;
-    playBtn.textContent = t("upgrade_spin_btn");
-
-    // Сброс стрелки без анимации, чтобы следующий раунд стартовал с нуля
-    const pivot = document.getElementById("upgrader-needle-pivot");
-    pivot.style.transition = "none";
-    pivot.style.transform = "translate(-50%,-50%) rotate(0deg)";
-  },
-};
-
-// Модалка результата Апгрейдера — используется и для победы (выданный
-// целевой скин), и для поражения (утешительный компенсационный скин).
-function showUpgradeResult(isWin, item, compensationCrystals) {
-  const modal = document.getElementById("upgrade-result-modal");
-  const sheet = modal.querySelector(".modal-sheet");
-  sheet.classList.toggle("upgrade-lose-sheet", !isWin);
-  document.getElementById("upgrade-result-title").textContent = isWin ? t("upgrade_success_title") : t("upgrade_fail_title");
-  document.getElementById("upgrade-result-subtitle").style.display = isWin ? "none" : "block";
-
-  if (!isWin && !item) {
-    // Ставка была ниже порога компенсации скином — вместо предмета
-    // на баланс капнули утешительные крохи 💎.
-    document.getElementById("upgrade-result-subtitle").textContent =
-      `${t("upgrade_fail_desc")} +${fmt(compensationCrystals ?? 0.01)} ${currencyIcon()}`;
-    document.getElementById("upgrade-result-image").src = "";
-    document.getElementById("upgrade-result-name").textContent = `+${fmt(compensationCrystals ?? 0.01)} ${currencyIcon()}`;
-    document.getElementById("upgrade-result-quality").textContent = "";
-    document.getElementById("upgrade-result-price").textContent = fmt(compensationCrystals ?? 0.01);
-    modal.classList.add("active");
-    return;
-  }
-
-  document.getElementById("upgrade-result-subtitle").textContent = t("upgrade_fail_desc");
-  document.getElementById("upgrade-result-image").src = item.image || "";
-  document.getElementById("upgrade-result-name").textContent = item.name;
-  document.getElementById("upgrade-result-quality").textContent =
-    `${item.quality_name || ""}${item.stattrak ? " · StatTrak™" : ""}`;
-  document.getElementById("upgrade-result-price").textContent = fmt(item.price);
-  modal.classList.add("active");
-}
-
 document.getElementById("upgrade-result-ok-btn")?.addEventListener("click", () => {
   document.getElementById("upgrade-result-modal").classList.remove("active");
 });
 
+document.getElementById("upgrade-result-share-btn")?.addEventListener("click", () => {
+  shareDrop(state.lastUpgradeItem);
+});
+
 // ============================================
-// 🧪 СИНТЕЗАТОР (Item Crafter, Спринт 4)
+// 🔺 УЛУЧШИТЕЛЬ / СИНТЕЗАТОР (ПРАВКИ В ТЗ №2, п.1 — единая мини-игра)
 // ============================================
-// Отдельная механика от УЛУЧШИТЕЛЯ (UpgraderGame) выше: здесь ставка — это
-// КОНКРЕТНЫЕ предметы инвентаря (+опционально Кристаллы поверх), шанс
-// считается прямым отношением (staked_value / target_value) * 100, зажатым
-// в [1%, 80%], а при поражении вся ставка сгорает целиком без утешительного
-// скина. Бэкенд: POST /api/upgrader/spin (routers/upgrader.py).
+// Раньше это были ДВЕ отдельные мини-игры: "Улучшитель" (старый режим
+// item/price/multiplier/chance через /api/upgrade) и "Синтезатор" (ставка
+// конкретными предметами инвентаря + Кристаллы, POST /api/upgrader/spin).
+// Старый "Улучшитель" удалён — эта механика (класс сохранил внутреннее
+// имя CrafterGame и id-префикс "crafter-", но теперь смонтирована под
+// пунктом меню "upgrader") теперь единственная и подключена под общим
+// названием "Улучшитель/Синтезатор":
+//   ставка = сумма выбранных предметов инвентаря + опционально Кристаллы;
+//   цель выбирается из каталога (или подбирается по кнопкам x2/x4/x8 и
+//   35%/55%/75% — они лишь подставляют диапазон цен для поиска цели);
+//   шанс = (staked_value / target_value) * 100%, зажатый в [1%, 80%];
+//   если ставка ≥ стоимости цели — бэкенд (routers/upgrader.py) отклоняет
+//   запрос отдельной проверкой, чтобы коэффициент не мог "перевалить"
+//   за реалистичные пределы;
+//   при поражении вся ставка сгорает целиком без утешительного скина.
 const CRAFTER_MAX_ITEMS = 6;
 
 const CrafterGame = {
@@ -4477,11 +5127,6 @@ const CrafterGame = {
         <div class="upg-your-items-grid" id="crafter-items-grid"></div>
       </div>
 
-      <div class="mg-row">
-        <label class="mg-label">${t("crafter_add_crystals_label")}: <span id="crafter-crystals-value">0</span> ${currencyIcon()}</label>
-        <input type="range" id="crafter-crystals-slider" min="0" max="0" step="1" value="0">
-      </div>
-
       <div class="upg-wheel-wrap" id="crafter-wheel-wrap">
         <svg width="200" height="200" viewBox="0 0 200 200" class="upg-wheel-svg">
           <circle class="upg-track-bg" cx="100" cy="100" r="82"></circle>
@@ -4493,6 +5138,11 @@ const CrafterGame = {
           <div class="upg-wheel-percent"><span id="crafter-wheel-percent">0</span>%</div>
           <div class="upg-wheel-sub">${t("chance_preview_label")}</div>
         </div>
+      </div>
+
+      <div class="mg-row">
+        <label class="mg-label">${t("crafter_add_crystals_label")}: <span id="crafter-crystals-value">0</span> ${currencyIcon()}</label>
+        <input type="range" id="crafter-crystals-slider" min="0" max="0" step="1" value="0">
       </div>
 
       <div class="upg-summary-row">
@@ -4712,13 +5362,11 @@ const CrafterGame = {
       data.results.forEach(entry => {
         const el = document.createElement("div");
         const isSelected = this.targetEntry && this.targetEntry.name === entry.name;
-        el.className = `upg-search-item ${rarityClass(entry.rarity)}${isSelected ? " selected" : ""}`;
+        el.className = `crf-catalog-card ${rarityClass(entry.rarity)}${isSelected ? " selected" : ""}`;
         el.innerHTML = `
           <img src="${entry.image}" alt="" loading="lazy">
-          <div class="upg-search-item-info">
-            <div class="upg-search-item-name">${entry.name}</div>
-            <div class="upg-search-item-price">${fmtWithIcon(entry.base_price)}</div>
-          </div>
+          <div class="crf-catalog-card-name">${entry.name}</div>
+          <div class="crf-catalog-card-price">${fmtWithIcon(entry.base_price)}</div>
         `;
         el.addEventListener("click", () => {
           this.targetEntry = entry;
@@ -4778,6 +5426,13 @@ const CrafterGame = {
     }
     if (!this.targetEntry) {
       tg?.showAlert?.(t("crafter_pick_target_first"));
+      return;
+    }
+    // ПРАВКИ В ТЗ №2, п.1: ставка не может быть дороже (или равна) цели —
+    // блокируем это ещё на фронте, до сетевого запроса (бэкенд всё равно
+    // перепроверит и отклонит то же самое в routers/upgrader.py).
+    if (this.getInputValue() >= this.targetEntry.base_price) {
+      tg?.showAlert?.(t("crafter_target_too_cheap"));
       return;
     }
 
@@ -4864,12 +5519,18 @@ function showCrafterResult(isWin, item) {
   document.getElementById("upgrade-result-title").textContent = isWin ? t("crafter_success_title") : t("crafter_fail_title");
   document.getElementById("upgrade-result-subtitle").style.display = "block";
 
+  // ПРАВКИ В ТЗ №14: кнопка "Поделиться" есть только при успехе — на
+  // проигрыше делиться попросту нечем (нет выпавшего предмета).
+  const shareBtn = document.getElementById("upgrade-result-share-btn");
+
   if (!isWin || !item) {
     document.getElementById("upgrade-result-subtitle").textContent = t("crafter_fail_desc");
     document.getElementById("upgrade-result-image").src = "";
     document.getElementById("upgrade-result-name").textContent = "";
     document.getElementById("upgrade-result-quality").textContent = "";
     document.getElementById("upgrade-result-price").textContent = "";
+    state.lastUpgradeItem = null;
+    if (shareBtn) shareBtn.style.display = "none";
     modal.classList.add("active");
     return;
   }
@@ -4880,6 +5541,8 @@ function showCrafterResult(isWin, item) {
   document.getElementById("upgrade-result-quality").textContent =
     `${item.quality_name || ""}${item.stattrak ? " · StatTrak™" : ""}`;
   document.getElementById("upgrade-result-price").textContent = fmt(item.price);
+  state.lastUpgradeItem = item;
+  if (shareBtn) shareBtn.style.display = "";
   modal.classList.add("active");
 }
 
@@ -5367,8 +6030,7 @@ const LadderGame = createClimbGame("ladder", 5, 2);
 
 const GAME_TEMPLATES = {
   rocket: RocketGame,
-  upgrader: UpgraderGame,
-  crafter: CrafterGame,
+  upgrader: CrafterGame,
   wheel: WheelGame,
   miner: MinerGame,
   tower: TowerGame,
@@ -5409,8 +6071,17 @@ document.getElementById("buy-vip-btn").addEventListener("click", async () => {
   }
 });
 
+// ПРАВКИ В ТЗ №6: "Розыгрыши" — вместо заглушки-алерта переходим в
+// Telegram-канал (там анонсируются розыгрыши), тот же канал, что и у
+// задания sub_channel (см. state.giveawaysUrl, заполняется из
+// /app-config -> social_channel_username). Если канал ещё не настроен на
+// бэке (плейсхолдер), тихо откатываемся на алерт "скоро".
 document.getElementById("open-giveaways").addEventListener("click", () => {
-  tg?.showAlert?.(t("giveaways_soon"));
+  if (!state.giveawaysUrl) {
+    tg?.showAlert?.(t("giveaways_soon"));
+    return;
+  }
+  tg?.openTelegramLink?.(state.giveawaysUrl) || window.open(state.giveawaysUrl, "_blank");
 });
 
 // ============================================
@@ -5422,10 +6093,13 @@ document.getElementById("open-giveaways").addEventListener("click", () => {
   if (savedLang) state.lang = savedLang;
   const savedSound = localStorage.getItem("cs2_sound");
   if (savedSound !== null) state.soundEnabled = savedSound === "1";
+  const savedNotifications = localStorage.getItem("cs2_notifications");
+  if (savedNotifications !== null) state.notificationsEnabled = savedNotifications === "1";
   const savedCurrency = localStorage.getItem("cs2_currency");
   if (savedCurrency && CURRENCY_ICON[savedCurrency]) state.currency = savedCurrency;
   applyTranslations();
   updateSoundToggleUI();
+  updateNotificationsToggleUI();
   refreshCurrencyDisplay();
 
   // Спринт 12: фон — оптимистично из localStorage, ДО загрузки конфига и
@@ -5440,6 +6114,14 @@ document.getElementById("open-giveaways").addEventListener("click", () => {
   try {
     const cfg = await apiGet("/app-config");
     state.botUsername = cfg.bot_username;
+    // ПРАВКИ В ТЗ №6: ссылка для карточки "Розыгрыши" — реальный канал,
+    // если он уже настроен на бэке (не плейсхолдер "заглшука"), иначе
+    // оставляем null и клик откатится на алерт "скоро" (см. обработчик
+    // #open-giveaways).
+    state.giveawaysUrl =
+      cfg.social_channel_username && cfg.social_channel_username !== "заглшука"
+        ? `https://t.me/${cfg.social_channel_username}`
+        : null;
     state.adsgramBlockId = cfg.adsgram_block_id;
     state.refBonusInviter = cfg.ref_bonus_inviter;
     state.refBonusInvited = cfg.ref_bonus_invited;
@@ -5448,6 +6130,13 @@ document.getElementById("open-giveaways").addEventListener("click", () => {
     state.craftFeeByRarity = cfg.craft_fee_by_rarity || {};
     state.craftItemsRequired = cfg.craft_items_required || 5;
     if (cfg.currency_rates) state.currencyRates = cfg.currency_rates;
+    // ПРАВКИ В ТЗ №7: диапазон награды за рекламу и сумма минутного
+    // бонуса — используются в earnAdDescText()/bonusBtnLabel() для
+    // построения текста карточек "Заработать" под текущую валюту.
+    if (typeof cfg.ad_reward_min === "number") state.adRewardMin = cfg.ad_reward_min;
+    if (typeof cfg.ad_reward_max === "number") state.adRewardMax = cfg.ad_reward_max;
+    if (typeof cfg.bonus_reward_amount === "number") state.bonusRewardAmount = cfg.bonus_reward_amount;
+    updateEarnDynamicTexts();
     state.backgroundOptions = cfg.background_options || [];
     applyBackground(state.background || DEFAULT_BACKGROUND);
     // Раньше загруженная цена VIP из конфига нигде не использовалась —
@@ -5483,6 +6172,9 @@ const chatState = {
   myUserId: null,    // внутренний user_id текущего игрока (для «своих» сообщений)
   sending: false,    // защита от двойной отправки
   bound: false,      // слушатели формы навешены один раз
+  // ---- ПРАВКИ В ТЗ №15 ----
+  isAdmin: false,    // true для config.ADMIN_IDS — админ может писать даже при chat_locked
+  chatLocked: false, // /mute_chat — глобальный read-only режим
 };
 
 function chatEls() {
@@ -5530,9 +6222,16 @@ function renderChatMessage(m) {
 
   if (m.is_system) {
     const el = document.createElement("div");
-    el.className = "chat-msg system";
+    // ПРАВКИ В ТЗ №15: /admin_msg — объявление администрации получает
+    // отдельный класс (яркий цвет + плашка "Администрация" в CSS), в
+    // отличие от нейтральных системных сообщений (лента дропов и т.п.).
+    el.className = m.is_admin_announcement ? "chat-msg system admin-announcement" : "chat-msg system";
     el.id = `chat-msg-${m.id}`;
-    el.innerHTML = `<span class="chat-sys-text">${escapeHtmlText(m.text)}</span>`;
+    if (m.is_admin_announcement) {
+      el.innerHTML = `<span class="chat-admin-badge">🛡 ${escapeHtmlText(t("chat_admin_badge") || "Администрация")}</span><span class="chat-sys-text">${escapeHtmlText(m.text)}</span>`;
+    } else {
+      el.innerHTML = `<span class="chat-sys-text">${escapeHtmlText(m.text)}</span>`;
+    }
     list.appendChild(el);
   } else {
     const mine = chatState.myUserId != null && m.user_id === chatState.myUserId;
@@ -5544,29 +6243,50 @@ function renderChatMessage(m) {
       ? `<img class="chat-avatar" src="${escapeAttr(m.author_photo)}" alt="" loading="lazy">`
       : `<div class="chat-avatar chat-avatar-fallback">${initial}</div>`;
     const name = mine ? escapeHtmlText(t("chat_you")) : escapeHtmlText(m.author_name || "Игрок");
+    // ПРАВКИ В ТЗ №15: /set_prefix — кастомный визуальный префикс автора
+    // (напр. "[VIP]"), отображается перед ником, если выдан админом.
+    const prefixBadge = m.author_prefix
+      ? `<span class="chat-prefix-badge">${escapeHtmlText(m.author_prefix)}</span>`
+      : "";
+    // ТЗ №3: клик по аватарке/нику -> модалка [Посмотреть профиль / Пожаловаться].
+    // Клик по самому тексту сообщения больше не открывает жалобу напрямую.
+    const deleteBtn = mine
+      ? `<button type="button" class="chat-delete-btn" data-chat-delete="${m.id}" title="${escapeAttr(t("chat_delete"))}">🗑</button>`
+      : "";
     el.innerHTML = `
-      ${avatar}
+      <span class="chat-avatar-trigger" data-chat-user="${m.user_id}" data-chat-tg="${m.author_telegram_id ?? ""}" data-chat-mine="${mine ? 1 : 0}">${avatar}</span>
       <div class="chat-bubble">
         <div class="chat-meta">
-          <span class="chat-name">${name}</span>
+          ${prefixBadge}
+          <span class="chat-name chat-name-trigger" data-chat-user="${m.user_id}" data-chat-tg="${m.author_telegram_id ?? ""}" data-chat-mine="${mine ? 1 : 0}">${name}</span>
           <span class="chat-time">${chatTimeLabel(m.created_at || "")}</span>
+          ${deleteBtn}
         </div>
         <div class="chat-text">${escapeHtmlText(m.text)}</div>
       </div>`;
-    if (!mine) {
-      // ТЗ: клик по чужому сообщению ➔ [Пожаловаться].
-      el.classList.add("reportable");
-      el.setAttribute("title", t("chat_report"));
-      el.addEventListener("click", () => reportChatMessage(m.id));
-    }
     list.appendChild(el);
   }
   chatState.lastId = Math.max(chatState.lastId, m.id);
 }
 
-function applyChatMeState(me) {
+// ТЗ №3: удаляет сообщение из DOM других уже открытых клиентов, когда
+// приходит в removed_ids (жалобы/удаление автором) — без него сообщение
+// пропадало бы только после полной перезагрузки ленты.
+function removeChatMessagesByIds(ids) {
+  if (!ids || !ids.length) return;
+  let removedAny = false;
+  ids.forEach((id) => {
+    const el = document.getElementById(`chat-msg-${id}`);
+    if (el) { el.remove(); removedAny = true; }
+  });
+  if (removedAny) updateChatEmpty();
+}
+
+function applyChatMeState(me, chatLocked) {
   if (!me) return;
   chatState.myUserId = me.user_id;
+  chatState.isAdmin = !!me.is_admin;
+  chatState.chatLocked = !!chatLocked;
   const { input, sendBtn, status } = chatEls();
   if (!input || !sendBtn || !status) return;
 
@@ -5580,6 +6300,10 @@ function applyChatMeState(me) {
       if (left > 0) blocked += ` (~${left} ${state.lang === "en" ? "min" : "мин"})`;
     }
     if (me.mute_reason) blocked += ` — ${me.mute_reason}`;
+  } else if (chatLocked && !chatState.isAdmin) {
+    // ПРАВКИ В ТЗ №15: /mute_chat — глобальный read-only режим для всех,
+    // кроме админов (config.ADMIN_IDS, см. routers/chat.py).
+    blocked = t("chat_locked_readonly") || "🔒 Чат временно закрыт администрацией (только чтение)";
   }
 
   if (blocked) {
@@ -5589,12 +6313,15 @@ function applyChatMeState(me) {
     status.hidden = false;
     status.textContent = blocked;
     status.classList.add("blocked");
+    if (chatLocked && !me.is_chat_banned && !me.is_muted) status.classList.add("chat-readonly-banner");
+    else status.classList.remove("chat-readonly-banner");
   } else {
     input.disabled = false;
     sendBtn.disabled = false;
     status.hidden = true;
     status.textContent = "";
     status.classList.remove("blocked");
+    status.classList.remove("chat-readonly-banner");
   }
 }
 
@@ -5602,13 +6329,14 @@ async function loadChatMessages(initial) {
   try {
     const afterId = initial ? 0 : chatState.lastId;
     const data = await apiGet(`/chat/messages?telegram_id=${state.telegramId}&after_id=${afterId}`);
-    applyChatMeState(data.me);
+    applyChatMeState(data.me, data.chat_locked);
     if (initial) {
       const { list } = chatEls();
       if (list) list.querySelectorAll(".chat-msg").forEach(n => n.remove());
       chatState.lastId = 0;
     }
     (data.messages || []).forEach(renderChatMessage);
+    if (!initial) removeChatMessagesByIds(data.removed_ids); // ТЗ №3: реалтайм-удаление у других клиентов
     updateChatEmpty();
     chatScrollToBottom(initial);
   } catch (e) {
@@ -5668,10 +6396,54 @@ async function reportChatMessage(messageId) {
   }
 }
 
+// ============================================
+// ТЗ №3: удаление своего сообщения
+// ============================================
+async function deleteChatMessage(messageId) {
+  const doDelete = async () => {
+    try {
+      await apiPost("/chat/delete", { telegram_id: state.telegramId, message_id: messageId });
+      const el = document.getElementById(`chat-msg-${messageId}`);
+      if (el) el.remove();
+      updateChatEmpty();
+      haptic("light");
+    } catch (e) {
+      haptic("error");
+      tg?.showAlert?.(e.message || "Ошибка удаления");
+    }
+  };
+  const question = t("chat_delete_confirm");
+  if (tg?.showConfirm) {
+    tg.showConfirm(question, (ok) => { if (ok) doDelete(); });
+  } else if (confirm(question)) {
+    doDelete();
+  }
+}
+
+// ============================================
+// ТЗ №3: клик по аватарке/нику -> [Посмотреть профиль / Пожаловаться]
+// ============================================
+const chatActionState = { messageId: null, telegramId: null, mine: false };
+
+function openChatUserActionModal(messageId, telegramId, mine) {
+  chatActionState.messageId = messageId;
+  chatActionState.telegramId = telegramId;
+  chatActionState.mine = mine;
+  const modal = document.getElementById("chat-user-action-modal");
+  if (!modal) return;
+  const reportBtn = document.getElementById("chat-action-report-btn");
+  if (reportBtn) reportBtn.style.display = mine ? "none" : "";
+  modal.classList.add("active");
+}
+
+function closeChatUserActionModal() {
+  document.getElementById("chat-user-action-modal")?.classList.remove("active");
+}
+
 function bindChatOnce() {
   if (chatState.bound) return;
   chatState.bound = true;
-  const { form, input } = chatEls();
+  const { form, input, list } = chatEls();
   if (!form || !input) return;
   // IME (CJK): не отправляем сообщение, пока идёт композиция иероглифов.
   input.addEventListener("compositionstart", () => { input.dataset.composing = "1"; });
@@ -5681,6 +6453,26 @@ function bindChatOnce() {
     if (input.dataset.composing === "1") return;
     sendChat();
   });
+
+  // Делегированные клики по ленте: корзина у своих сообщений, аватар/ник
+  // у любых -> модалка выбора действия (ТЗ №3).
+  if (list) {
+    list.addEventListener("click", (e) => {
+      const delBtn = e.target.closest("[data-chat-delete]");
+      if (delBtn) { deleteChatMessage(+delBtn.dataset.chatDelete); return; }
+
+      const trigger = e.target.closest("[data-chat-user]");
+      if (trigger) {
+        const telegramId = trigger.dataset.chatTg ? +trigger.dataset.chatTg : null;
+        const mine = trigger.dataset.chatMine === "1";
+        // Для системных сообщений/сообщений без известного telegram_id действие недоступно.
+        if (!telegramId) return;
+        const bubble = trigger.closest(".chat-msg");
+        const msgId = bubble ? +bubble.id.replace("chat-msg-", "") : null;
+        openChatUserActionModal(msgId, telegramId, mine);
+      }
+    });
+  }
 }
 
 function startChatPolling() {
