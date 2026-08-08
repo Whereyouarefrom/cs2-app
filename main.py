@@ -32,6 +32,12 @@ import config
 
 app = FastAPI(title="CS2 Case Simulator API")
 
+@app.get("/")
+async def root():
+    # Простой ответ на "/", чтобы Render/аптайм-мониторинг не пугались
+    # 404 при обращении к корню — весь реальный API живёт под /api/...
+    return {"status": "ok", "service": "CS2 Case Simulator API"}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
