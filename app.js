@@ -5,7 +5,7 @@
 const tg = window.Telegram?.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
 
-const API_BASE = "https://cs2-app.onrender.com/api"; // замени на реальный адрес FastAPI
+const API_BASE = "https://cs2-app.onrender.com/api";
 
 // initDataUnsafe используется ТОЛЬКО для мгновенного отображения плейсхолдера
 // (имя/аватар) ещё до ответа сервера — доверять этим данным для авторизации

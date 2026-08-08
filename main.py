@@ -2,6 +2,7 @@
 # CS2 Case Simulator — FastAPI Backend
 # ============================================
 
+import os
 import random
 import secrets
 import math
@@ -3032,5 +3033,10 @@ app.include_router(chat_router)
 
 
 if __name__ == "__main__":
+    import os
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Многие хостинги (Render, Railway и т.п.) сами назначают порт через
+    # переменную окружения PORT и ожидают, что приложение слушает именно
+    # его — иначе health-check не проходит и деплой считается неудачным.
+    # Локально (переменной PORT нет) по-прежнему используется 8000.
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
